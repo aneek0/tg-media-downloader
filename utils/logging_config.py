@@ -29,7 +29,7 @@ def redact_command(command: list[str]) -> list[str]:
             redacted.append("***")
             mask_next = False
             continue
-        if item in {"--password", "--username", "--proxy"}:
+        if item in {"--password", "--username", "--proxy", "--cookies", "-C"}:
             redacted.append(item)
             mask_next = True
             continue

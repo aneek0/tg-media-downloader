@@ -9,6 +9,18 @@ DOWNLOADS/
 .idea/
 *.log
 
+# python tooling caches
+uv-cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# runtime artifacts (cookies exported at runtime, bot state)
+twitter-cookies.txt
+cookies.txt
+
 # Docs
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 

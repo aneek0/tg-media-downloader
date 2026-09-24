@@ -5,7 +5,13 @@ import os
 from datetime import datetime
 
 from aiogram import Bot
-from aiogram.types import FSInputFile, Message
+from aiogram.types import (
+    FSInputFile,
+    InputMediaDocument,
+    InputMediaPhoto,
+    InputMediaVideo,
+    Message,
+)
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.media import audio_duration, video_metadata, video_note_metadata
@@ -78,6 +84,12 @@ async def upload_artifact(
                 length=length or 240,
                 thumbnail=thumb,
             )
+    elif artifact.send_type == "photo":
+        async with ChatActionSender.upload_photo(bot=bot, chat_id=source_message.chat.id):
+            await source_message.reply_photo(
+                photo=file_input,
+                caption=artifact.caption,
+            )
     else:
         async with ChatActionSender.upload_document(bot=bot, chat_id=source_message.chat.id):
             await source_message.reply_document(
@@ -102,3 +114,77 @@ async def upload_artifact(
         )
     )
     artifact.path.unlink(missing_ok=True)
+
+
+def _media_item(
+    artifact: DownloadArtifact, caption: str | None
+) -> InputMediaPhoto | InputMediaVideo | InputMediaDocument:
+    file_input = FSInputFile(artifact.path)
+    ext = artifact.path.suffix.lstrip(".").lower()
+    if ext in {"jpg", "jpeg", "png", "webp"}:
+        return InputMediaPhoto(media=file_input, caption=caption)
+    if ext in {"mp4", "mkv", "webm", "mov"}:
+        width, height, duration = video_metadata(artifact.path)
+        return InputMediaVideo(
+            media=file_input,
+            width=width,
+            height=height,
+            duration=duration,
+            supports_streaming=True,
+            caption=caption,
+        )
+    return InputMediaDocument(media=file_input, caption=caption)
+
+
+async def upload_artifacts(
+    *,
+    bot: Bot,
+    status_message: Message,
+    source_message: Message,
+    artifacts: list[DownloadArtifact],
+    started_at: datetime,
+    thumbnail_path: str | None = None,
+) -> None:
+    if len(artifacts) == 1:
+        await upload_artifact(
+            bot=bot,
+            status_message=status_message,
+            source_message=source_message,
+            artifact=artifacts[0],
+            thumbnail_path=thumbnail_path,
+            started_at=started_at,
+        )
+        return
+
+    await status_message.edit_text(text.upload_caption(artifacts[0].file_name))
+    upload_started = datetime.now()
+    logger.info(
+        "Album upload starting | chat=%s files=%s",
+        source_message.chat.id,
+        [a.file_name for a in artifacts],
+    )
+    for start in range(0, len(artifacts), 10):
+        chunk = artifacts[start : start + 10]
+        items = [
+            _media_item(
+                artifact,
+                artifacts[0].caption if start == 0 and index == 0 else None,
+            )
+            for index, artifact in enumerate(chunk)
+        ]
+        await source_message.reply_media_group(media=items)
+
+    upload_seconds = int((datetime.now() - upload_started).total_seconds())
+    download_seconds = int((datetime.now() - started_at).total_seconds())
+    logger.info(
+        "Album upload complete | chat=%s files=%s download_seconds=%s upload_seconds=%s",
+        source_message.chat.id,
+        len(artifacts),
+        download_seconds,
+        upload_seconds,
+    )
+    await status_message.edit_text(
+        text.DONE.format(download_seconds=download_seconds, upload_seconds=upload_seconds)
+    )
+    for artifact in artifacts:
+        artifact.path.unlink(missing_ok=True)

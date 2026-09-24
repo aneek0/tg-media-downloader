@@ -33,13 +33,35 @@
       "value": "128"
     },
     "HTTP_PROXY": {
-      "description": "Optional proxy URL used for network requests and yt-dlp.",
+      "description": "Optional proxy URL used for direct downloads, yt-dlp, and gallery-dl.",
+      "required": false
+    },
+    "TELEGRAM_PROXY": {
+      "description": "Optional proxy URL for the Telegram API connection only; falls back to HTTP_PROXY when unset.",
       "required": false
     },
     "PROCESS_MAX_TIMEOUT": {
       "description": "Optional timeout in seconds for external tool processes.",
       "required": false,
       "value": "3700"
+    },
+    "AUTO_BEST_QUALITY": {
+      "description": "Download best available quality without format selection prompts.",
+      "required": false,
+      "value": "true"
+    },
+    "MAX_HEIGHT": {
+      "description": "Maximum video height for automatic best-quality downloads.",
+      "required": false,
+      "value": "1080"
+    },
+    "TWITTER_COOKIES": {
+      "description": "Optional inline Netscape cookies.txt content of a logged-in X account; enables 18+ (NSFW) post downloads.",
+      "required": false
+    },
+    "TELEGRAM_API_URL": {
+      "description": "Optional base URL of a self-hosted local Bot API server; raises the bot upload limit from 50 MB to 2000 MB.",
+      "required": false
     }
   }
 }

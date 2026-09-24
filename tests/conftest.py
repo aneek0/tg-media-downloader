@@ -14,6 +14,11 @@ def make_settings(tmp_path: Path) -> Settings:
         chunk_size=1024,
         http_proxy="",
         process_max_timeout=120,
+        auto_best_quality=False,
+        max_video_height=1080,
+        twitter_cookies="",
+        telegram_api_url="",
+        telegram_proxy="",
     )
 
 
@@ -28,4 +33,8 @@ def make_message():
         answer=AsyncMock(),
         reply=AsyncMock(),
         answer_photo=AsyncMock(),
+        reply_media_group=AsyncMock(),
+        reply_photo=AsyncMock(),
     )
+
+

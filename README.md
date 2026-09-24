@@ -60,7 +60,12 @@ AUTH_USERS=
 DOWNLOAD_LOCATION=./DOWNLOADS
 CHUNK_SIZE=128
 HTTP_PROXY=
+TELEGRAM_PROXY=
+TELEGRAM_API_URL=
 PROCESS_MAX_TIMEOUT=3700
+AUTO_BEST_QUALITY=true
+MAX_HEIGHT=1080
+TWITTER_COOKIES_FILE=
 ```
 
 3. Install dependencies:
@@ -80,10 +85,15 @@ uv run python bot.py
 - `BOT_TOKEN` - required Telegram bot token
 - `OWNER_ID` - required Telegram user ID for the bot owner
 - `AUTH_USERS` - optional comma-separated list of user IDs that bypass the cooldown
-- `DOWNLOAD_LOCATION` - optional base directory for temporary downloads and uploads
 - `CHUNK_SIZE` - optional direct-download chunk size; values below `1024` are treated as kilobytes for backward compatibility
-- `HTTP_PROXY` - optional proxy URL passed to network requests and `yt-dlp`
+- `DOWNLOAD_LOCATION` - optional base directory for temporary downloads and uploads
 - `PROCESS_MAX_TIMEOUT` - optional process timeout in seconds for external tools
+- `AUTO_BEST_QUALITY` - optional; when true the bot downloads the best available quality without showing format buttons; set false to restore selection menus
+- `MAX_HEIGHT` - optional; maximum video height for auto downloads (default 1080)
+- `HTTP_PROXY` - optional proxy URL used for direct downloads, yt-dlp, and gallery-dl
+- `TELEGRAM_PROXY` - optional proxy URL for the Telegram API connection only; falls back to `HTTP_PROXY` when unset. Ignored when `TELEGRAM_API_URL` points to a self-hosted server (reached directly)
+- `TELEGRAM_API_URL` - optional base URL of a self-hosted local Bot API server (e.g. `http://localhost:8081`); raises the bot upload limit from 50 MB to 2000 MB. Run the official `telegram-bot-api` binary with `--local --api-id ... --api-hash ...` (keys from my.telegram.org) next to the bot; leave empty for the cloud Bot API
+- `TWITTER_COOKIES_FILE` / `TWITTER_COOKIES` - optional; path to a Netscape-format cookies.txt exported from a logged-in X/Twitter account, or the file content pasted into `.env` as a multiline value; enables downloads of 18+ (NSFW) posts. Export cookies with a browser extension ("Get cookies.txt LOCALLY") while logged in to x.com.
 
 ## Project Layout
 

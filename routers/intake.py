@@ -7,8 +7,15 @@ from aiogram.types import Message
 
 from config import Settings
 from services.cooldown import CooldownManager
-from services.parsing import extract_link_text, is_probable_youtube_url, parse_user_input
+from services.executor import execute_request
+from services.parsing import (
+    extract_link_text,
+    is_probable_youtube_url,
+    is_twitter_status_url,
+    parse_user_input,
+)
 from services.request_store import RequestStore
+from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
     build_direct_options,
     build_quick_youtube_options,
@@ -18,7 +25,7 @@ from services.ytdlp import (
 from utils import text
 from utils.keyboards import format_keyboard
 from utils.logging_config import safe_url_label
-from utils.models import StoredRequest
+from utils.models import DownloadOption, ParsedInput, StoredRequest
 
 router = Router(name="intake")
 logger = logging.getLogger(__name__)
@@ -30,6 +37,7 @@ async def intake_message(
     settings: Settings,
     cooldown: CooldownManager,
     request_store: RequestStore,
+    thumbnail_store: ThumbnailStore,
 ) -> None:
     raw_text = message.text or ""
     if not extract_link_text(raw_text, message.entities):
@@ -58,6 +66,28 @@ async def intake_message(
 
     parsed = parse_user_input(raw_text, message.entities)
     status_message = await message.reply(text.PROCESSING)
+
+    if is_twitter_status_url(parsed.source_url):
+        await _run_gallery_download(
+            message=message,
+            parsed=parsed,
+            status_message=status_message,
+            settings=settings,
+            request_store=request_store,
+            thumbnail_store=thumbnail_store,
+        )
+        return
+
+    if settings.auto_best_quality:
+        await _run_auto_best(
+            message=message,
+            parsed=parsed,
+            status_message=status_message,
+            settings=settings,
+            request_store=request_store,
+            thumbnail_store=thumbnail_store,
+        )
+        return
 
     if is_probable_youtube_url(parsed.source_url):
         token = request_store.create_token()
@@ -123,4 +153,111 @@ async def intake_message(
     await status_message.edit_text(
         text.FORMAT_SELECTION,
         reply_markup=format_keyboard(token, options),
+    )
+
+
+async def _run_auto_best(
+    *,
+    message: Message,
+    parsed: ParsedInput,
+    status_message: Message,
+    settings: Settings,
+    request_store: RequestStore,
+    thumbnail_store: ThumbnailStore,
+) -> None:
+    try:
+        info = await probe_url(parsed, settings)
+    except RuntimeError as exc:  # pragma: no cover - network/tool error path
+        logger.warning(
+            "yt-dlp probe failed | user=%s source=%s error=%s",
+            message.from_user.id,
+            safe_url_label(parsed.source_url),
+            exc,
+        )
+        info = None
+
+    token = request_store.create_token()
+    if info:
+        options = [
+            DownloadOption(
+                option_id="auto_best",
+                label="Best quality",
+                send_type="video",
+                mode="ytdlp_auto",
+            )
+        ]
+        request_type = "ytdlp_auto"
+    else:
+        options = build_direct_options(parsed, info=None)
+        request_type = "direct_download"
+
+    stored = StoredRequest(
+        token=token,
+        request_type=request_type,
+        parsed_input=parsed,
+        options=options,
+        info=info or {},
+    )
+    request_store.save(stored)
+    logger.info(
+        "Prepared auto request | user=%s token=%s type=%s source=%s title=%s",
+        message.from_user.id,
+        token,
+        request_type,
+        safe_url_label(parsed.source_url),
+        (info or {}).get("title", "-"),
+    )
+    await execute_request(
+        stored=stored,
+        option=stored.options[0],
+        bot=message.bot,
+        status_message=status_message,
+        source_message=message,
+        user_id=message.from_user.id,
+        settings=settings,
+        request_store=request_store,
+        thumbnail_store=thumbnail_store,
+    )
+
+
+async def _run_gallery_download(
+    *,
+    message: Message,
+    parsed: ParsedInput,
+    status_message: Message,
+    settings: Settings,
+    request_store: RequestStore,
+    thumbnail_store: ThumbnailStore,
+) -> None:
+    token = request_store.create_token()
+    stored = StoredRequest(
+        token=token,
+        request_type="gallery_media",
+        parsed_input=parsed,
+        options=[
+            DownloadOption(
+                option_id="gallery_all",
+                label="Media",
+                send_type="photo",
+                mode="gallery",
+            )
+        ],
+    )
+    request_store.save(stored)
+    logger.info(
+        "Prepared gallery request | user=%s token=%s source=%s",
+        message.from_user.id,
+        token,
+        safe_url_label(parsed.source_url),
+    )
+    await execute_request(
+        stored=stored,
+        option=stored.options[0],
+        bot=message.bot,
+        status_message=status_message,
+        source_message=message,
+        user_id=message.from_user.id,
+        settings=settings,
+        request_store=request_store,
+        thumbnail_store=thumbnail_store,
     )

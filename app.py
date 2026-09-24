@@ -4,6 +4,8 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import PRODUCTION, TelegramAPIServer
 from aiogram.enums import ParseMode
 
 from config import Settings
@@ -11,6 +13,7 @@ from utils.logging_config import setup_logging
 from routers.callbacks import router as callbacks_router
 from routers.commands import router as commands_router
 from routers.intake import router as intake_router
+from routers.inline import router as inline_router
 from routers.thumbnails import router as thumbnails_router
 from services.cooldown import CooldownManager
 from services.request_store import RequestStore
@@ -21,6 +24,7 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(commands_router)
     dispatcher.include_router(thumbnails_router)
+    dispatcher.include_router(inline_router)
     dispatcher.include_router(intake_router)
     dispatcher.include_router(callbacks_router)
     dispatcher.workflow_data.update(
@@ -36,11 +40,36 @@ async def run() -> None:
     setup_logging()
     settings = Settings.from_env()
     settings.ensure_directories()
+    api_server: TelegramAPIServer | None = None
+    if settings.telegram_api_url:
+        api_server = TelegramAPIServer.from_base(
+            settings.telegram_api_url, is_local=True
+        )
+        logging.getLogger(__name__).info(
+            "Using local Bot API server | url=%s", settings.telegram_api_url
+        )
+
+    session: AiohttpSession | None = None
+    if settings.telegram_proxy and not api_server:
+        session = AiohttpSession(
+            proxy=settings.telegram_proxy, api=PRODUCTION
+        )
+        logging.getLogger(__name__).info(
+            "Telegram session routed through proxy | proxy=%s",
+            settings.telegram_proxy,
+        )
+    elif api_server:
+        # A self-hosted Bot API server is typically reachable directly
+        # (localhost/tailnet); the proxy would only break that route.
+        session = AiohttpSession(api=api_server)
+
 
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
     )
+
     dispatcher = create_dispatcher(settings)
 
     logging.getLogger(__name__).info(

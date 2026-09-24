@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 from aiogram.types import MessageEntity
@@ -56,3 +57,15 @@ def is_probable_youtube_url(url: str) -> bool:
         or hostname == "youtu.be"
         or hostname.endswith(".youtu.be")
     )
+
+
+def is_twitter_status_url(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").lower()
+    if not (
+        hostname == "x.com"
+        or hostname.endswith(".x.com")
+        or hostname == "twitter.com"
+        or hostname.endswith(".twitter.com")
+    ):
+        return False
+    return re.search(r"/status(?:es)?/\d+", urlparse(url).path) is not None

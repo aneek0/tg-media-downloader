@@ -31,7 +31,7 @@ Send a message containing any of these formats:
 - <code>/thumb</code> shows your saved thumbnail
 - <code>/delthumb</code> removes your saved thumbnail
 
-If the source supports multiple formats, I will show you a selection menu before uploading."""
+By default I download the best available quality automatically. If format selection is enabled, I will show a menu before uploading."""
 
 ABOUT_TEXT = """<b>All Url Uploader</b>
 
@@ -42,7 +42,7 @@ Built with <a href="https://docs.aiogram.dev/">aiogram 3</a> and <a href="https:
 
 <b>What it does</b>
 - downloads supported media from direct URLs and `yt-dlp` sources
-- lets you choose formats when the source exposes multiple options
+- downloads the best available quality automatically (optional format selection)
 - uploads video, audio, and documents back to Telegram
 - supports custom per-user thumbnails
 
@@ -70,6 +70,9 @@ FILE_TOO_LARGE = (
     "I cannot upload files larger than Telegram allows."
 )
 DONE = "Downloaded in {download_seconds} seconds.\nUploaded in {upload_seconds} seconds."
+
+INLINE_TITLE = "Download media"
+INLINE_FAILED = "I could not download that link."
 
 
 def upload_caption(name: str) -> str:

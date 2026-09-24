@@ -22,6 +22,23 @@ def _parse_chunk_size(raw_value: str | None) -> int:
     return size * 1024 if size < 1024 else size
 
 
+def _parse_bool(raw_value: str | None, default: bool, name: str = "AUTO_BEST_QUALITY") -> bool:
+    if raw_value is None or not raw_value.strip():
+        return default
+    value = raw_value.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean value, got {raw_value!r}")
+
+
+def _parse_twitter_cookies(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return raw.strip()
+
+
 @dataclass(slots=True)
 class Settings:
     bot_token: str
@@ -31,6 +48,11 @@ class Settings:
     chunk_size: int
     http_proxy: str
     process_max_timeout: int
+    auto_best_quality: bool
+    max_video_height: int
+    twitter_cookies: str = ""
+    telegram_api_url: str = ""
+    telegram_proxy: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -50,6 +72,16 @@ class Settings:
             os.environ.get("DOWNLOAD_LOCATION", "./DOWNLOADS").strip() or "./DOWNLOADS"
         )
 
+        max_height_raw = os.environ.get("MAX_HEIGHT", "1080").strip() or "1080"
+        try:
+            max_video_height = int(max_height_raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"MAX_HEIGHT must be a positive integer, got {max_height_raw!r}"
+            ) from exc
+        if max_video_height <= 0:
+            raise RuntimeError("MAX_HEIGHT must be a positive integer")
+
         return cls(
             bot_token=bot_token,
             owner_id=owner_id,
@@ -58,6 +90,14 @@ class Settings:
             chunk_size=_parse_chunk_size(os.environ.get("CHUNK_SIZE")),
             http_proxy=os.environ.get("HTTP_PROXY", "").strip(),
             process_max_timeout=int(os.environ.get("PROCESS_MAX_TIMEOUT", "3700")),
+            auto_best_quality=_parse_bool(os.environ.get("AUTO_BEST_QUALITY"), True),
+            max_video_height=max_video_height,
+            twitter_cookies=_parse_twitter_cookies(os.environ.get("TWITTER_COOKIES")),
+            telegram_api_url=os.environ.get("TELEGRAM_API_URL", "").strip(),
+            telegram_proxy=(
+                os.environ.get("TELEGRAM_PROXY", "").strip()
+                or os.environ.get("HTTP_PROXY", "").strip()
+            ),
         )
 
     @property

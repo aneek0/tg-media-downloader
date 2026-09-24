@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,10 +18,41 @@ AUDIO_EXTENSIONS = {"mp3", "m4a", "aac", "wav", "flac", "opus", "weba"}
 logger = logging.getLogger(__name__)
 
 
+def _prepare_cookies_file(settings: Settings) -> Path | None:
+    raw = settings.twitter_cookies
+    if not raw:
+        return None
+    if "\n" in raw or "\t" in raw:
+        cookies_file = settings.download_location / "twitter-cookies.txt"
+        cookies_file.parent.mkdir(parents=True, exist_ok=True)
+        cookies_file.write_text(raw, encoding="utf-8")
+        return cookies_file.resolve()
+    path = Path(raw)
+    if not path.is_file():
+        logger.warning("Twitter cookies file not found | path=%s", path)
+        return None
+    return path.resolve()
+
+
+def _friendly_error(error_text: str) -> str:
+    marker = "NSFW tweet requires authentication"
+    if marker.lower() not in error_text.lower():
+        return error_text
+    replacement = (
+        "Twitter 18+ post: login cookies required. "
+        "Set TWITTER_COOKIES_FILE (path) or TWITTER_COOKIES (file content) "
+        "to a logged-in X account's cookies — see "
+        "https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+    )
+    return re.sub(re.escape(marker), replacement, error_text, flags=re.IGNORECASE)
+
 def _command_base(parsed_input: ParsedInput, settings: Settings) -> list[str]:
     command = ["yt-dlp", "--no-warnings"]
     if settings.http_proxy:
         command.extend(["--proxy", settings.http_proxy])
+    cookies_file = _prepare_cookies_file(settings)
+    if cookies_file:
+        command.extend(["--cookies", str(cookies_file)])
     if parsed_input.username:
         command.extend(["--username", parsed_input.username])
     if parsed_input.password:
@@ -45,7 +77,7 @@ async def _run_command(command: list[str], cwd: Path | None = None) -> tuple[str
             redact_command(command),
             error_text.splitlines()[0],
         )
-        raise RuntimeError(error_text)
+        raise RuntimeError(_friendly_error(error_text))
     return stdout.decode().strip(), stderr.decode().strip()
 
 
@@ -264,6 +296,94 @@ async def download_quick_youtube(
     file_path = _pick_downloaded_file(work_dir)
     logger.info(
         "Quick YouTube download complete | file=%s bytes=%s send_type=%s",
+        file_path.name,
+        file_path.stat().st_size,
+        send_type,
+    )
+    return DownloadArtifact(
+        path=file_path,
+        file_name=file_path.name,
+        send_type=send_type,
+        caption=_caption_from_info(info, file_path.stem),
+    )
+
+
+def _auto_video_selector(max_height: int) -> str:
+    cap = f"[height<={max_height}]"
+    return f"bv*{cap}[ext=mp4]+ba/b{cap}/bv*{cap}+ba/b"
+
+
+def _is_audio_source(info: dict) -> bool:
+    formats = info.get("formats") or []
+    if not formats:
+        return info.get("vcodec") == "none"
+    return all(format_data.get("vcodec") == "none" for format_data in formats)
+
+
+def _send_type_for_extension(ext: str) -> str:
+    if ext in VIDEO_EXTENSIONS:
+        return "video"
+    if ext in AUDIO_EXTENSIONS:
+        return "audio"
+    return "document"
+
+
+async def download_best_quality(
+    *,
+    parsed_input: ParsedInput,
+    settings: Settings,
+    work_dir: Path,
+    info: dict,
+) -> DownloadArtifact:
+    work_dir = work_dir.resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    command = _command_base(parsed_input, settings)
+    output_template = str(work_dir / "%(title)s [%(id)s].%(ext)s")
+    audio_source = _is_audio_source(info)
+
+    if audio_source:
+        command.extend(
+            [
+                "-f",
+                "bestaudio",
+                "--extract-audio",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "192k",
+                "-o",
+                output_template,
+                parsed_input.source_url,
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-f",
+                _auto_video_selector(settings.max_video_height),
+                "--embed-subs",
+                "-o",
+                output_template,
+                parsed_input.source_url,
+            ]
+        )
+
+    logger.info(
+        "Starting auto best-quality download | source=%s audio=%s max_height=%s work_dir=%s",
+        safe_url_label(parsed_input.source_url),
+        audio_source,
+        settings.max_video_height,
+        work_dir,
+    )
+    await _run_command(command, cwd=work_dir)
+    file_path = _pick_downloaded_file(work_dir)
+    send_type = (
+        "audio"
+        if audio_source
+        else _send_type_for_extension(file_path.suffix.lstrip(".").lower())
+    )
+    logger.info(
+        "Auto best-quality download complete | file=%s bytes=%s send_type=%s",
         file_path.name,
         file_path.stat().st_size,
         send_type,
