@@ -5,7 +5,8 @@ import logging
 from pathlib import Path
 
 from config import Settings
-from services.ytdlp import VIDEO_EXTENSIONS, _prepare_cookies_file, _run_command
+from services.proc import run_command
+from services.ytdlp import VIDEO_EXTENSIONS, _prepare_cookies_file
 from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, ParsedInput
 
@@ -13,6 +14,16 @@ logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 GALLERY_FILENAME_FORMAT = "{tweet_id}_{num}.{extension}"
+
+MAX_GALLERY_PHOTOS = 50  # local ceiling; twitter itself never exceeds ~4 per status
+
+
+def split_tweet_media(file_dicts: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split probe file_dicts into (photos, videos) by VIDEO_EXTENSIONS -
+    the same rule _inline_media_results uses."""
+    photos = [m for m in file_dicts if (m.get("extension") or "").lower() not in VIDEO_EXTENSIONS]
+    videos = [m for m in file_dicts if (m.get("extension") or "").lower() in VIDEO_EXTENSIONS]
+    return photos[:MAX_GALLERY_PHOTOS], videos
 
 
 def _gallery_flags(settings: Settings) -> list[str]:
@@ -106,7 +117,10 @@ async def download_gallery_media(
         safe_url_label(parsed_input.source_url),
         work_dir,
     )
-    stdout, _ = await _run_command(_gallery_probe_command(parsed_input, settings))
+    stdout, _ = await run_command(
+        _gallery_probe_command(parsed_input, settings),
+        timeout=settings.process_max_timeout,
+    )
     file_dicts, content, error = _parse_gallery_probe(stdout)
     if error:
         raise RuntimeError(_gallery_friendly_error(error, bool(settings.twitter_cookies)))
@@ -121,7 +135,7 @@ async def download_gallery_media(
         len(file_dicts),
         work_dir,
     )
-    await _run_command(command, cwd=work_dir)
+    await run_command(command, cwd=work_dir, timeout=settings.process_max_timeout)
 
     files = sorted(path for path in work_dir.iterdir() if path.is_file())
     if not files:

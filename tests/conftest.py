@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from config import Settings
+from services.media_cache import MediaCache
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -16,10 +17,16 @@ def make_settings(tmp_path: Path) -> Settings:
         process_max_timeout=120,
         auto_best_quality=False,
         max_video_height=1080,
+        request_cooldown_seconds=60,
+        verify_ssl=True,
         twitter_cookies="",
         telegram_api_url="",
         telegram_proxy="",
     )
+
+
+def make_media_cache(tmp_path: Path) -> MediaCache:
+    return MediaCache(tmp_path / "media_cache.json")
 
 
 def make_message():

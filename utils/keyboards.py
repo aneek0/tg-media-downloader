@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from utils.callbacks import RequestCallback, UiCallback
+from utils.callbacks import GalleryNavCallback, RequestCallback, UiCallback
 from utils.models import DownloadOption
 
 
@@ -74,5 +74,21 @@ def format_keyboard(token: str, options: list[DownloadOption]) -> InlineKeyboard
         InlineKeyboardButton(
             text="Close", callback_data=UiCallback(action="close").pack()
         )
+    )
+    return builder.as_markup()
+
+
+def gallery_keyboard(token: str, count: int, index: int) -> InlineKeyboardMarkup:
+    """Inline gallery pager «prev./next.». Only built for count >= 2."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=f"◀ {index + 1}/{count}",
+            callback_data=GalleryNavCallback(token=token, index=(index - 1) % count).pack(),
+        ),
+        InlineKeyboardButton(
+            text="▶",
+            callback_data=GalleryNavCallback(token=token, index=(index + 1) % count).pack(),
+        ),
     )
     return builder.as_markup()

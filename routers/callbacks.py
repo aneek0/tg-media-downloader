@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery
 from config import Settings
 from routers.commands import handle_ui_callback
 from services.executor import execute_request
+from services.media_cache import MediaCache
 from services.request_store import RequestStore
 from services.thumbnail_store import ThumbnailStore
 from utils import text
@@ -37,6 +38,7 @@ async def request_callback(
     settings: Settings,
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
+    media_cache: MediaCache,
 ) -> None:
     if not query.message:
         await query.answer()
@@ -76,5 +78,6 @@ async def request_callback(
         settings=settings,
         request_store=request_store,
         thumbnail_store=thumbnail_store,
+        media_cache=media_cache,
     )
     await query.answer()

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 
 from routers.callbacks import request_callback
 from routers.commands import about_command, help_command, start_command
@@ -16,9 +17,15 @@ from services.ytdlp import (
     _pick_downloaded_file,
     download_best_quality,
 )
-from tests.conftest import make_message, make_settings
+from tests.conftest import make_media_cache, make_message, make_settings
 from utils.callbacks import RequestCallback
-from utils.models import DownloadArtifact, DownloadOption, ParsedInput, StoredRequest
+from utils.models import (
+    CachedMedia,
+    DownloadArtifact,
+    DownloadOption,
+    ParsedInput,
+    StoredRequest,
+)
 
 @pytest.mark.asyncio
 async def test_start_help_about_handlers():
@@ -59,7 +66,7 @@ async def test_intake_message_builds_quick_youtube_keyboard(tmp_path):
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message.reply.return_value = status_message
 
-    await intake_message(message, settings, cooldown, store, thumbnails)
+    await intake_message(message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path))
 
     message.reply.assert_awaited_once()
     status_message.edit_text.assert_awaited_once()
@@ -96,7 +103,11 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
     )
     artifact.path.write_bytes(b"video")
     download_mock = AsyncMock(return_value=artifact)
-    upload_mock = AsyncMock()
+    upload_mock = AsyncMock(
+        return_value=[
+            CachedMedia(file_id="F1", send_type="video", file_name="video.mp4", caption="video")
+        ]
+    )
     monkeypatch.setattr(
         "services.executor.download_direct_file",
         download_mock,
@@ -124,6 +135,7 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
         settings,
         store,
         thumbnails,
+        make_media_cache(tmp_path),
     )
 
     download_mock.assert_awaited_once()
@@ -166,11 +178,17 @@ async def test_intake_auto_best_downloads_without_keyboard(monkeypatch, tmp_path
         path=tmp_path / "v.mp4", file_name="v.mp4", send_type="video", caption="c"
     )
     download_mock = AsyncMock(return_value=artifact)
-    upload_mock = AsyncMock()
+    upload_mock = AsyncMock(
+        return_value=[
+            CachedMedia(file_id="F1", send_type="video", file_name="v.mp4", caption="c")
+        ]
+    )
     monkeypatch.setattr("services.executor.download_best_quality", download_mock)
     monkeypatch.setattr("services.executor.upload_artifact", upload_mock)
 
-    await intake_message(message, settings, cooldown, store, thumbnails)
+    await intake_message(
+        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+    )
 
     download_mock.assert_awaited_once()
     upload_mock.assert_awaited_once()
@@ -202,12 +220,18 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
     )
     direct_mock = AsyncMock(return_value=artifact)
     best_mock = AsyncMock(return_value=artifact)
-    upload_mock = AsyncMock()
+    upload_mock = AsyncMock(
+        return_value=[
+            CachedMedia(file_id="F1", send_type="document", file_name="f.mp4", caption="c")
+        ]
+    )
     monkeypatch.setattr("services.executor.download_direct_file", direct_mock)
     monkeypatch.setattr("services.executor.download_best_quality", best_mock)
     monkeypatch.setattr("services.executor.upload_artifact", upload_mock)
 
-    await intake_message(message, settings, cooldown, store, thumbnails)
+    await intake_message(
+        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+    )
 
     upload_mock.assert_awaited_once()
 
@@ -312,13 +336,18 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
         DownloadArtifact(path=f2, file_name="a_2.jpg", send_type="photo", caption="c"),
     ]
     download_mock = AsyncMock(return_value=artifacts)
-    upload_mock = AsyncMock()
+    upload_mock = AsyncMock(
+        return_value=[
+            CachedMedia(file_id="A1", send_type="photo", file_name="a_1.jpg", caption="c"),
+            CachedMedia(file_id="A2", send_type="photo", file_name="a_2.jpg", caption="c"),
+        ]
+    )
     monkeypatch.setattr("services.executor.download_gallery_media", download_mock)
     monkeypatch.setattr("services.executor.upload_artifacts", upload_mock)
 
     status_message = SimpleNamespace(edit_text=AsyncMock())
     source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
-
+    cache = make_media_cache(tmp_path)
     await execute_request(
         stored=stored,
         option=stored.options[0],
@@ -329,11 +358,13 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
         settings=settings,
         request_store=store,
         thumbnail_store=thumbnails,
+        media_cache=cache,
     )
 
     download_mock.assert_awaited_once()
     upload_mock.assert_awaited_once()
     assert upload_mock.await_args.kwargs["artifacts"] == artifacts
+    assert cache.get("https://x.com/a/status/1") is not None
 
 
 @pytest.mark.asyncio
@@ -352,8 +383,83 @@ async def test_intake_twitter_routes_to_gallery(monkeypatch, tmp_path):
     execute_mock = AsyncMock()
     monkeypatch.setattr("routers.intake.execute_request", execute_mock)
 
-    await intake_message(message, settings, cooldown, store, thumbnails)
+    await intake_message(
+        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+    )
 
     execute_mock.assert_awaited_once()
     stored = execute_mock.await_args.kwargs["stored"]
     assert stored.request_type == "gallery_media"
+
+
+@pytest.mark.asyncio
+async def test_intake_cache_hit_sends_file_id_without_download(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    cooldown = CooldownManager(timeout_seconds=60)
+    cache = make_media_cache(tmp_path)
+    await cache.record(
+        "https://example.com/file.mp4",
+        [CachedMedia(file_id="BAAC9", send_type="video", file_name="f.mp4", caption="c")],
+    )
+
+    message = make_message()
+    message.text = "https://example.com/file.mp4"
+    message.bot = SimpleNamespace(send_video=AsyncMock())
+    probe_mock = AsyncMock()
+    monkeypatch.setattr("routers.intake.probe_url", probe_mock)
+
+    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+
+    probe_mock.assert_not_awaited()
+    message.bot.send_video.assert_awaited_once()
+    assert message.bot.send_video.await_args.kwargs["video"] == "BAAC9"
+    message.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.auto_best_quality = True
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    cooldown = CooldownManager(timeout_seconds=60)
+    cache = make_media_cache(tmp_path)
+    url = "https://example.com/file.mp4"
+    await cache.record(
+        url,
+        [CachedMedia(file_id="BAAC9", send_type="video", file_name="f.mp4", caption="c")],
+    )
+
+    message = make_message()
+    message.text = url
+    message.bot = SimpleNamespace(
+        send_video=AsyncMock(
+            side_effect=TelegramBadRequest(method=None, message="wrong file_id")
+        )
+    )
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    message.reply.return_value = status_message
+    monkeypatch.setattr(
+        "routers.intake.probe_url",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    artifact = SimpleNamespace(
+        path=tmp_path / "f.mp4", file_name="f.mp4", send_type="document", caption="c"
+    )
+    direct_mock = AsyncMock(return_value=artifact)
+    upload_mock = AsyncMock(
+        return_value=[
+            CachedMedia(file_id="F1", send_type="document", file_name="f.mp4", caption="c")
+        ]
+    )
+    monkeypatch.setattr("services.executor.download_direct_file", direct_mock)
+    monkeypatch.setattr("services.executor.upload_artifact", upload_mock)
+
+    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+
+    upload_mock.assert_awaited_once()
+    assert cache.get(url) is None

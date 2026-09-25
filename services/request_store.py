@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
+import time
 import uuid
 from pathlib import Path
 
 from utils.models import StoredRequest
+
+logger = logging.getLogger(__name__)
 
 
 class RequestStore:
@@ -45,3 +49,41 @@ class RequestStore:
         work_dir = self.work_root / token
         if work_dir.exists():
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    def sweep_stale(self, max_age_seconds: float = 24 * 3600) -> int:
+        """Delete request JSONs older than max_age (and their work dirs).
+
+        Runs once at startup, before polling starts, so plain sync I/O is
+        fine here. Returns the number of requests removed.
+        """
+        removed = 0
+        if not self.requests_dir.is_dir():
+            return removed
+        now = time.time()
+        for path in self.requests_dir.glob("*.json"):
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                logger.warning("Skipping unreadable request file | path=%s", path)
+                continue
+            if age <= max_age_seconds:
+                continue
+            token = path.stem
+            work_dir = self.work_root / token
+            if work_dir.is_dir():
+                shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning(
+                    "Failed to delete stale request | token=%s error=%s", token, exc
+                )
+                continue
+            removed += 1
+        if removed:
+            logger.info(
+                "Swept stale requests | count=%s max_age_seconds=%s",
+                removed,
+                max_age_seconds,
+            )
+        return removed

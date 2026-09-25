@@ -12,7 +12,12 @@ from aiogram.types import Message
 from config import Settings
 from services.progress import format_download_progress
 from utils.logging_config import safe_url_label
-from utils.models import DownloadArtifact, DownloadOption, ParsedInput
+from utils.models import (
+    DownloadArtifact,
+    DownloadOption,
+    FileTooLargeError,
+    ParsedInput,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -60,13 +65,16 @@ async def download_direct_file(
     )
 
     timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
-    connector = None
-    if settings.http_proxy:
-        connector = aiohttp.TCPConnector(ssl=False)
+    connector = aiohttp.TCPConnector(ssl=None if settings.verify_ssl else False)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         async with session.get(parsed_input.source_url, proxy=settings.http_proxy or None) as response:
             response.raise_for_status()
+            total = int(response.headers.get("Content-Length", "0") or "0")
+            if total > settings.max_upload_bytes:
+                raise FileTooLargeError(
+                    f"{total} bytes exceeds upload limit of {settings.max_upload_bytes} bytes"
+                )
             content_type = response.headers.get("Content-Type", "")
             ext = option.file_ext or suggested_ext
             if not ext:
@@ -78,7 +86,6 @@ async def download_direct_file(
             file_name = _normalize_file_name(file_name, ext)
             destination = work_dir / file_name
 
-            total = int(response.headers.get("Content-Length", "0") or "0")
             downloaded = 0
             started = time.time()
             last_update = 0.0
@@ -88,6 +95,11 @@ async def download_direct_file(
                 async for chunk in response.content.iter_chunked(settings.chunk_size):
                     handle.write(chunk)
                     downloaded += len(chunk)
+                    if downloaded > settings.max_upload_bytes:
+                        raise FileTooLargeError(
+                            f"Downloaded {downloaded} bytes exceeds upload limit "
+                            f"of {settings.max_upload_bytes} bytes"
+                        )
                     now = time.time()
                     milestone = _progress_milestone(downloaded, total)
                     if milestone and milestone not in logged_milestones:

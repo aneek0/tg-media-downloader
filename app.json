@@ -1,7 +1,7 @@
 {
-  "name": "All Url Uploader",
-  "description": "Telegram bot that downloads direct URLs and supported yt-dlp media, then uploads the result back to Telegram.",
-  "repository": "https://github.com/kalanakt/All-Url-Uploader",
+  "name": "tg-media-downloader",
+  "description": "Telegram bot that downloads direct URLs, supported yt-dlp media, and Twitter/X posts, then uploads the result back to Telegram.",
+  "repository": "https://github.com/aneek0/tg-media-downloader",
   "keywords": [
     "telegram",
     "bot",

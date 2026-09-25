@@ -33,6 +33,20 @@ def _parse_bool(raw_value: str | None, default: bool, name: str = "AUTO_BEST_QUA
     raise RuntimeError(f"{name} must be a boolean value, got {raw_value!r}")
 
 
+def _parse_positive_int(raw_value: str | None, *, default: int) -> int:
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        value = int(raw_value.strip())
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Value must be a positive integer, got {raw_value!r}"
+        ) from exc
+    if value <= 0:
+        raise RuntimeError(f"Value must be a positive integer, got {raw_value!r}")
+    return value
+
+
 def _parse_twitter_cookies(raw: str | None) -> str:
     if not raw:
         return ""
@@ -50,6 +64,9 @@ class Settings:
     process_max_timeout: int
     auto_best_quality: bool
     max_video_height: int
+    request_cooldown_seconds: int = 3600
+    max_upload_bytes: int = 1900 * 1024 * 1024
+    verify_ssl: bool = True
     twitter_cookies: str = ""
     telegram_api_url: str = ""
     telegram_proxy: str = ""
@@ -92,6 +109,15 @@ class Settings:
             process_max_timeout=int(os.environ.get("PROCESS_MAX_TIMEOUT", "3700")),
             auto_best_quality=_parse_bool(os.environ.get("AUTO_BEST_QUALITY"), True),
             max_video_height=max_video_height,
+            request_cooldown_seconds=_parse_positive_int(
+                os.environ.get("REQUEST_COOLDOWN_SECONDS"), default=3600
+            ),
+            max_upload_bytes=_parse_positive_int(
+                os.environ.get("MAX_UPLOAD_BYTES"), default=1900 * 1024 * 1024
+            ),
+            verify_ssl=_parse_bool(
+                os.environ.get("VERIFY_SSL"), True, name="VERIFY_SSL"
+            ),
             twitter_cookies=_parse_twitter_cookies(os.environ.get("TWITTER_COOKIES")),
             telegram_api_url=os.environ.get("TELEGRAM_API_URL", "").strip(),
             telegram_proxy=(
@@ -107,6 +133,10 @@ class Settings:
     @property
     def requests_dir(self) -> Path:
         return self.download_location / "requests"
+
+    @property
+    def media_cache_file(self) -> Path:
+        return self.download_location / "media_cache.json"
 
     @property
     def work_dir(self) -> Path:

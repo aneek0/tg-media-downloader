@@ -132,14 +132,14 @@ async def test_download_gallery_media_builds_artifacts(monkeypatch, tmp_path):
         ]
     )
 
-    async def fake_run(command, cwd=None):
+    async def fake_run(command, cwd=None, timeout=None):
         if "-j" in command:
             return (probe_json, "")
         (Path(cwd) / "2103014006747439474_1.jpg").write_bytes(b"\xff\xd8\xff\xe0jpg")
         (Path(cwd) / "2103014006747439474_2.mp4").write_bytes(b"\x00\x00\x00\x18mp4")
         return ("", "")
 
-    monkeypatch.setattr("services.gallery._run_command", fake_run)
+    monkeypatch.setattr("services.gallery.run_command", fake_run)
 
     artifacts = await download_gallery_media(
         parsed_input=ParsedInput(source_url="https://x.com/AlterKyon/status/2103014006747439474"),
@@ -161,7 +161,7 @@ async def test_download_gallery_media_auth_error(monkeypatch, tmp_path):
     settings = make_gallery_settings(tmp_path, "", http_proxy="")
     probe_json = json.dumps([[-1, {"message": "'Unavailable'"}]])
     monkeypatch.setattr(
-        "services.gallery._run_command", AsyncMock(return_value=(probe_json, ""))
+        "services.gallery.run_command", AsyncMock(return_value=(probe_json, ""))
     )
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -178,7 +178,7 @@ async def test_download_gallery_media_auth_error(monkeypatch, tmp_path):
 async def test_download_gallery_media_no_media(monkeypatch, tmp_path):
     settings = make_gallery_settings(tmp_path, "", http_proxy="")
     monkeypatch.setattr(
-        "services.gallery._run_command", AsyncMock(return_value=("[]", ""))
+        "services.gallery.run_command", AsyncMock(return_value=("[]", ""))
     )
 
     with pytest.raises(RuntimeError, match="No media found in this tweet"):

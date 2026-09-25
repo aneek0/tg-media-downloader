@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
 from config import Settings
-from services.progress import humanbytes
-from utils.logging_config import redact_command, safe_url_label
+from services.proc import run_command
+from services.progress import StatusProgress, humanbytes
+from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, DownloadOption, ParsedInput
 
 
@@ -57,28 +58,20 @@ def _command_base(parsed_input: ParsedInput, settings: Settings) -> list[str]:
         command.extend(["--username", parsed_input.username])
     if parsed_input.password:
         command.extend(["--password", parsed_input.password])
+    command.extend(["-N", "4", "--http-chunk-size", "10M"])
     return command
 
-
-async def _run_command(command: list[str], cwd: Path | None = None) -> tuple[str, str]:
-    logger.debug("Running yt-dlp command | cwd=%s command=%s", cwd, redact_command(command))
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        cwd=str(cwd) if cwd else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        error_text = stderr.decode().strip() or stdout.decode().strip() or "yt-dlp failed"
-        logger.warning(
-            "yt-dlp command failed | cwd=%s command=%s error=%s",
-            cwd,
-            redact_command(command),
-            error_text.splitlines()[0],
-        )
-        raise RuntimeError(_friendly_error(error_text))
-    return stdout.decode().strip(), stderr.decode().strip()
+async def _run_command(
+    command: list[str],
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    on_output: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[str, str]:
+    """Thin wrapper around proc.run_command for yt-dlp invocations."""
+    try:
+        return await run_command(command, cwd=cwd, timeout=timeout, on_output=on_output)
+    except RuntimeError as exc:
+        raise RuntimeError(_friendly_error(str(exc))) from exc
 
 
 def _is_audio_only(format_note: str | None) -> bool:
@@ -107,9 +100,16 @@ def _option_id(prefix: str, index: int) -> str:
 
 async def probe_url(parsed_input: ParsedInput, settings: Settings) -> dict:
     command = _command_base(parsed_input, settings)
-    command.extend(["--allow-dynamic-mpd", "--dump-single-json", parsed_input.source_url])
+    command.extend(
+        [
+            "--no-playlist",
+            "--allow-dynamic-mpd",
+            "--dump-single-json",
+            parsed_input.source_url,
+        ]
+    )
     logger.info("Probing source with yt-dlp | source=%s", safe_url_label(parsed_input.source_url))
-    stdout, _ = await _run_command(command)
+    stdout, _ = await _run_command(command, timeout=settings.process_max_timeout)
     if "\n" in stdout:
         stdout = stdout.splitlines()[0]
     payload = json.loads(stdout)
@@ -253,18 +253,21 @@ async def download_quick_youtube(
     option: DownloadOption,
     settings: Settings,
     work_dir: Path,
+    progress: StatusProgress | None = None,
 ) -> DownloadArtifact:
     info = await probe_url(parsed_input, settings)
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     command = _command_base(parsed_input, settings)
     output_template = str(work_dir / "%(title)s [%(id)s].%(ext)s")
+    command.extend(["--newline", "--progress"])
 
     if option.option_id == "quick_audio":
         command.extend(
             [
                 "-f",
                 "bestaudio",
+                "--no-playlist",
                 "--extract-audio",
                 "--audio-format",
                 "mp3",
@@ -279,6 +282,7 @@ async def download_quick_youtube(
             [
                 "-f",
                 "best[ext=mp4]/best",
+                "--no-playlist",
                 "-o",
                 output_template,
                 parsed_input.source_url,
@@ -292,7 +296,12 @@ async def download_quick_youtube(
         option.option_id,
         work_dir,
     )
-    await _run_command(command, cwd=work_dir)
+    await _run_command(
+        command,
+        cwd=work_dir,
+        timeout=settings.process_max_timeout,
+        on_output=progress.feed_line if progress else None,
+    )
     file_path = _pick_downloaded_file(work_dir)
     logger.info(
         "Quick YouTube download complete | file=%s bytes=%s send_type=%s",
@@ -305,6 +314,9 @@ async def download_quick_youtube(
         file_name=file_path.name,
         send_type=send_type,
         caption=_caption_from_info(info, file_path.stem),
+        duration=int(info.get("duration") or 0) or None,
+        width=info.get("width"),
+        height=info.get("height"),
     )
 
 
@@ -334,11 +346,13 @@ async def download_best_quality(
     settings: Settings,
     work_dir: Path,
     info: dict,
+    progress: StatusProgress | None = None,
 ) -> DownloadArtifact:
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     command = _command_base(parsed_input, settings)
     output_template = str(work_dir / "%(title)s [%(id)s].%(ext)s")
+    command.extend(["--newline", "--progress"])
     audio_source = _is_audio_source(info)
 
     if audio_source:
@@ -346,6 +360,7 @@ async def download_best_quality(
             [
                 "-f",
                 "bestaudio",
+                "--no-playlist",
                 "--extract-audio",
                 "--audio-format",
                 "mp3",
@@ -362,6 +377,7 @@ async def download_best_quality(
                 "-f",
                 _auto_video_selector(settings.max_video_height),
                 "--embed-subs",
+                "--no-playlist",
                 "-o",
                 output_template,
                 parsed_input.source_url,
@@ -375,7 +391,12 @@ async def download_best_quality(
         settings.max_video_height,
         work_dir,
     )
-    await _run_command(command, cwd=work_dir)
+    await _run_command(
+        command,
+        cwd=work_dir,
+        timeout=settings.process_max_timeout,
+        on_output=progress.feed_line if progress else None,
+    )
     file_path = _pick_downloaded_file(work_dir)
     send_type = (
         "audio"
@@ -393,24 +414,31 @@ async def download_best_quality(
         file_name=file_path.name,
         send_type=send_type,
         caption=_caption_from_info(info, file_path.stem),
+        duration=int(info.get("duration") or 0) or None,
+        width=info.get("width"),
+        height=info.get("height"),
     )
 
 
 async def download_selected_format(
+    *,
     parsed_input: ParsedInput,
     option: DownloadOption,
     info: dict,
     settings: Settings,
     work_dir: Path,
+    progress: StatusProgress | None = None,
 ) -> DownloadArtifact:
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     command = _command_base(parsed_input, settings)
     output_template = str(work_dir / "%(title)s [%(id)s].%(ext)s")
+    command.extend(["--newline", "--progress"])
 
     if option.mode == "ytdlp_audio":
         command.extend(
             [
+                "--no-playlist",
                 "--extract-audio",
                 "--audio-format",
                 option.file_ext or "mp3",
@@ -431,6 +459,7 @@ async def download_selected_format(
                 "-f",
                 format_selector,
                 "--embed-subs",
+                "--no-playlist",
                 "-o",
                 output_template,
                 parsed_input.source_url,
@@ -446,7 +475,12 @@ async def download_selected_format(
         send_type,
         work_dir,
     )
-    await _run_command(command, cwd=work_dir)
+    await _run_command(
+        command,
+        cwd=work_dir,
+        timeout=settings.process_max_timeout,
+        on_output=progress.feed_line if progress else None,
+    )
     file_path = _pick_downloaded_file(work_dir)
     logger.info(
         "yt-dlp format download complete | file=%s bytes=%s send_type=%s",
@@ -459,4 +493,7 @@ async def download_selected_format(
         file_name=file_path.name,
         send_type=send_type,
         caption=_caption_from_info(info, file_path.stem),
+        duration=int(info.get("duration") or 0) or None,
+        width=info.get("width"),
+        height=info.get("height"),
     )

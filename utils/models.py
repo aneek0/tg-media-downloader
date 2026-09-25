@@ -65,3 +65,25 @@ class DownloadArtifact:
     file_name: str
     send_type: str
     caption: str
+    duration: int | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+@dataclass(slots=True)
+class CachedMedia:
+    file_id: str
+    send_type: str
+    file_name: str
+    caption: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "CachedMedia":
+        return cls(**payload)
+
+
+class FileTooLargeError(RuntimeError):
+    """Raised when a download exceeds Telegram's upload size limit."""

@@ -3,7 +3,7 @@ name: Feature request
 about: Suggest an improvement for the bot or repository
 title: "[feature] "
 labels: enhancement
-assignees: kalanakt
+assignees: ''
 
 ---
 

@@ -16,6 +16,7 @@ from routers.intake import router as intake_router
 from routers.inline import router as inline_router
 from routers.thumbnails import router as thumbnails_router
 from services.cooldown import CooldownManager
+from services.media_cache import MediaCache
 from services.request_store import RequestStore
 from services.thumbnail_store import ThumbnailStore
 
@@ -29,9 +30,10 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher.include_router(callbacks_router)
     dispatcher.workflow_data.update(
         settings=settings,
-        cooldown=CooldownManager(timeout_seconds=settings.process_max_timeout),
+        cooldown=CooldownManager(timeout_seconds=settings.request_cooldown_seconds),
         request_store=RequestStore(settings.requests_dir, settings.work_dir),
         thumbnail_store=ThumbnailStore(settings.thumbnails_dir),
+        media_cache=MediaCache(settings.media_cache_file),
     )
     return dispatcher
 
@@ -70,6 +72,8 @@ async def run() -> None:
         session=session,
     )
 
+    request_store = RequestStore(settings.requests_dir, settings.work_dir)
+    request_store.sweep_stale()
     dispatcher = create_dispatcher(settings)
 
     logging.getLogger(__name__).info(
@@ -77,6 +81,6 @@ async def run() -> None:
         settings.download_location,
         settings.requests_dir,
         "enabled" if settings.http_proxy else "disabled",
-        settings.process_max_timeout,
+        settings.request_cooldown_seconds,
     )
     await dispatcher.start_polling(bot)

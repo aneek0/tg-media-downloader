@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
 from config import Settings
 from services.cooldown import CooldownManager
 from services.executor import execute_request
+from services.media_cache import MediaCache, send_cached_media
 from services.parsing import (
     extract_link_text,
     is_probable_youtube_url,
@@ -38,6 +40,7 @@ async def intake_message(
     cooldown: CooldownManager,
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
+    media_cache: MediaCache,
 ) -> None:
     raw_text = message.text or ""
     if not extract_link_text(raw_text, message.entities):
@@ -46,11 +49,12 @@ async def intake_message(
     if not message.from_user:
         return
 
+    parsed = parse_user_input(raw_text, message.entities)
     logger.info(
         "Incoming link | user=%s chat=%s source=%s",
         message.from_user.id,
         message.chat.id,
-        safe_url_label(parse_user_input(raw_text, message.entities).source_url),
+        safe_url_label(parsed.source_url),
     )
 
     blocked_seconds = cooldown.check(message.from_user.id, settings.auth_users)
@@ -64,7 +68,26 @@ async def intake_message(
         await message.answer(text.RATE_LIMIT.format(minutes=minutes))
         return
 
-    parsed = parse_user_input(raw_text, message.entities)
+    cached = media_cache.get(parsed.source_url)
+    if cached:
+        try:
+            await send_cached_media(message.bot, message.chat.id, cached)
+            logger.info(
+                "Cache hit | user=%s source=%s files=%s",
+                message.from_user.id,
+                safe_url_label(parsed.source_url),
+                len(cached),
+            )
+            return
+        except TelegramAPIError as exc:
+            logger.info(
+                "Cached send failed, purging entry | user=%s source=%s error=%s",
+                message.from_user.id,
+                safe_url_label(parsed.source_url),
+                exc,
+            )
+            await media_cache.remove(parsed.source_url)
+            # fall through to the normal download flow
     status_message = await message.reply(text.PROCESSING)
 
     if is_twitter_status_url(parsed.source_url):
@@ -75,6 +98,7 @@ async def intake_message(
             settings=settings,
             request_store=request_store,
             thumbnail_store=thumbnail_store,
+            media_cache=media_cache,
         )
         return
 
@@ -86,6 +110,7 @@ async def intake_message(
             settings=settings,
             request_store=request_store,
             thumbnail_store=thumbnail_store,
+            media_cache=media_cache,
         )
         return
 
@@ -164,6 +189,7 @@ async def _run_auto_best(
     settings: Settings,
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
+    media_cache: MediaCache,
 ) -> None:
     try:
         info = await probe_url(parsed, settings)
@@ -217,6 +243,7 @@ async def _run_auto_best(
         settings=settings,
         request_store=request_store,
         thumbnail_store=thumbnail_store,
+        media_cache=media_cache,
     )
 
 
@@ -228,6 +255,7 @@ async def _run_gallery_download(
     settings: Settings,
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
+    media_cache: MediaCache,
 ) -> None:
     token = request_store.create_token()
     stored = StoredRequest(
@@ -260,4 +288,5 @@ async def _run_gallery_download(
         settings=settings,
         request_store=request_store,
         thumbnail_store=thumbnail_store,
+        media_cache=media_cache,
     )

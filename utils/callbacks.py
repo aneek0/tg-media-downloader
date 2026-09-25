@@ -12,3 +12,8 @@ class RequestCallback(CallbackData, prefix="req"):
 
 class InlineCancelCallback(CallbackData, prefix="icxl"):
     token: str
+
+
+class GalleryNavCallback(CallbackData, prefix="gnav"):
+    token: str
+    index: int

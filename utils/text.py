@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import html
+
 START_TEXT = """Hi, <b>{name}</b>
 
 I can take a direct file link or a supported media URL, download it, and upload the result back to Telegram.
@@ -33,17 +37,18 @@ Send a message containing any of these formats:
 
 By default I download the best available quality automatically. If format selection is enabled, I will show a menu before uploading."""
 
-ABOUT_TEXT = """<b>All Url Uploader</b>
+ABOUT_TEXT = """<b>tg-media-downloader</b>
 
-Built with <a href="https://docs.aiogram.dev/">aiogram 3</a> and <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a>.
+Built with <a href="https://docs.aiogram.dev/">aiogram 3</a>, <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a>, and <a href="https://github.com/mikf/gallery-dl">gallery-dl</a>.
 
 <b>Repository</b>
-<a href="https://github.com/kalanakt/All-Url-Uploader">github.com/kalanakt/All-Url-Uploader</a>
+<a href="https://github.com/aneek0/tg-media-downloader">github.com/aneek0/tg-media-downloader</a>
 
 <b>What it does</b>
 - downloads supported media from direct URLs and `yt-dlp` sources
-- downloads the best available quality automatically (optional format selection)
+- downloads Twitter/X posts via `gallery-dl`
 - uploads video, audio, and documents back to Telegram
+- works in inline mode in any chat
 - supports custom per-user thumbnails
 
 Send a supported link whenever you are ready."""
@@ -74,6 +79,11 @@ DONE = "Downloaded in {download_seconds} seconds.\nUploaded in {upload_seconds} 
 INLINE_TITLE = "Download media"
 INLINE_FAILED = "I could not download that link."
 
+TOO_LARGE = (
+    "That file is larger than Telegram allows ({size}).\n"
+    "Skipping the download — it cannot be uploaded."
+)
+
 
 def upload_caption(name: str) -> str:
     return UPLOAD_START.format(name=name)
@@ -81,3 +91,8 @@ def upload_caption(name: str) -> str:
 
 def download_caption(name: str) -> str:
     return DOWNLOAD_START.format(name=name)
+
+
+def esc(value: str) -> str:
+    """HTML-escape untrusted text for ParseMode.HTML messages."""
+    return html.escape(value, quote=False)

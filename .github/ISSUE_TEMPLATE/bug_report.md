@@ -3,7 +3,7 @@ name: Bug report
 about: Report a bug in the bot, runtime, or documentation
 title: "[bug] "
 labels: bug
-assignees: kalanakt
+assignees: ''
 
 ---
 

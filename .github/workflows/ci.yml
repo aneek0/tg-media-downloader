@@ -24,20 +24,3 @@ jobs:
       run: uv run pytest
     - name: Run pylint
       run: uv run pylint $(git ls-files '*.py')
-
-  docs:
-    name: Docs Build
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: docs
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: "20"
-    - name: Install docs dependencies
-      run: npm install --no-package-lock
-    - name: Build docs
-      run: npm run build
