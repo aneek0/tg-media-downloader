@@ -320,9 +320,13 @@ async def download_quick_youtube(
     )
 
 
-def _auto_video_selector(max_height: int) -> str:
-    cap = f"[height<={max_height}]"
-    return f"bv*{cap}[ext=mp4]+ba/b{cap}/bv*{cap}+ba/b"
+def _auto_video_sort(max_height: int) -> str:
+    """Sort formats by resolution capped at max_height. Sorting (not
+    filtering) keeps portrait video at full quality: TikTok 1080x1920
+    has height 1920, so a height<=1080 filter would drop it to 540p,
+    while res is the short edge (1080) and sorts it to the top.
+    """
+    return f"res:{max_height},ext:mp4:m4a"
 
 
 def _is_audio_source(info: dict) -> bool:
@@ -375,7 +379,9 @@ async def download_best_quality(
         command.extend(
             [
                 "-f",
-                _auto_video_selector(settings.max_video_height),
+                "bv*+ba/b",
+                "-S",
+                _auto_video_sort(settings.max_video_height),
                 "--embed-subs",
                 "--no-playlist",
                 "-o",

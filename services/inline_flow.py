@@ -11,11 +11,16 @@ from services.direct_downloads import download_direct_file
 from services.gallery import download_gallery_media
 from services.media_cache import MediaCache, cached_media_from
 from services.parsing import is_twitter_status_url
-from services.progress import humanbytes
+from services.progress import StatusProgress, humanbytes
 from services.request_store import RequestStore
 from services.telegram_uploads import _media_item
-from services.ytdlp import build_direct_options
+from services.ytdlp import (
+    build_direct_options,
+    download_best_quality,
+    probe_url,
+)
 from utils import text
+from utils.logging_config import safe_url_label
 from utils.models import (
     CachedMedia,
     DownloadArtifact,
@@ -159,6 +164,36 @@ async def _download_artifacts(
             settings=settings,
             work_dir=request_store.work_directory(stored.token),
         )
+
+    # Page URLs (TikTok, YouTube, Reddit, …) are not direct media links:
+    # a plain HTTP GET would save the HTML page as a fake "document".
+    # Ask yt-dlp first; only fall back to the direct downloader when the
+    # URL is not a media page yt-dlp can resolve.
+    try:
+        info = await probe_url(stored.parsed_input, settings)
+    except RuntimeError as exc:
+        logger.info(
+            "Inline yt-dlp probe failed, trying direct download | token=%s source=%s error=%s",
+            stored.token,
+            safe_url_label(stored.parsed_input.source_url),
+            exc,
+        )
+        info = None
+
+    if info is not None:
+        return [
+            await download_best_quality(
+                parsed_input=stored.parsed_input,
+                settings=settings,
+                work_dir=request_store.work_directory(stored.token),
+                info=info,
+                progress=StatusProgress(
+                    _InlineStatus(bot, inline_message_id).edit_text,
+                    text.esc(stored.parsed_input.source_url),
+                ),
+            )
+        ]
+
     option = build_direct_options(stored.parsed_input)[0]
     return [
         await download_direct_file(

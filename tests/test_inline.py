@@ -508,3 +508,117 @@ async def test_gallery_nav_callback_expired_token_answers_toast(tmp_path):
     query.bot.edit_message_media.assert_not_awaited()
     query.answer.assert_awaited_once()
     assert "expired" in query.answer.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_inline_page_url_downloads_via_ytdlp_not_direct(
+    monkeypatch, tmp_path
+):
+    """Page URLs (TikTok, Reddit, …) must go through yt-dlp. The old
+    behaviour plain-GET-ed the HTML page and shipped it as a document."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    url = "https://vt.tiktok.com/ZSbj8LgVN/"
+    stored = StoredRequest(
+        token="tok-tt",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url=url),
+        options=[],
+    )
+    store.save(stored)
+
+    probe_mock = AsyncMock(return_value={"title": "T", "id": "1", "duration": 9})
+    monkeypatch.setattr("services.inline_flow.probe_url", probe_mock)
+
+    media = tmp_path / "v.mp4"
+    media.parent.mkdir(parents=True, exist_ok=True)
+    media.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"v" * 10)
+    artifact = DownloadArtifact(
+        path=media, file_name="v.mp4", send_type="video", caption=None
+    )
+    best_mock = AsyncMock(return_value=artifact)
+    monkeypatch.setattr("services.inline_flow.download_best_quality", best_mock)
+    direct_mock = AsyncMock()
+    monkeypatch.setattr("services.inline_flow.download_direct_file", direct_mock)
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC20"))
+        ),
+    )
+
+    await run_inline_download(
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+        settings=settings,
+        request_store=store,
+        media_cache=cache,
+    )
+
+    probe_mock.assert_awaited_once()
+    best_mock.assert_awaited_once()
+    direct_mock.assert_not_awaited()
+    entries = cache.get(url)
+    assert entries is not None
+    assert entries[0].file_id == "BAAC20"
+    assert store.load("tok-tt") is None
+
+
+@pytest.mark.asyncio
+async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
+    """yt-dlp being unable to resolve the URL must not kill the request:
+    the direct downloader still gets a chance (direct file links)."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    url = "https://example.com/file.bin"
+    stored = StoredRequest(
+        token="tok-direct",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url=url),
+        options=[],
+    )
+    store.save(stored)
+
+    probe_mock = AsyncMock(side_effect=RuntimeError("Unsupported URL"))
+    monkeypatch.setattr("services.inline_flow.probe_url", probe_mock)
+
+    media = tmp_path / "f.bin"
+    media.parent.mkdir(parents=True, exist_ok=True)
+    media.write_bytes(b"data")
+    artifact = DownloadArtifact(
+        path=media, file_name="f.bin", send_type="document", caption=None
+    )
+    direct_mock = AsyncMock(return_value=artifact)
+    monkeypatch.setattr("services.inline_flow.download_direct_file", direct_mock)
+    best_mock = AsyncMock()
+    monkeypatch.setattr("services.inline_flow.download_best_quality", best_mock)
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            return_value=SimpleNamespace(document=SimpleNamespace(file_id="BAAC30"))
+        ),
+    )
+
+    await run_inline_download(
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+        settings=settings,
+        request_store=store,
+        media_cache=cache,
+    )
+
+    probe_mock.assert_awaited_once()
+    direct_mock.assert_awaited_once()
+    best_mock.assert_not_awaited()
+    assert cache.get(url) is not None
+    assert store.load("tok-direct") is None

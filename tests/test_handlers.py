@@ -12,7 +12,7 @@ from services.cooldown import CooldownManager
 from services.request_store import RequestStore
 from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
-    _auto_video_selector,
+    _auto_video_sort,
     _is_audio_source,
     _pick_downloaded_file,
     download_best_quality,
@@ -236,15 +236,9 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
     upload_mock.assert_awaited_once()
 
 
-def test_auto_video_selector_exact_string():
-    assert (
-        _auto_video_selector(1080)
-        == "bv*[height<=1080][ext=mp4]+ba/b[height<=1080]/bv*[height<=1080]+ba/b"
-    )
-    assert (
-        _auto_video_selector(480)
-        == "bv*[height<=480][ext=mp4]+ba/b[height<=480]/bv*[height<=480]+ba/b"
-    )
+def test_auto_video_sort_exact_string():
+    assert _auto_video_sort(1080) == "res:1080,ext:mp4:m4a"
+    assert _auto_video_sort(480) == "res:480,ext:mp4:m4a"
 
 
 def test_is_audio_source_detection():
@@ -272,14 +266,10 @@ async def test_download_best_quality_video_command(monkeypatch, tmp_path):
     )
 
     command = run_mock.await_args.args[0]
-    selector_index = command.index("-f")
-    assert (
-        command[selector_index + 1]
-        == "bv*[height<=1080][ext=mp4]+ba/b[height<=1080]/bv*[height<=1080]+ba/b"
-    )
+    assert command[command.index("-f") + 1] == "bv*+ba/b"
+    assert command[command.index("-S") + 1] == "res:1080,ext:mp4:m4a"
     assert "--embed-subs" in command
     assert artifact.send_type == "video"
-
 
 @pytest.mark.asyncio
 async def test_download_best_quality_audio_command(monkeypatch, tmp_path):

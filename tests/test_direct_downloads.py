@@ -160,3 +160,28 @@ async def test_direct_download_completes_within_limit(monkeypatch, tmp_path):
 
     assert artifact.path.read_bytes() == b"x" * 8 + b"y" * 4
     assert artifact.send_type == "document"
+
+
+@pytest.mark.asyncio
+async def test_direct_download_rejects_html_page(monkeypatch, tmp_path):
+    """A link that answers with text/html is a web page, not media — the
+    old behaviour saved the page and uploaded it as a broken document."""
+    response = FakeResponse(chunks=[b"<html>page</html>"], content_length=17)
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    monkeypatch.setattr(
+        "services.direct_downloads.aiohttp.ClientSession",
+        lambda **kwargs: FakeSession(response),
+    )
+    settings = make_settings(tmp_path, max_upload_bytes=100)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await download_direct_file(
+            status_message=StatusMessage(),
+            parsed_input=ParsedInput(source_url="https://vt.tiktok.com/ZSbj8LgVN/"),
+            option=make_option(),
+            settings=settings,
+            work_dir=tmp_path / "work",
+        )
+
+    assert "web page" in str(exc_info.value)
+    assert not list((tmp_path / "work").glob("*.html"))

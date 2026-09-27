@@ -21,6 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before the download starts.
 - Media cache for resolved Twitter URLs, avoiding re-resolution for repeated inline queries.
 - Tests: inline flow, media cache, direct downloads, request store, proc progress.
+- TikTok and other page URLs in inline mode: links yt-dlp can resolve now download through
+  yt-dlp instead of a plain HTTP GET that shipped the HTML page as a broken document.
+  Direct downloads of `text/html` responses are rejected with a clear error.
+  Auto-quality now sorts by resolution (`res`) instead of filtering by height, keeping
+  portrait video (e.g. TikTok 1080x1920) at full quality instead of dropping it to 540p.
 
 ### Changed
 
@@ -32,7 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Removed
 
 - `docs/` external documentation site (Next.js/Nextra), `.hintrc`, `SECURITY.md`,
-  `CODE_OF_CONDUCT.md`, Fiverr banner, upstream deploy buttons, contributor table workflow,
+  `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, GitHub Actions workflows (`.github/`), Renovate config,
+  Heroku `app.json`, Fiverr banner, upstream deploy buttons, contributor table workflow,
   FUNDING.yml.
 
 ## [3.0.0] and earlier

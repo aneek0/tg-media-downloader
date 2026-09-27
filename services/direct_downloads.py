@@ -76,6 +76,11 @@ async def download_direct_file(
                     f"{total} bytes exceeds upload limit of {settings.max_upload_bytes} bytes"
                 )
             content_type = response.headers.get("Content-Type", "")
+            if content_type.split(";")[0].strip().lower() == "text/html":
+                raise RuntimeError(
+                    "This link returns a web page, not a media file. "
+                    "It is not directly downloadable."
+                )
             ext = option.file_ext or suggested_ext
             if not ext:
                 guessed_ext = mimetypes.guess_extension(

@@ -9,12 +9,11 @@ inline mode, Twitter/X support via `gallery-dl`, split proxies, local Bot API se
 
 Built with `aiogram`, `yt-dlp`, `gallery-dl`, and `uv`.
 
-[![CI](https://github.com/aneek0/tg-media-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/aneek0/tg-media-downloader/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/aneek0/tg-media-downloader/actions/workflows/codeql.yml/badge.svg)](https://github.com/aneek0/tg-media-downloader/actions/workflows/codeql.yml)
+
 [![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3110/)
 [![License](https://img.shields.io/github/license/aneek0/tg-media-downloader)](LICENSE)
 
-[Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Docker](Dockerfile) · [Issues](https://github.com/aneek0/tg-media-downloader/issues)
+[Changelog](CHANGELOG.md) · [Docker](Dockerfile) · [Issues](https://github.com/aneek0/tg-media-downloader/issues)
 
 </div>
 
@@ -115,7 +114,7 @@ docker run --env-file .env tg-media-downloader
 
 ## Checks
 
-Run the same core checks used in GitHub Actions:
+Run the checks locally:
 
 ```bash
 uv run pytest
