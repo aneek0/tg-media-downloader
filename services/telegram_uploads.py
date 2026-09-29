@@ -24,6 +24,82 @@ from utils.models import CachedMedia, DownloadArtifact
 logger = logging.getLogger(__name__)
 
 
+def _url_media_item(
+    item: dict, caption: str | None
+) -> InputMediaPhoto | InputMediaVideo | InputMediaDocument:
+    """InputMedia wrapper for a raw URL (Telegram fetches it itself)."""
+    media_class = {
+        "photo": InputMediaPhoto,
+        "video": InputMediaVideo,
+        "document": InputMediaDocument,
+    }[item["send_type"]]
+    if item["send_type"] == "video":
+        return InputMediaVideo(
+            media=item["url"], caption=caption, supports_streaming=True
+        )
+    return media_class(media=item["url"], caption=caption)
+
+
+async def send_url_media(
+    *, bot: Bot, chat_id: int, items: list[dict]
+) -> list[CachedMedia]:
+    """Send media by raw URL: Telegram's servers download the CDN files
+    (the Telegram-CDN outsource path). item: {url, filename, send_type,
+    caption}. TelegramAPIError propagates to the caller for the local
+    fallback."""
+    if len(items) == 1:
+        item = items[0]
+        send_type = item["send_type"]
+        if send_type == "photo":
+            sent = await bot.send_photo(
+                chat_id=chat_id, photo=item["url"], caption=item.get("caption")
+            )
+        elif send_type == "video":
+            sent = await bot.send_video(
+                chat_id=chat_id,
+                video=item["url"],
+                caption=item.get("caption"),
+                supports_streaming=True,
+            )
+        else:
+            sent = await bot.send_document(
+                chat_id=chat_id,
+                document=item["url"],
+                caption=item.get("caption"),
+            )
+        entry = cached_media_from(
+            sent,
+            send_type=send_type,
+            file_name=item["filename"],
+            caption=item.get("caption"),
+        )
+        return [entry] if entry is not None else []
+
+    sent_media: list[CachedMedia] = []
+    for start in range(0, len(items), 10):
+        chunk = items[start : start + 10]
+        sent_group = await bot.send_media_group(
+            chat_id=chat_id,
+            media=[
+                _url_media_item(
+                    item,
+                    (items[0].get("caption") if start == 0 and index == 0 else None),
+                )
+                for index, item in enumerate(chunk)
+            ],
+        )
+        for item, sent in zip(chunk, sent_group):
+            entry = cached_media_from(
+                sent,
+                send_type=item["send_type"],
+                file_name=item["filename"],
+                caption=item.get("caption"),
+            )
+            if entry is not None:
+                sent_media.append(entry)
+    return sent_media
+
+
 def _thumb_file(path: str | None) -> FSInputFile | None:
     if path and os.path.isfile(path):
         return FSInputFile(path)

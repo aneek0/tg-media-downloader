@@ -17,7 +17,7 @@ def make_settings(tmp_path: Path) -> Settings:
         process_max_timeout=120,
         auto_best_quality=False,
         max_video_height=1080,
-        request_cooldown_seconds=60,
+        gallery_probe_timeout=15,
         verify_ssl=True,
         twitter_cookies="",
         telegram_api_url="",

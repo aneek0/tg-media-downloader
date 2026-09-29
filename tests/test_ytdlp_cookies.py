@@ -62,6 +62,7 @@ def make_cookie_settings(tmp_path: Path, twitter_cookies: str) -> Settings:
         process_max_timeout=120,
         auto_best_quality=False,
         max_video_height=1080,
+        gallery_probe_timeout=15,
         twitter_cookies=twitter_cookies,
     )
 

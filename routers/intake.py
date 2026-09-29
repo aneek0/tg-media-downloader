@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from urllib.parse import urlparse
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -9,7 +11,12 @@ from aiogram.types import Message
 from config import Settings
 from services.cooldown import CooldownManager
 from services.executor import execute_request
-from services.media_cache import MediaCache, send_cached_media
+from services.gallery import (
+    _gallery_friendly_error,
+    gallery_url_items,
+    probe_gallery,
+)
+from services.media_cache import MediaCache, cached_media_from, send_cached_media
 from services.parsing import (
     extract_link_text,
     is_probable_youtube_url,
@@ -19,6 +26,7 @@ from services.parsing import (
 from services.request_store import RequestStore
 from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
+    _ext_from_url,
     build_direct_options,
     build_quick_youtube_options,
     build_ytdlp_options,
@@ -90,7 +98,44 @@ async def intake_message(
             # fall through to the normal download flow
     status_message = await message.reply(text.PROCESSING)
 
-    if is_twitter_status_url(parsed.source_url):
+    # Fast-path: direct image links are outsourced to Telegram's CDN fetch
+    # (symmetry with the inline image branch). On any API error fall
+    # through to the normal probe flow.
+    ext = _ext_from_url(parsed.source_url)
+    if (
+        ext
+        and ext.lower() in {"jpg", "jpeg", "png", "webp"}
+        and not is_twitter_status_url(parsed.source_url)
+    ):
+        file_name = (
+            parsed.custom_file_name
+            or Path(urlparse(parsed.source_url).path).name
+            or "photo.jpg"
+        )
+        try:
+            sent = await message.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=parsed.source_url,
+                caption=(parsed.custom_file_name or file_name)[:1024],
+            )
+        except TelegramAPIError:
+            sent = None
+        if sent is not None:
+            entry = cached_media_from(
+                sent,
+                send_type="photo",
+                file_name=file_name,
+                caption=parsed.custom_file_name,
+            )
+            if entry:
+                await media_cache.record(parsed.source_url, [entry])
+            await status_message.edit_text(
+                text.DONE.format(download_seconds=0, upload_seconds=1)
+            )
+            return
+
+    gallery_probe = await probe_gallery(parsed, settings)
+    if gallery_probe.file_dicts:
         await _run_gallery_download(
             message=message,
             parsed=parsed,
@@ -99,6 +144,16 @@ async def intake_message(
             request_store=request_store,
             thumbnail_store=thumbnail_store,
             media_cache=media_cache,
+            probe=gallery_probe,
+        )
+        return
+    if (
+        is_twitter_status_url(parsed.source_url)
+        and gallery_probe.error
+        and "Unsupported URL" not in gallery_probe.error
+    ):
+        await status_message.edit_text(
+            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(_gallery_friendly_error(gallery_probe.error, bool(settings.twitter_cookies)))}</code>"
         )
         return
 
@@ -256,6 +311,7 @@ async def _run_gallery_download(
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
     media_cache: MediaCache,
+    probe: "services.gallery.GalleryProbe",
 ) -> None:
     token = request_store.create_token()
     stored = StoredRequest(
@@ -270,6 +326,9 @@ async def _run_gallery_download(
                 mode="gallery",
             )
         ],
+        info={
+            "url_media": gallery_url_items(probe.file_dicts, probe.content, parsed),
+        },
     )
     request_store.save(stored)
     logger.info(

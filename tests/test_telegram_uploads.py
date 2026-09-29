@@ -6,9 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo
 
-from services.telegram_uploads import _media_item, upload_artifact, upload_artifacts
+from services.telegram_uploads import _media_item, send_url_media, upload_artifact, upload_artifacts
 from tests.conftest import make_message
 from utils.models import DownloadArtifact
 
@@ -375,3 +376,67 @@ async def test_upload_artifact_escapes_file_name_in_caption(monkeypatch, tmp_pat
 
     first_edit = status.edit_text.await_args_list[0]
     assert first_edit.args == ("Uploading <b>evil&lt;script&gt;.jpg</b>",)
+
+
+@pytest.mark.asyncio
+async def test_send_url_media_single_photo():
+    bot = SimpleNamespace(
+        send_photo=AsyncMock(
+            return_value=SimpleNamespace(photo=[SimpleNamespace(file_id="P1")])
+        )
+    )
+    result = await send_url_media(
+        bot=bot,
+        chat_id=5,
+        items=[
+            {"url": "https://c/a.jpg", "filename": "a.jpg", "send_type": "photo", "caption": "cap"}
+        ],
+    )
+    assert bot.send_photo.await_args.kwargs["photo"] == "https://c/a.jpg"
+    assert bot.send_photo.await_args.kwargs["caption"] == "cap"
+    assert result[0].file_id == "P1"
+    assert result[0].send_type == "photo"
+    assert result[0].file_name == "a.jpg"
+
+
+@pytest.mark.asyncio
+async def test_send_url_media_group_uses_url_items():
+    bot = SimpleNamespace(
+        send_media_group=AsyncMock(
+            return_value=[
+                SimpleNamespace(photo=[SimpleNamespace(file_id="P1")]),
+                SimpleNamespace(photo=[SimpleNamespace(file_id="P2")]),
+            ]
+        )
+    )
+    result = await send_url_media(
+        bot=bot,
+        chat_id=5,
+        items=[
+            {"url": "https://c/a.jpg", "filename": "a.jpg", "send_type": "photo", "caption": "cap"},
+            {"url": "https://c/b.jpg", "filename": "b.jpg", "send_type": "photo", "caption": None},
+        ],
+    )
+    media = bot.send_media_group.await_args.kwargs["media"]
+    assert len(media) == 2
+    assert all(isinstance(item, InputMediaPhoto) for item in media)
+    assert media[0].media == "https://c/a.jpg"
+    assert media[0].caption == "cap"
+    assert media[1].media == "https://c/b.jpg"
+    assert media[1].caption is None
+    assert [e.file_id for e in result] == ["P1", "P2"]
+
+
+@pytest.mark.asyncio
+async def test_send_url_media_error_propagates():
+    bot = SimpleNamespace(
+        send_photo=AsyncMock(
+            side_effect=TelegramBadRequest(method="sendPhoto", message="WEBPAGE_CURL_FAILED")
+        )
+    )
+    with pytest.raises(TelegramBadRequest):
+        await send_url_media(
+            bot=bot,
+            chat_id=5,
+            items=[{"url": "https://c/a.jpg", "filename": "a.jpg", "send_type": "photo", "caption": None}],
+        )

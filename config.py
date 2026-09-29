@@ -64,6 +64,7 @@ class Settings:
     process_max_timeout: int
     auto_best_quality: bool
     max_video_height: int
+    gallery_probe_timeout: int = 15
     request_cooldown_seconds: int = 3600
     max_upload_bytes: int = 1900 * 1024 * 1024
     verify_ssl: bool = True
@@ -109,6 +110,9 @@ class Settings:
             process_max_timeout=int(os.environ.get("PROCESS_MAX_TIMEOUT", "3700")),
             auto_best_quality=_parse_bool(os.environ.get("AUTO_BEST_QUALITY"), True),
             max_video_height=max_video_height,
+            gallery_probe_timeout=_parse_positive_int(
+                os.environ.get("GALLERY_PROBE_TIMEOUT"), default=15
+            ),
             request_cooldown_seconds=_parse_positive_int(
                 os.environ.get("REQUEST_COOLDOWN_SECONDS"), default=3600
             ),

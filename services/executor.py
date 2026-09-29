@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
 from config import Settings
@@ -12,7 +13,7 @@ from services.gallery import download_gallery_media
 from services.media_cache import MediaCache
 from services.progress import StatusProgress, humanbytes
 from services.request_store import RequestStore
-from services.telegram_uploads import upload_artifact, upload_artifacts
+from services.telegram_uploads import send_url_media, upload_artifact, upload_artifacts
 from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
     download_best_quality,
@@ -57,6 +58,42 @@ async def execute_request(
         await status_message.edit_text(text.download_caption(safe_name))
         progress = StatusProgress(status_message.edit_text, safe_name)
         if stored.request_type == "gallery_media":
+            url_items = stored.info.get("url_media") or []
+            if url_items:
+                try:
+                    sent_media = await send_url_media(
+                        bot=bot, chat_id=source_message.chat.id, items=url_items
+                    )
+                except TelegramAPIError as exc:
+                    logger.warning(
+                        "CDN URL send failed, falling back to local download | "
+                        "user=%s token=%s error=%s",
+                        user_id,
+                        stored.token,
+                        exc,
+                    )
+                    sent_media = []
+                if sent_media:
+                    await media_cache.record(
+                        stored.parsed_input.source_url, sent_media
+                    )
+                    await status_message.edit_text(
+                        text.DONE.format(
+                            download_seconds=int(
+                                (datetime.now() - started_at).total_seconds()
+                            ),
+                            upload_seconds=int(
+                                (datetime.now() - started_at).total_seconds()
+                            ),
+                        )
+                    )
+                    logger.info(
+                        "Completed request via Telegram CDN | user=%s token=%s files=%s",
+                        user_id,
+                        stored.token,
+                        len(sent_media),
+                    )
+                    return
             artifacts = await download_gallery_media(
                 parsed_input=stored.parsed_input,
                 settings=settings,

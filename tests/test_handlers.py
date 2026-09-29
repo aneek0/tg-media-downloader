@@ -5,6 +5,7 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 
 from routers.callbacks import request_callback
+from services.gallery import GalleryProbe
 from routers.commands import about_command, help_command, start_command
 from routers.intake import intake_message
 from routers.thumbnails import delete_thumbnail, show_thumbnail
@@ -212,6 +213,10 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
     message.reply.return_value = status_message
 
     monkeypatch.setattr(
+        "routers.intake.probe_gallery",
+        AsyncMock(return_value=GalleryProbe([], None, None)),
+    )
+    monkeypatch.setattr(
         "routers.intake.probe_url",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
@@ -365,6 +370,22 @@ async def test_intake_twitter_routes_to_gallery(monkeypatch, tmp_path):
     thumbnails = ThumbnailStore(settings.thumbnails_dir)
     cooldown = CooldownManager(timeout_seconds=60)
 
+    monkeypatch.setattr(
+        "routers.intake.probe_gallery",
+        AsyncMock(
+            return_value=GalleryProbe(
+                file_dicts=[
+                    {
+                        "_url": "https://pbs.twimg.com/media/x?format=jpg&name=large",
+                        "extension": "jpg",
+                        "filename": "x",
+                    }
+                ],
+                content="c",
+                error=None,
+            )
+        ),
+    )
     message = make_message()
     message.text = "https://x.com/AlterKyon/status/2103014006747439474"
     message.bot = SimpleNamespace()
@@ -434,6 +455,10 @@ async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message.reply.return_value = status_message
     monkeypatch.setattr(
+        "routers.intake.probe_gallery",
+        AsyncMock(return_value=GalleryProbe([], None, None)),
+    )
+    monkeypatch.setattr(
         "routers.intake.probe_url",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
@@ -453,3 +478,230 @@ async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path
 
     upload_mock.assert_awaited_once()
     assert cache.get(url) is None
+
+
+@pytest.mark.asyncio
+async def test_intake_gallery_probe_hit_routes_to_gallery(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    cooldown = CooldownManager(timeout_seconds=60)
+
+    file_dicts = [
+        {"_url": "https://cdn.pawchive/x.jpg", "extension": "jpg", "filename": "x"},
+    ]
+    monkeypatch.setattr(
+        "routers.intake.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="c", error=None)),
+    )
+    execute_mock = AsyncMock()
+    monkeypatch.setattr("routers.intake.execute_request", execute_mock)
+
+    message = make_message()
+    message.text = "https://pawchive.pw/fanbox/user/1/post/2"
+    message.bot = SimpleNamespace()
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    message.reply.return_value = status_message
+
+    await intake_message(
+        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+    )
+
+    execute_mock.assert_awaited_once()
+    stored = execute_mock.await_args.kwargs["stored"]
+    assert stored.request_type == "gallery_media"
+    assert stored.info["url_media"][0]["url"] == "https://cdn.pawchive/x.jpg"
+
+
+@pytest.mark.asyncio
+async def test_intake_direct_image_fast_path_cdn(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    cooldown = CooldownManager(timeout_seconds=60)
+    cache = make_media_cache(tmp_path)
+    url = "https://img.pawchive.pw/thumbnail/data/x.jpeg"
+
+    monkeypatch.setattr(
+        "routers.intake.probe_gallery",
+        AsyncMock(return_value=GalleryProbe([], None, None)),
+    )
+    message = make_message()
+    message.text = url
+    message.bot = SimpleNamespace(
+        send_photo=AsyncMock(return_value=SimpleNamespace(photo=[SimpleNamespace(file_id="P1")]))
+    )
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    message.reply.return_value = status_message
+
+    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+
+    message.bot.send_photo.assert_awaited_once()
+    assert message.bot.send_photo.await_args.kwargs["photo"] == url
+    assert cache.get(url) is not None
+    assert cache.get(url)[0].file_id == "P1"
+
+
+@pytest.mark.asyncio
+async def test_intake_direct_image_fast_path_falls_back_on_error(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.auto_best_quality = True
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    cooldown = CooldownManager(timeout_seconds=60)
+    cache = make_media_cache(tmp_path)
+    url = "https://example.com/a.jpg"
+
+    probe_mock = AsyncMock(return_value=GalleryProbe([], None, None))
+    monkeypatch.setattr("routers.intake.probe_gallery", probe_mock)
+    monkeypatch.setattr(
+        "routers.intake.probe_url",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    artifact = SimpleNamespace(
+        path=tmp_path / "a.jpg", file_name="a.jpg", send_type="photo", caption="c"
+    )
+    direct_mock = AsyncMock(return_value=artifact)
+    monkeypatch.setattr("services.executor.download_direct_file", direct_mock)
+    monkeypatch.setattr(
+        "services.executor.upload_artifact",
+        AsyncMock(return_value=[CachedMedia(file_id="F1", send_type="photo", file_name="a.jpg", caption="c")]),
+    )
+
+    message = make_message()
+    message.text = url
+    message.bot = SimpleNamespace(
+        send_photo=AsyncMock(
+            side_effect=TelegramBadRequest(method=None, message="WEBPAGE_CURL_FAILED")
+        )
+    )
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    message.reply.return_value = status_message
+
+    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+
+    probe_mock.assert_awaited_once()
+    direct_mock.assert_awaited_once()
+    assert store.load("tok-direct") is None
+
+
+@pytest.mark.asyncio
+async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_path):
+    from services.executor import execute_request
+
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    stored = StoredRequest(
+        token="tok-url",
+        request_type="gallery_media",
+        parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
+        options=[
+            DownloadOption(
+                option_id="gallery_all",
+                label="Media",
+                send_type="photo",
+                mode="gallery",
+            )
+        ],
+        info={
+            "url_media": [
+                {"url": "https://cdn/p1.jpg", "filename": "p1.jpg", "send_type": "photo", "caption": "c"},
+                {"url": "https://cdn/p2.jpg", "filename": "p2.jpg", "send_type": "photo", "caption": None},
+            ]
+        },
+    )
+    cache = make_media_cache(tmp_path)
+    download_mock = AsyncMock()
+    monkeypatch.setattr("services.executor.download_gallery_media", download_mock)
+    monkeypatch.setattr(
+        "services.executor.send_url_media",
+        AsyncMock(
+            return_value=[
+                CachedMedia(file_id="A1", send_type="photo", file_name="p1.jpg", caption="c"),
+                CachedMedia(file_id="A2", send_type="photo", file_name="p2.jpg", caption=None),
+            ]
+        ),
+    )
+
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
+    await execute_request(
+        stored=stored,
+        option=stored.options[0],
+        bot=SimpleNamespace(),
+        status_message=status_message,
+        source_message=source_message,
+        user_id=99,
+        settings=settings,
+        request_store=store,
+        thumbnail_store=thumbnails,
+        media_cache=cache,
+    )
+
+    download_mock.assert_not_awaited()
+    assert cache.get("https://pawchive.pw/post/1") is not None
+    done_text = status_message.edit_text.await_args_list[-1].args[0]
+    assert "Downloaded in" in done_text
+
+
+@pytest.mark.asyncio
+async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkeypatch, tmp_path):
+    from services.executor import execute_request
+
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    thumbnails = ThumbnailStore(settings.thumbnails_dir)
+    stored = StoredRequest(
+        token="tok-fb",
+        request_type="gallery_media",
+        parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
+        options=[
+            DownloadOption(
+                option_id="gallery_all",
+                label="Media",
+                send_type="photo",
+                mode="gallery",
+            )
+        ],
+        info={
+            "url_media": [
+                {"url": "https://cdn/p1.jpg", "filename": "p1.jpg", "send_type": "photo", "caption": None},
+            ]
+        },
+    )
+    f1 = tmp_path / "p1.jpg"
+    f1.write_bytes(b"j")
+    artifacts = [DownloadArtifact(path=f1, file_name="p1.jpg", send_type="photo", caption="")]
+    download_mock = AsyncMock(return_value=artifacts)
+    monkeypatch.setattr("services.executor.download_gallery_media", download_mock)
+    monkeypatch.setattr(
+        "services.executor.upload_artifacts",
+        AsyncMock(return_value=[CachedMedia(file_id="L1", send_type="photo", file_name="p1.jpg", caption="")]),
+    )
+    monkeypatch.setattr(
+        "services.executor.send_url_media",
+        AsyncMock(side_effect=TelegramBadRequest(method="sendPhoto", message="WEBPAGE_CURL_FAILED")),
+    )
+
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
+    await execute_request(
+        stored=stored,
+        option=stored.options[0],
+        bot=SimpleNamespace(),
+        status_message=status_message,
+        source_message=source_message,
+        user_id=99,
+        settings=settings,
+        request_store=store,
+        thumbnail_store=thumbnails,
+        media_cache=make_media_cache(tmp_path),
+    )
+
+    download_mock.assert_awaited_once()

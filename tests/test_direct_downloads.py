@@ -66,6 +66,7 @@ def make_settings(tmp_path: Path, max_upload_bytes: int) -> Settings:
         process_max_timeout=60,
         auto_best_quality=False,
         max_video_height=1080,
+        gallery_probe_timeout=15,
         max_upload_bytes=max_upload_bytes,
         verify_ssl=True,
         twitter_cookies="",

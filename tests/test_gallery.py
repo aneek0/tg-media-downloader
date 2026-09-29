@@ -10,6 +10,10 @@ from services.gallery import (
     _gallery_probe_command,
     _parse_gallery_probe,
     download_gallery_media,
+    gallery_url_items,
+    plain_caption,
+    probe_gallery,
+    small_thumbnail_url,
 )
 from utils.models import ParsedInput
 
@@ -27,6 +31,7 @@ def make_gallery_settings(
         process_max_timeout=120,
         auto_best_quality=False,
         max_video_height=1080,
+        gallery_probe_timeout=15,
         twitter_cookies=twitter_cookies,
         telegram_api_url="",
         telegram_proxy="",
@@ -149,7 +154,11 @@ async def test_download_gallery_media_builds_artifacts(monkeypatch, tmp_path):
 
     assert len(artifacts) == 2
     assert [artifact.send_type for artifact in artifacts] == ["photo", "video"]
-    assert all(artifact.caption == "kitty cage" for artifact in artifacts)
+    assert all(
+        artifact.caption
+        == "https://x.com/AlterKyon/status/2103014006747439474\nkitty cage"
+        for artifact in artifacts
+    )
     assert [artifact.file_name for artifact in artifacts] == [
         "2103014006747439474_1.jpg",
         "2103014006747439474_2.mp4",
@@ -197,3 +206,124 @@ def test_gallery_command_redacted():
         "-C",
         "***",
     ]
+
+
+@pytest.mark.asyncio
+async def test_probe_gallery_runtime_error(monkeypatch, tmp_path):
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    monkeypatch.setattr(
+        "services.gallery.gallery_supports_url", lambda url: True
+    )
+    monkeypatch.setattr(
+        "services.gallery.run_command", AsyncMock(side_effect=RuntimeError("exit 64"))
+    )
+    probe = await probe_gallery(
+        ParsedInput(source_url="https://s/1"), settings
+    )
+    assert probe.file_dicts == []
+    assert probe.error == "exit 64"
+
+
+@pytest.mark.asyncio
+async def test_probe_gallery_invalid_json(monkeypatch, tmp_path):
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    monkeypatch.setattr(
+        "services.gallery.gallery_supports_url", lambda url: True
+    )
+    monkeypatch.setattr(
+        "services.gallery.run_command", AsyncMock(return_value=("not json", ""))
+    )
+    probe = await probe_gallery(
+        ParsedInput(source_url="https://s/1"), settings
+    )
+    assert probe.file_dicts == []
+    assert probe.error == "gallery-dl probe returned invalid JSON"
+
+
+@pytest.mark.asyncio
+async def test_probe_gallery_valid_stdout(monkeypatch, tmp_path):
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    monkeypatch.setattr(
+        "services.gallery.gallery_supports_url", lambda url: True
+    )
+    stdout = json.dumps(
+        [
+            [2, {"content": "cap"}],
+            [3, "https://c/x.jpg", {"extension": "jpg", "filename": "x"}],
+        ]
+    )
+    monkeypatch.setattr(
+        "services.gallery.run_command", AsyncMock(return_value=(stdout, ""))
+    )
+    probe = await probe_gallery(
+        ParsedInput(source_url="https://s/1"), settings
+    )
+    assert probe.error is None
+    assert probe.content == "cap"
+    assert probe.file_dicts[0]["_url"] == "https://c/x.jpg"
+
+
+def test_small_thumbnail_url_twitter_name_param():
+    assert small_thumbnail_url(
+        "https://pbs.twimg.com/media/a?format=jpg&name=large"
+    ) == "https://pbs.twimg.com/media/a?format=jpg&name=small"
+
+
+def test_small_thumbnail_url_twitter_adds_name():
+    assert small_thumbnail_url(
+        "https://pbs.twimg.com/media/a?format=jpg"
+    ) == "https://pbs.twimg.com/media/a?format=jpg&name=small"
+
+
+def test_small_thumbnail_url_pawchive():
+    assert small_thumbnail_url(
+        "https://file.pawchive.pw/data/x.jpeg"
+    ) == "https://img.pawchive.pw/thumbnail/data/x.jpeg"
+
+
+def test_small_thumbnail_url_unknown_host_returns_none():
+    assert small_thumbnail_url("https://example.com/a.png") is None
+
+
+def test_plain_caption_strips_html():
+    assert plain_caption("<p>a</p><p>b</p>") == "a b"
+    assert plain_caption(None) is None
+    assert plain_caption("   ") is None
+
+
+def test_gallery_url_items_caption_and_types():
+    items = gallery_url_items(
+        [
+            {"_url": "https://c/a.jpg", "extension": "jpg", "filename": "a"},
+            {"_url": "https://c/b.mp4", "extension": "mp4", "filename": "b"},
+        ],
+        "<p>hello</p>",
+        ParsedInput(source_url="https://s/1"),
+    )
+    assert items[0]["caption"] == "hello"
+    assert items[1]["caption"] is None
+    assert items[0]["send_type"] == "photo"
+    assert items[1]["send_type"] == "video"
+    assert items[0]["filename"] == "a.jpg"
+
+
+def test_gallery_download_command_generic_filename_format(tmp_path):
+    from services.gallery import _gallery_download_command
+
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    command = _gallery_download_command(
+        ParsedInput(source_url="https://pawchive.pw/post/1"), settings, tmp_path / "w"
+    )
+    idx = command.index("-f")
+    assert command[idx + 1] == "{filename}.{extension}"
+
+
+def test_gallery_download_command_twitter_filename_format(tmp_path):
+    from services.gallery import _gallery_download_command
+
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    command = _gallery_download_command(
+        ParsedInput(source_url="https://x.com/a/status/1"), settings, tmp_path / "w"
+    )
+    idx = command.index("-f")
+    assert command[idx + 1] == "{tweet_id}_{num}.{extension}"

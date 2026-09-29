@@ -8,9 +8,8 @@ from aiogram.exceptions import TelegramAPIError
 
 from config import Settings
 from services.direct_downloads import download_direct_file
-from services.gallery import download_gallery_media
+from services.gallery import download_gallery_media, probe_gallery
 from services.media_cache import MediaCache, cached_media_from
-from services.parsing import is_twitter_status_url
 from services.progress import StatusProgress, humanbytes
 from services.request_store import RequestStore
 from services.telegram_uploads import _media_item
@@ -158,11 +157,14 @@ async def _download_artifacts(
         ),
     )
 
-    if is_twitter_status_url(stored.parsed_input.source_url):
+    probe = await probe_gallery(stored.parsed_input, settings)
+    if probe.file_dicts:
         return await download_gallery_media(
             parsed_input=stored.parsed_input,
             settings=settings,
             work_dir=request_store.work_directory(stored.token),
+            file_dicts=probe.file_dicts,
+            content=probe.content,
         )
 
     # Page URLs (TikTok, YouTube, Reddit, …) are not direct media links:
@@ -286,6 +288,12 @@ async def run_inline_download(
         )
         request_store.delete(token)
         return
+
+    preferred = stored.info.get("preferred_index") or 0
+    if 0 < preferred < len(artifacts):
+        # The tapped photo goes into the message; the rest keep their
+        # original order for the DM spillover.
+        artifacts = [artifacts[preferred]] + artifacts[:preferred] + artifacts[preferred + 1 :]
 
     rest = artifacts[1:]
     dm_note, dm_entries = await _spillover_dm(bot, user_id, rest)

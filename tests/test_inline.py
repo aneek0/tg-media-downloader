@@ -7,6 +7,7 @@ import re
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
+    InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
     InlineQueryResultPhoto,
     InputMediaPhoto,
@@ -17,6 +18,7 @@ from routers.inline import (
     inline_chosen_handler,
     inline_query_handler,
 )
+from services.gallery import GalleryProbe
 from services.inline_flow import run_inline_download
 from services.progress import humanbytes
 from services.request_store import RequestStore
@@ -62,6 +64,48 @@ async def test_inline_query_cache_hit_answers_cached_results(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_inline_query_cache_hit_with_photos_gets_pager(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    url = "https://pawchive.pw/fanbox/user/1/post/2"
+    await cache.record(
+        url,
+        [
+            CachedMedia(file_id=f"PH{i}", send_type="photo", file_name=f"{i}.jpg", caption="c")
+            for i in range(3)
+        ],
+    )
+
+    query = SimpleNamespace(
+        query=url,
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    results = query.answer.await_args.args[0]
+    assert len(results) == 4  # pager + 3 cached photos
+    pager = results[0]
+    assert isinstance(pager, InlineQueryResultCachedPhoto)
+    assert pager.id.startswith("gallery:")
+    assert pager.photo_file_id == "PH0"
+    row = pager.reply_markup.inline_keyboard[0]
+    assert len(row) == 2
+    assert all(button.callback_data.startswith("gnav:") for button in row)
+
+    token = pager.id.split("gallery:", 1)[1]
+    stored = store.load(token)
+    assert stored is not None
+    assert stored.request_type == "inline_gallery"
+    assert stored.info["photos"] == ["PH0", "PH1", "PH2"]
+
+    assert [result.id for result in results[1:]] == ["cached0", "cached1", "cached2"]
+
+
+@pytest.mark.asyncio
 async def test_inline_chosen_skips_cached_ids(tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
@@ -99,6 +143,16 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
     media.write_bytes(b"\x00\x00\x00\x18" + b"m" * 10)
     artifact = DownloadArtifact(
         path=media, file_name="v.mp4", send_type="video", caption=None
+    )
+    monkeypatch.setattr(
+        "services.inline_flow.probe_gallery",
+        AsyncMock(
+            return_value=GalleryProbe(
+                file_dicts=[{"_url": "https://cdn/x.mp4", "extension": "mp4"}],
+                content=None,
+                error=None,
+            )
+        ),
     )
     monkeypatch.setattr(
         "services.inline_flow.download_gallery_media",
@@ -192,6 +246,10 @@ async def test_run_inline_download_generic_failure_escapes_error_text(
     )
     store.save(stored)
 
+    monkeypatch.setattr(
+        "services.inline_flow.probe_gallery",
+        AsyncMock(return_value=GalleryProbe([], None, "Unsupported URL: " + url)),
+    )
     monkeypatch.setattr(
         "services.inline_flow.download_direct_file",
         AsyncMock(side_effect=RuntimeError("<b>&boom</b>")),
@@ -313,7 +371,7 @@ async def test_run_inline_download_start_edit_failure_falls_into_error_branch(
 
 
 @pytest.mark.asyncio
-async def test_inline_twitter_query_uses_run_command_with_timeout(
+async def test_inline_twitter_query_uses_gallery_probe_with_timeout(
     monkeypatch, tmp_path
 ):
     settings = make_settings(tmp_path)
@@ -322,12 +380,11 @@ async def test_inline_twitter_query_uses_run_command_with_timeout(
     cache = make_media_cache(tmp_path)
 
     probe = '[[3, "https://video.example/1.mp4", {"ext": "mp4"}]]'
-    probe_command = ["gallery-dl", "-j", "https://x.com/a/status/1"]
     monkeypatch.setattr(
-        "routers.inline._gallery_probe_command", lambda parsed, s: probe_command
+        "services.gallery.gallery_supports_url", lambda url: True
     )
     run_command_mock = AsyncMock(return_value=(probe, ""))
-    monkeypatch.setattr("routers.inline.run_command", run_command_mock)
+    monkeypatch.setattr("services.gallery.run_command", run_command_mock)
 
     query = SimpleNamespace(
         query="https://x.com/a/status/1",
@@ -337,9 +394,8 @@ async def test_inline_twitter_query_uses_run_command_with_timeout(
 
     await inline_query_handler(query, settings, store, cache)
 
-    run_command_mock.assert_awaited_once_with(
-        probe_command, timeout=settings.process_max_timeout
-    )
+    run_command_mock.assert_awaited_once()
+    assert run_command_mock.await_args.kwargs["timeout"] == settings.gallery_probe_timeout
     assert not list((settings.requests_dir).iterdir())
 
 
@@ -352,20 +408,15 @@ async def test_inline_twitter_gallery_first_result_and_token_stored(
     store = RequestStore(settings.requests_dir, settings.work_dir)
     cache = make_media_cache(tmp_path)
 
-    probe = json.dumps(
-        [
-            [3, "https://video.example/1.jpg", {"ext": "jpg"}],
-            [3, "https://video.example/2.jpg", {"ext": "jpg"}],
-            [3, "https://video.example/3.jpg", {"ext": "jpg"}],
-            [2, {"content": "tweet text"}],
-        ]
-    )
-    probe_command = ["gallery-dl", "-j", "https://x.com/a/status/1"]
+    file_dicts = [
+        {"_url": "https://video.example/1.jpg", "ext": "jpg"},
+        {"_url": "https://video.example/2.jpg", "ext": "jpg"},
+        {"_url": "https://video.example/3.jpg", "ext": "jpg"},
+    ]
     monkeypatch.setattr(
-        "routers.inline._gallery_probe_command", lambda parsed, s: probe_command
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
     )
-    run_command_mock = AsyncMock(return_value=(probe, ""))
-    monkeypatch.setattr("routers.inline.run_command", run_command_mock)
 
     query = SimpleNamespace(
         query="https://x.com/a/status/1",
@@ -375,9 +426,6 @@ async def test_inline_twitter_gallery_first_result_and_token_stored(
 
     await inline_query_handler(query, settings, store, cache)
 
-    run_command_mock.assert_awaited_once_with(
-        probe_command, timeout=settings.process_max_timeout
-    )
     query.answer.assert_awaited_once()
     results = query.answer.await_args.args[0]
     first = results[0]
@@ -413,18 +461,12 @@ async def test_inline_twitter_gallery_single_photo_not_created(
     store = RequestStore(settings.requests_dir, settings.work_dir)
     cache = make_media_cache(tmp_path)
 
-    probe = json.dumps(
-        [
-            [3, "https://video.example/1.jpg", {"ext": "jpg"}],
-            [2, {"content": "tweet text"}],
-        ]
-    )
-    probe_command = ["gallery-dl", "-j", "https://x.com/a/status/1"]
+    file_dicts = [
+        {"_url": "https://video.example/1.jpg", "ext": "jpg"},
+    ]
     monkeypatch.setattr(
-        "routers.inline._gallery_probe_command", lambda parsed, s: probe_command
-    )
-    monkeypatch.setattr(
-        "routers.inline.run_command", AsyncMock(return_value=(probe, ""))
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
     )
 
     query = SimpleNamespace(
@@ -622,3 +664,161 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
     best_mock.assert_not_awaited()
     assert cache.get(url) is not None
     assert store.load("tok-direct") is None
+
+
+@pytest.mark.asyncio
+async def test_inline_non_twitter_gallery_returns_photo_preview(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {"_url": "https://file.pawchive.pw/data/x.jpeg", "extension": "jpg", "filename": "x"},
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="<p>hello</p>", error=None)),
+    )
+
+    query = SimpleNamespace(
+        query="https://pawchive.pw/fanbox/user/1/post/2",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    query.answer.assert_awaited_once()
+    results = query.answer.await_args.args[0]
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, InlineQueryResultPhoto)
+    # id = request token (10 hex) -> chosen_inline_result starts download
+    assert re.fullmatch(r"[0-9a-f]{10}", result.id)
+    assert result.thumbnail_url == "https://img.pawchive.pw/thumbnail/data/x.jpeg"
+    assert result.photo_url == "https://img.pawchive.pw/thumbnail/data/x.jpeg"
+    assert result.caption == "https://pawchive.pw/fanbox/user/1/post/2\nhello"
+    assert result.reply_markup is not None
+    row = result.reply_markup.inline_keyboard[0]
+    assert len(row) == 1
+    assert row[0].text == "Cancel"
+
+    stored = store.load(result.id)
+    assert stored is not None
+    assert stored.request_type == "inline_media"
+    assert stored.info["preferred_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_inline_non_twitter_gallery_multi_photo_pager_and_tokens(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {"_url": f"https://file.pawchive.pw/data/{i}.jpeg", "extension": "jpg", "filename": str(i)}
+        for i in range(3)
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="cap", error=None)),
+    )
+
+    query = SimpleNamespace(
+        query="https://pawchive.pw/fanbox/user/1/post/2",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    results = query.answer.await_args.args[0]
+    assert len(results) == 4  # pager + 3 photo results
+    pager = results[0]
+    assert pager.id.startswith("gallery:")
+    assert pager.photo_url == "https://img.pawchive.pw/thumbnail/data/0.jpeg"
+    assert pager.thumbnail_url == "https://img.pawchive.pw/thumbnail/data/0.jpeg"
+    pager_token = pager.id.split("gallery:", 1)[1]
+    stored_pager = store.load(pager_token)
+    assert stored_pager.request_type == "inline_gallery"
+    assert stored_pager.info["photos"] == [
+        f"https://img.pawchive.pw/thumbnail/data/{i}.jpeg" for i in range(3)
+    ]
+    for index, result in enumerate(results[1:]):
+        assert re.fullmatch(r"[0-9a-f]{10}", result.id)
+        assert result.photo_url == f"https://img.pawchive.pw/thumbnail/data/{index}.jpeg"
+        stored = store.load(result.id)
+        assert stored.request_type == "inline_media"
+        assert stored.info["preferred_index"] == index
+
+
+@pytest.mark.asyncio
+async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
+    monkeypatch, tmp_path
+):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    url = "https://pawchive.pw/fanbox/user/1/post/2"
+    stored = StoredRequest(
+        token="tok-idx",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url=url),
+        options=[],
+        info={"preferred_index": 1},
+    )
+    store.save(stored)
+
+    def _artifact(name):
+        path = tmp_path / name
+        path.write_bytes(b"\xff\xd8\xff\xe0" + b"j" * 10)
+        return DownloadArtifact(path=path, file_name=name, send_type="photo", caption=None)
+
+    artifacts = [_artifact("a.jpg"), _artifact("b.jpg"), _artifact("c.jpg")]
+    monkeypatch.setattr(
+        "services.inline_flow.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=[{"_url": "u"}], content=None, error=None)),
+    )
+    monkeypatch.setattr(
+        "services.inline_flow.download_gallery_media",
+        AsyncMock(return_value=artifacts),
+    )
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            return_value=SimpleNamespace(photo=[SimpleNamespace(file_id="PH_B")])
+        ),
+        send_media_group=AsyncMock(
+            return_value=[
+                SimpleNamespace(photo=[SimpleNamespace(file_id="PH_A")]),
+                SimpleNamespace(photo=[SimpleNamespace(file_id="PH_C")]),
+            ]
+        ),
+    )
+
+    await run_inline_download(
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+        settings=settings,
+        request_store=store,
+        media_cache=cache,
+    )
+
+    # The message media must be the tapped photo (b.jpg), not artifacts[0].
+    media = bot.edit_message_media.await_args.kwargs["media"]
+    assert media.media.filename == "b.jpg"
+    # Remaining photos spill to DM as an album in original order: a.jpg, c.jpg.
+    bot.send_media_group.assert_awaited_once()
+    dm_media = bot.send_media_group.await_args.kwargs["media"]
+    assert [m.media.filename for m in dm_media] == ["a.jpg", "c.jpg"]
+    entries = cache.get(url)
+    assert entries is not None
+    assert entries[0].file_id == "PH_B"
+    assert [e.file_id for e in entries[1:]] == ["PH_A", "PH_C"]
+    assert store.load("tok-idx") is None
