@@ -239,6 +239,26 @@ async def _spillover_dm(
         return f"\n(+{len(rest)} more files — open the bot and send the link)", []
 
 
+def _selected_artifact(artifacts: list[DownloadArtifact], info: dict) -> int | None:
+    """Index of the artifact the user tapped, or None: by exact file name
+    when the probe knew it, otherwise by probe-order index."""
+    preferred_name = info.get("preferred_name")
+    if preferred_name:
+        for index, artifact in enumerate(artifacts):
+            if artifact.file_name == preferred_name:
+                return index
+        logger.info(
+            "Tapped media not found in download | expected=%s files=%s",
+            preferred_name,
+            [artifact.file_name for artifact in artifacts],
+        )
+        return None
+    preferred = info.get("preferred_index") or 0
+    if 0 < preferred < len(artifacts):
+        return preferred
+    return None
+
+
 async def run_inline_download(
     *,
     bot: Bot,
@@ -289,11 +309,13 @@ async def run_inline_download(
         request_store.delete(token)
         return
 
-    preferred = stored.info.get("preferred_index") or 0
-    if 0 < preferred < len(artifacts):
-        # The tapped photo goes into the message; the rest keep their
-        # original order for the DM spillover.
-        artifacts = [artifacts[preferred]] + artifacts[:preferred] + artifacts[preferred + 1 :]
+    # The tapped item goes into the message; the rest keep their original
+    # order for the DM spillover. Videos are identified by their expected
+    # download name (probe order != artifact order in mixed-media albums);
+    # photos by their probe-order index.
+    selected = _selected_artifact(artifacts, stored.info)
+    if selected is not None and selected != 0:
+        artifacts = [artifacts[selected]] + artifacts[:selected] + artifacts[selected + 1 :]
 
     rest = artifacts[1:]
     dm_note, dm_entries = await _spillover_dm(bot, user_id, rest)

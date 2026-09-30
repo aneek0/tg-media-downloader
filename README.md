@@ -37,8 +37,8 @@ thumbnail.
 
 Enable inline mode for the bot via [@BotFather](https://t.me/BotFather) (`/setinline`), then:
 
-- type `@yourbot <url>` in any chat — tweet media comes back as inline results (direct Twitter CDN
-  links, no download step), other supported links download on tap with a cancel button
+- type `@yourbot <url>` in any chat — tweet photos come back as direct Twitter CDN results (no
+  download step), tweet videos and other supported links download on tap with a cancel button
 - media from an album beyond the inline result limit is sent to your private chat with the bot
 
 ## Bot Commands

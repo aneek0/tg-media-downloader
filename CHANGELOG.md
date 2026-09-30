@@ -27,6 +27,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Auto-quality now sorts by resolution (`res`) instead of filtering by height, keeping
   portrait video (e.g. TikTok 1080x1920) at full quality instead of dropping it to 540p.
 
+### Fixed
+
+- Inline video results for Twitter/X no longer fail with `WEBPAGE_CURL_FAILED`: Telegram's own
+  fetcher refuses `video.twimg.com`, so videos become download-on-tap articles that run the bot's
+  regular download-and-upload flow (same as every other link). Photos keep the instant CDN path.
+  The tapped video is matched to the downloaded file by its expected `{tweet_id}_{num}.{extension}`
+  name, so mixed photo/video albums pick the right item.
+
 ### Changed
 
 - Forked from [kalanakt/All-Url-Uploader](https://github.com/kalanakt/All-Url-Uploader); upstream

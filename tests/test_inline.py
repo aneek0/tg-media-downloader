@@ -7,9 +7,11 @@ import re
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
+    InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
     InlineQueryResultPhoto,
+    InlineQueryResultVideo,
     InputMediaPhoto,
 )
 
@@ -24,7 +26,7 @@ from services.progress import humanbytes
 from services.request_store import RequestStore
 from tests.conftest import make_media_cache, make_settings
 from utils import text
-from utils.callbacks import GalleryNavCallback
+from utils.callbacks import GalleryNavCallback, InlineCancelCallback
 from utils.models import (
     CachedMedia,
     DownloadArtifact,
@@ -481,6 +483,173 @@ async def test_inline_twitter_gallery_single_photo_not_created(
     assert not any(result.id.startswith("gallery:") for result in results)
     assert [result.id for result in results] == ["photo1"]
     assert not list((settings.requests_dir).iterdir())
+
+@pytest.mark.asyncio
+async def test_inline_twitter_video_is_download_article_not_video_result(
+    monkeypatch, tmp_path
+):
+    """Telegram cannot fetch video.twimg.com, so a video_url result fails
+    with WEBPAGE_CURL_FAILED on tap. Video tweets must produce a
+    download-on-tap article bound to a request token instead."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {
+            "_url": "https://video.twimg.com/amplify_video/1/vid/x.mp4",
+            "extension": "mp4",
+            "tweet_id": 999,
+            "num": 1,
+        }
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
+    )
+
+    query = SimpleNamespace(
+        query="https://x.com/a/status/1",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    results = query.answer.await_args.args[0]
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, InlineQueryResultArticle)
+    assert not isinstance(result, InlineQueryResultVideo)
+    assert result.title == "Video 1"
+    assert result.description == "tweet text"
+    assert result.input_message_content.message_text == text.PROCESSING
+    assert re.fullmatch(r"[0-9a-f]{10}", result.id)
+
+    row = result.reply_markup.inline_keyboard[0]
+    assert len(row) == 1
+    assert row[0].text == "Cancel"
+    assert InlineCancelCallback.unpack(row[0].callback_data).token == result.id
+
+    stored = store.load(result.id)
+    assert stored is not None
+    assert stored.request_type == "inline_media"
+    assert stored.info["preferred_name"] == "999_1.mp4"
+
+
+@pytest.mark.asyncio
+async def test_inline_twitter_album_keeps_photo_cdn_and_video_article(
+    monkeypatch, tmp_path
+):
+    """Photos stay instant CDN results; videos in the same tweet carry the
+    expected download name so the tapped one is picked out after
+    download."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {"_url": "https://pbs.twimg.com/media/1.jpg", "extension": "jpg", "tweet_id": 999, "num": 1},
+        {"_url": "https://video.twimg.com/vid/1.mp4", "extension": "mp4", "tweet_id": 999, "num": 2},
+        {"_url": "https://pbs.twimg.com/media/2.jpg", "extension": "jpg", "tweet_id": 999, "num": 3},
+        {"_url": "https://video.twimg.com/vid/2.mp4", "extension": "mp4", "tweet_id": 999, "num": 4},
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
+    )
+
+    query = SimpleNamespace(
+        query="https://x.com/a/status/1",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    results = query.answer.await_args.args[0]
+    pager = results[0]
+    assert pager.id.startswith("gallery:")
+    assert pager.photo_url == "https://pbs.twimg.com/media/1.jpg"
+    cdn_photos = [
+        result.id
+        for result in results
+        if isinstance(result, InlineQueryResultPhoto) and not result.id.startswith("gallery:")
+    ]
+    assert cdn_photos == ["photo1", "photo2"]
+    videos = [result for result in results if isinstance(result, InlineQueryResultArticle)]
+    assert [result.title for result in videos] == ["Video 1", "Video 2"]
+
+    first = store.load(videos[0].id)
+    second = store.load(videos[1].id)
+    # gallery-dl names twitter downloads "{tweet_id}_{num}.{extension}":
+    # num is probe order, so the tapped video is found after download even
+    # though photos and videos interleave.
+    assert first.info["preferred_name"] == "999_2.mp4"
+    assert second.info["preferred_name"] == "999_4.mp4"
+
+@pytest.mark.asyncio
+async def test_run_inline_download_preferred_name_picks_matching_artifact(
+    monkeypatch, tmp_path
+):
+    """Video articles identify the tapped item by expected download name,
+    because probe order does not match artifact order in mixed albums."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    url = "https://x.com/a/status/1"
+    stored = StoredRequest(
+        token="tok-name",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url=url),
+        options=[],
+        info={"preferred_name": "999_2.mp4"},
+    )
+    store.save(stored)
+
+    def _artifact(name):
+        path = tmp_path / name
+        path.write_bytes(b"\x00\x00\x00\x18" + b"m" * 10)
+        return DownloadArtifact(path=path, file_name=name, send_type="video", caption=None)
+
+    artifacts = [_artifact("999_1.mp4"), _artifact("999_2.mp4")]
+    monkeypatch.setattr(
+        "services.inline_flow.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=[{"_url": "u"}], content=None, error=None)),
+    )
+    monkeypatch.setattr(
+        "services.inline_flow.download_gallery_media",
+        AsyncMock(return_value=artifacts),
+    )
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC40"))
+        ),
+        send_media_group=AsyncMock(return_value=[]),
+        send_video=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC41"))
+        ),
+    )
+
+    await run_inline_download(
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+        settings=settings,
+        request_store=store,
+        media_cache=cache,
+    )
+
+    media = bot.edit_message_media.await_args.kwargs["media"]
+    assert media.media.filename == "999_2.mp4"
+    assert cache.get(url)[0].file_id == "BAAC40"
+    assert store.load("tok-name") is None
 
 
 @pytest.mark.asyncio

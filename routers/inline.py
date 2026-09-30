@@ -13,16 +13,16 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultPhoto,
-    InlineQueryResultVideo,
     InputMediaPhoto,
     InputTextMessageContent,
     InlineQuery,
 )
 from config import Settings
 from services.gallery import (
+    VIDEO_EXTENSIONS,
     _gallery_friendly_error,
-    probe_gallery,
     plain_caption,
+    probe_gallery,
     small_thumbnail_url,
     split_tweet_media,
 )
@@ -89,23 +89,28 @@ def _probe_caption(file_dicts: list[dict], content: str | None, source_url: str)
     return "\n".join(lines)
 
 
-def _inline_media_results(
-    file_dicts: list[dict], content: str | None, source_url: str
-) -> list:
-    """Build inline results straight from gallery-dl probe data, so Telegram
-    itself fetches and renders tweet photos from the twitter CDN - classic
-    inline-bot UX. Photos become direct CDN results; video items are listed
-    separately. The caption follows the classic format: URL, then
-    'author : tweet content'."""
+def _cancel_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Keyboard with a single Cancel button. A keyboard is REQUIRED for
+    Telegram to include inline_message_id in the chosen_inline_result
+    update - without it the sent message cannot be edited into the
+    media later."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Cancel",
+                    callback_data=InlineCancelCallback(token=token).pack(),
+                )
+            ]
+        ]
+    )
+
+
+def _inline_photo_results(file_dicts: list[dict], caption: str) -> list:
+    """Photo results straight from gallery-dl probe data: Telegram itself
+    fetches the twitter CDN images, so photos need no download step."""
     results: list = []
-    caption = _probe_caption(file_dicts, content, source_url)[:1024]
-    photos, videos = split_tweet_media(file_dicts)
-    photo_thumb = None
-    for media in photos:
-        url = media.get("_url")
-        if url:
-            photo_thumb = url
-            break
+    photos, _ = split_tweet_media(file_dicts)
     for index, media in enumerate(photos, start=1):
         media_url = media.get("_url")
         if not media_url:
@@ -118,19 +123,55 @@ def _inline_media_results(
                 caption=caption if index == 1 else None,
             )
         )
-    for index, media in enumerate(videos, start=1):
-        media_url = media.get("_url")
-        if not media_url:
+    return results
+
+
+def _inline_video_results(
+    file_dicts: list[dict],
+    parsed: ParsedInput,
+    request_store: RequestStore,
+    description: str,
+) -> list:
+    """Video items become tappable articles, not InlineQueryResultVideo:
+    Telegram's own fetcher cannot pull video.twimg.com URLs, so a
+    video_url result fails with WEBPAGE_CURL_FAILED on tap. The article
+    starts the bot's regular download-and-upload flow instead, via the
+    token in its result id."""
+    results: list = []
+    for media in file_dicts:
+        if (media.get("extension") or "").lower() not in VIDEO_EXTENSIONS:
             continue
-        thumb = small_thumbnail_url(photo_thumb or media_url) or photo_thumb or media_url
+        if not media.get("_url"):
+            continue
+        token = request_store.create_token()
+        # gallery-dl names twitter downloads "{tweet_id}_{num}.{extension}"
+        # (GALLERY_FILENAME_FORMAT). That name identifies the tapped item
+        # among the downloaded artifacts; probe order alone does not, since
+        # photos and videos are downloaded in mixed-media albums too.
+        preferred_name = None
+        tweet_id = media.get("tweet_id")
+        num = media.get("num")
+        extension = (media.get("extension") or "").lower()
+        if tweet_id and num and extension:
+            preferred_name = f"{tweet_id}_{num}.{extension}"
+        request_store.save(
+            StoredRequest(
+                token=token,
+                request_type="inline_media",
+                parsed_input=parsed,
+                options=[],
+                info={"preferred_name": preferred_name},
+            )
+        )
         results.append(
-            InlineQueryResultVideo(
-                id=f"video{index}",
-                video_url=media_url,
-                thumbnail_url=thumb,
-                mime_type="video/mp4",
-                title=f"Video {index}",
-                caption=caption if not photos and index == 1 else None,
+            InlineQueryResultArticle(
+                id=token,
+                title=f"Video {len(results) + 1}",
+                description=description[:120],
+                input_message_content=InputTextMessageContent(
+                    message_text=text.PROCESSING
+                ),
+                reply_markup=_cancel_keyboard(token),
             )
         )
     return results
@@ -185,25 +226,37 @@ async def _answer_gallery_media(
             )
             return True
         return False
-    photos, _videos = split_tweet_media(probe.file_dicts)
+    photos, _ = split_tweet_media(probe.file_dicts)
     if twitter:
-        # Twitter status: instant CDN results (Telegram fetches pbs.twimg.com
-        # itself); with >=2 photos the first result is a gallery pager.
-        gallery_photos = [m["_url"] for m in photos if m.get("_url")]
+        # Twitter status: photos stay instant CDN results (Telegram fetches
+        # pbs.twimg.com itself); with >=2 photos the first result is a
+        # gallery pager. Videos cannot be CDN results - Telegram's fetcher
+        # refuses video.twimg.com - so they become download-on-tap articles.
+        caption = _probe_caption(probe.file_dicts, probe.content, parsed.source_url)[:1024]
+        body = plain_caption(probe.content) or ""
         results: list = []
+        gallery_photos = [m["_url"] for m in photos if m.get("_url")]
         if len(gallery_photos) >= 2:
             token = request_store.create_token()
-            caption = _probe_caption(probe.file_dicts, probe.content, parsed.source_url)[:1024]
-            stored = StoredRequest(
-                token=token,
-                request_type="inline_gallery",
-                parsed_input=parsed,
-                options=[],
-                info={"photos": gallery_photos, "caption": caption},
+            request_store.save(
+                StoredRequest(
+                    token=token,
+                    request_type="inline_gallery",
+                    parsed_input=parsed,
+                    options=[],
+                    info={"photos": gallery_photos, "caption": caption},
+                )
             )
-            request_store.save(stored)
             results.append(_gallery_result(token, gallery_photos, caption))
-        results.extend(_inline_media_results(probe.file_dicts, probe.content, parsed.source_url))
+        results.extend(_inline_photo_results(probe.file_dicts, caption))
+        results.extend(
+            _inline_video_results(
+                probe.file_dicts,
+                parsed,
+                request_store,
+                body or _description_for(parsed),
+            )
+        )
         if results:
             await query.answer(results, cache_time=0, is_personal=True)
             return True
@@ -241,34 +294,22 @@ async def _answer_gallery_media(
         # preferred_index puts the tapped photo into the message, the
         # remaining files go to the DM spillover.
         token = request_store.create_token()
-        stored = StoredRequest(
-            token=token,
-            request_type="inline_media",
-            parsed_input=parsed,
-            options=[],
-            info={"preferred_index": index},
+        request_store.save(
+            StoredRequest(
+                token=token,
+                request_type="inline_media",
+                parsed_input=parsed,
+                options=[],
+                info={"preferred_index": index},
+            )
         )
-        request_store.save(stored)
         results.append(
             InlineQueryResultPhoto(
                 id=token,
                 photo_url=preview,
                 thumbnail_url=preview,
                 caption=caption if index == 0 else None,
-                # A keyboard is REQUIRED for Telegram to include
-                # inline_message_id in the chosen_inline_result update -
-                # without it the sent message cannot be edited into the
-                # full-size media later.
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="Cancel",
-                                callback_data=InlineCancelCallback(token=token).pack(),
-                            )
-                        ]
-                    ]
-                ),
+                reply_markup=_cancel_keyboard(token),
             )
         )
     await query.answer(results, cache_time=0, is_personal=True)
@@ -399,20 +440,7 @@ async def inline_query_handler(
                 input_message_content=InputTextMessageContent(
                     message_text=text.PROCESSING,
                 ),
-                # A keyboard (even a no-op one) is REQUIRED for Telegram to
-                # include inline_message_id in the chosen_inline_result
-                # update - without it the sent message cannot be edited into
-                # media later. The button also lets the user cancel.
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="Cancel",
-                                callback_data=InlineCancelCallback(token=token).pack(),
-                            )
-                        ]
-                    ]
-                ),
+                reply_markup=_cancel_keyboard(token),
             )
         ],
         cache_time=0,
