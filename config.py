@@ -71,6 +71,7 @@ class Settings:
     twitter_cookies: str = ""
     telegram_api_url: str = ""
     telegram_proxy: str = ""
+    download_threads: int = 16
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -127,6 +128,9 @@ class Settings:
             telegram_proxy=(
                 os.environ.get("TELEGRAM_PROXY", "").strip()
                 or os.environ.get("HTTP_PROXY", "").strip()
+            ),
+            download_threads=min(
+                _parse_positive_int(os.environ.get("DOWNLOAD_THREADS"), default=16), 16
             ),
         )
 

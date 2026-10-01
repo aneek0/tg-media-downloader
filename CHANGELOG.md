@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `DOWNLOAD_THREADS` setting (default 16, clamped to 16): direct-link downloads are fetched over
+  parallel HTTP range requests; servers without range support, files below 1 MiB, and
+  `DOWNLOAD_THREADS=1` keep the previous single-stream behaviour.
 - Twitter/X post support via `gallery-dl` (photos, videos, albums) with NSFW cookies support
   (`TWITTER_COOKIES_FILE` / `TWITTER_COOKIES`) and friendly errors.
 - Inline mode: `@bot <url>` in any chat. Tweet media returns as direct Twitter CDN inline results;

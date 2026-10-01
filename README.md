@@ -85,6 +85,7 @@ uv run python bot.py
 - `OWNER_ID` - required Telegram user ID for the bot owner
 - `AUTH_USERS` - optional comma-separated list of user IDs that bypass the cooldown
 - `CHUNK_SIZE` - optional direct-download chunk size; values below `1024` are treated as kilobytes for backward compatibility
+- `DOWNLOAD_THREADS` - optional; number of parallel HTTP connections for the raw (direct) downloader, clamped to 16 (default 16); `1` disables parallel segments and downloads the file in a single stream
 - `DOWNLOAD_LOCATION` - optional base directory for temporary downloads and uploads
 - `MAX_HEIGHT` - optional; maximum video height for auto downloads (default 1080)
 - `REQUEST_COOLDOWN_SECONDS` - optional per-user cooldown window in seconds (default 3600); `AUTH_USERS` bypass it
