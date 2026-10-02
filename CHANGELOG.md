@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `DOWNLOAD_THREADS` setting (default 16, clamped to 16): direct-link downloads are fetched over
   parallel HTTP range requests; servers without range support, files below 1 MiB, and
   `DOWNLOAD_THREADS=1` keep the previous single-stream behaviour.
+- yt-dlp delegates plain HTTP/HTTPS formats to `aria2c` when the binary is available
+  (connections per server driven by `DOWNLOAD_THREADS`); HLS/DASH fragment protocols stay on
+  the native path. The Docker image ships `aria2`; without the binary behavior is unchanged,
+  and Telegram status progress keeps working by parsing aria2c output lines.
 - Twitter/X post support via `gallery-dl` (photos, videos, albums) with NSFW cookies support
   (`TWITTER_COOKIES_FILE` / `TWITTER_COOKIES`) and friendly errors.
 - Inline mode: `@bot <url>` in any chat. Tweet media returns as direct Twitter CDN inline results;
@@ -44,6 +48,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   docs site removed in favor of this file.
 - Single executor flow for request execution (one place instead of per-router ad-hoc logic).
 - Hermetic config tests via `PYTHON_DOTENV_DISABLED`.
+- Parallel direct-download segments retry in place up to 3 times, resuming from the last
+  written byte, before the whole file falls back to a single-stream restart.
 
 ### Removed
 

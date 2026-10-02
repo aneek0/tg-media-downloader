@@ -16,6 +16,7 @@ from services.ytdlp import (
     download_selected_format,
     probe_url,
 )
+from tests.conftest import make_settings
 from utils.models import DownloadOption, ParsedInput
 
 
@@ -47,24 +48,14 @@ async def test_download_best_quality_progress_flags_and_forwarding(monkeypatch, 
     command = run_mock.await_args.args[0]
     assert "--newline" in command
     assert "--progress" in command
-    assert kwargs["on_output"] == progress.feed_line
+    assert kwargs["on_output"].__func__ is StatusProgress.feed_line
     assert kwargs["timeout"] == settings.process_max_timeout
 
 
 def make_cookie_settings(tmp_path: Path, twitter_cookies: str) -> Settings:
-    return Settings(
-        bot_token="token",
-        owner_id=99,
-        auth_users={99},
-        download_location=tmp_path / "downloads",
-        chunk_size=1024,
-        http_proxy="",
-        process_max_timeout=120,
-        auto_best_quality=False,
-        max_video_height=1080,
-        gallery_probe_timeout=15,
-        twitter_cookies=twitter_cookies,
-    )
+    settings = make_settings(tmp_path)
+    settings.twitter_cookies = twitter_cookies
+    return settings
 
 
 def make_parsed_input() -> ParsedInput:
@@ -129,12 +120,34 @@ def test_friendly_error_leaves_other_errors_alone():
     assert _friendly_error(error_text) == error_text
 
 
-def test_command_base_appends_speed_flags(tmp_path):
+def test_command_base_appends_speed_flags(monkeypatch, tmp_path):
+    monkeypatch.setattr("services.ytdlp.shutil.which", lambda *a, **k: None)
     settings = make_cookie_settings(tmp_path, "")
 
     command = _command_base(make_parsed_input(), settings)
 
-    assert command[-4:] == ["-N", "4", "--http-chunk-size", "10M"]
+    assert command[-4:] == ["-N", "16", "--http-chunk-size", "10M"]
+    assert "--downloader" not in command
+
+
+def test_command_base_enables_aria2c_when_available(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "services.ytdlp.shutil.which", lambda *a, **k: "/usr/bin/aria2c"
+    )
+    settings = make_cookie_settings(tmp_path, "")
+
+    command = _command_base(make_parsed_input(), settings)
+
+    downloader_index = command.index("--downloader")
+    assert command[downloader_index + 1] == "aria2c"
+    assert "aria2c:--summary-interval=1 -x16 -s16" in command
+
+    settings.download_threads = 8
+    command = _command_base(make_parsed_input(), settings)
+
+    assert "aria2c:--summary-interval=1 -x8 -s8" in command
+    threads_index = command.index("-N")
+    assert command[threads_index + 1] == "8"
 
 
 @pytest.mark.asyncio

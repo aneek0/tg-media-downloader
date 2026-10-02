@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
@@ -58,7 +59,18 @@ def _command_base(parsed_input: ParsedInput, settings: Settings) -> list[str]:
         command.extend(["--username", parsed_input.username])
     if parsed_input.password:
         command.extend(["--password", parsed_input.password])
-    command.extend(["-N", "4", "--http-chunk-size", "10M"])
+    threads = str(settings.download_threads)
+    command.extend(["-N", threads, "--http-chunk-size", "10M"])
+    if shutil.which("aria2c"):
+        command.extend(
+            [
+                "--downloader",
+                "aria2c",
+                "--downloader-args",
+                f"aria2c:--summary-interval=1 -x{threads} -s{threads}",
+            ]
+        )
+        logger.debug("aria2c external downloader enabled | threads=%s", threads)
     return command
 
 async def _run_command(

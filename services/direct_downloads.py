@@ -32,6 +32,10 @@ _PROGRESS_INTERVAL_SECONDS = 2
 # ~10 KiB/s to stay under it; it fires only when a server parks a range request.
 _SEGMENT_STALL_SECONDS = 15
 
+# Попыток на сегмент; каждый ретрай возобновляется с последнего записанного
+# смещения, поэтому флаки-соединение стоит остаток одного сегмента, а не весь файл.
+_SEGMENT_MAX_ATTEMPTS = 3
+
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,48 @@ async def _probe_range(
         return None
 
 
+async def _fetch_segment_range(
+    *,
+    session: aiohttp.ClientSession,
+    url: str,
+    proxy: str | None,
+    position: list[int],
+    end: int,
+    handle,
+    downloaded: list[int],
+    settings: Settings,
+) -> None:
+    """Скачать байты ``position[0]..end`` включительно, продвигая ``position[0]`` по мере записи.
+
+    ``position`` разделяется с вызывающим циклом ретраев, поэтому при обрыве
+    посреди потока уже записанный прогресс не теряется.
+    """
+    headers = {"Range": f"bytes={position[0]}-{end}", "Accept-Encoding": "identity"}
+    # sock_read turns a stalled connection into ServerTimeoutError instead of hanging
+    # until process_max_timeout; the caller resumes the segment from ``position[0]``.
+    timeout = aiohttp.ClientTimeout(
+        total=settings.process_max_timeout, sock_read=_SEGMENT_STALL_SECONDS
+    )
+    async with session.get(url, proxy=proxy, headers=headers, timeout=timeout) as response:
+        if response.status != 206:
+            raise RuntimeError(
+                f"Server stopped honoring byte ranges (status {response.status})"
+            )
+        parsed = _parse_content_range(response.headers.get("Content-Range", ""))
+        if parsed is None or parsed[0] != position[0]:
+            raise RuntimeError("Server returned an unexpected byte range")
+        async for chunk in response.content.iter_chunked(settings.chunk_size):
+            _write_all(handle.fileno(), chunk, position[0])
+            position[0] += len(chunk)
+            # No await between read and write, so the shared counter needs no lock.
+            downloaded[0] += len(chunk)
+            if downloaded[0] > settings.max_upload_bytes:
+                raise FileTooLargeError(
+                    f"Downloaded {downloaded[0]} bytes exceeds upload limit "
+                    f"of {settings.max_upload_bytes} bytes"
+                )
+
+
 async def _download_segment(
     *,
     session: aiohttp.ClientSession,
@@ -142,35 +188,34 @@ async def _download_segment(
     downloaded: list[int],
     settings: Settings,
 ) -> None:
-    headers = {"Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"}
-    # sock_read turns a stalled connection into ServerTimeoutError instead of hanging
-    # until process_max_timeout; the caller then retries the file as a single stream.
-    timeout = aiohttp.ClientTimeout(
-        total=settings.process_max_timeout, sock_read=_SEGMENT_STALL_SECONDS
-    )
-    async with session.get(url, proxy=proxy, headers=headers, timeout=timeout) as response:
-        if response.status != 206:
+    position = [start]
+    attempts = 0
+    while position[0] <= end:
+        if attempts >= _SEGMENT_MAX_ATTEMPTS:
             raise RuntimeError(
-                f"Server stopped honoring byte ranges (status {response.status})"
+                f"Segment {start}-{end} delivered {position[0] - start} of "
+                f"{end - start + 1} bytes after {_SEGMENT_MAX_ATTEMPTS} attempts"
             )
-        parsed = _parse_content_range(response.headers.get("Content-Range", ""))
-        if parsed is None or parsed[0] != start:
-            raise RuntimeError("Server returned an unexpected byte range")
-        offset = start
-        async for chunk in response.content.iter_chunked(settings.chunk_size):
-            _write_all(handle.fileno(), chunk, offset)
-            offset += len(chunk)
-            # No await between read and write, so the shared counter needs no lock.
-            downloaded[0] += len(chunk)
-            if downloaded[0] > settings.max_upload_bytes:
-                raise FileTooLargeError(
-                    f"Downloaded {downloaded[0]} bytes exceeds upload limit "
-                    f"of {settings.max_upload_bytes} bytes"
-                )
-        expected = end - start + 1
-        if offset - start != expected:
-            raise RuntimeError(
-                f"Segment {start}-{end} delivered {offset - start} of {expected} bytes"
+        attempts += 1
+        try:
+            await _fetch_segment_range(
+                session=session,
+                url=url,
+                proxy=proxy,
+                position=position,
+                end=end,
+                handle=handle,
+                downloaded=downloaded,
+                settings=settings,
+            )
+        except (aiohttp.ClientError, RuntimeError) as exc:
+            logger.warning(
+                "Segment attempt failed, resuming | start=%s end=%s offset=%s attempt=%s error=%r",
+                start,
+                end,
+                position[0],
+                attempts,
+                exc,
             )
 
 
@@ -259,7 +304,7 @@ async def _run_segments(
         monitor.cancel()
         try:
             await asyncio.gather(*tasks, monitor, return_exceptions=True)
-        except BaseException:  # pylint: disable=broad-exception-caught
+        except BaseException:
             # Outer cancellation delivered here; the handle must still be closed.
             pass
         handle.close()

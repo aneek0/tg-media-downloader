@@ -88,3 +88,23 @@ async def test_status_progress_swallows_edit_errors():
 
     reporter = StatusProgress(broken_edit, "v.mp4", min_interval=0)
     await reporter.feed_line("[download]  10.0% of ~100.00MiB")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_status_progress_parses_aria2c_lines():
+    calls: list[str] = []
+
+    async def edit(text: str) -> None:
+        calls.append(text)
+
+    reporter = StatusProgress(edit, "video.mp4", min_interval=0)
+    await reporter.feed_line(
+        "[#1a2b3c 40.0MiB/200.0MiB(20%) CN:16 DL:9.5MiB ETA:16s]"
+    )
+    await reporter.feed_line("[#1a2b3c 100.0MiB/200.0MiB(50%) CN:16]")
+
+    assert len(calls) == 2
+    assert "20% of 200.0MiB" in calls[0]
+    assert "Speed: 9.5MiB/s" in calls[0]
+    assert "ETA: 16s" in calls[0]
+    assert "50% of 200.0MiB" in calls[1]

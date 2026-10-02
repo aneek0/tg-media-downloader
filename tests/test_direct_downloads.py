@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import aiohttp
 import pytest
 from config import Settings
 
@@ -38,7 +39,7 @@ class FakeResponse:
         def __init__(self, chunks: list[bytes]):
             self._chunks = chunks
 
-        async def iter_chunked(self, chunk_size: int):
+        async def iter_chunked(self, _chunk_size: int):
             for chunk in self._chunks:
                 yield chunk
 
@@ -357,9 +358,54 @@ async def test_direct_download_retries_single_stream_after_range_break(
 
     assert artifact.path.read_bytes() == payload
     ranged = [request for request in session.requests if "Range" in request["headers"]]
-    assert len(ranged) == 5  # probe + four segments, all rejected
+    assert len(ranged) == 13  # probe + four segments x three attempts, all rejected
     assert "Range" not in session.requests[-1]["headers"]
 
+
+@pytest.mark.asyncio
+async def test_direct_download_segment_resume_after_midstream_failure(
+    monkeypatch, tmp_path
+):
+    """A segment failing mid-stream must resume in place, not restart the file."""
+    payload = make_payload(4 * 1024 * 1024)
+    settings = make_settings(tmp_path, max_upload_bytes=len(payload) * 2)
+    settings.download_threads = 4
+    mib = 1024 * 1024
+    broken_served = False
+    base_route = ranged_route(payload)
+
+    class FailingResponse(FakeResponse):
+        @property
+        def content(self):
+            chunks = self._chunks
+
+            class _FailingContent:
+                async def iter_chunked(self, _chunk_size: int):
+                    for chunk in chunks:
+                        yield chunk
+                    raise aiohttp.ClientConnectionError("boom")
+
+            return _FailingContent()
+
+    def flaky_route(headers: dict[str, str]) -> FakeResponse:
+        nonlocal broken_served
+        if headers.get("Range") == f"bytes={mib}-{2 * mib - 1}" and not broken_served:
+            broken_served = True
+            return FailingResponse(
+                [payload[mib : mib + 100]],
+                100,
+                status=206,
+                content_range=f"bytes {mib}-{2 * mib - 1}/{len(payload)}",
+            )
+        return base_route(headers)
+
+    artifact, session, _ = await run_download(
+        monkeypatch, tmp_path, settings, flaky_route
+    )
+
+    assert artifact.path.read_bytes() == payload
+    requested_ranges = [request["headers"].get("Range") for request in session.requests]
+    assert f"bytes={mib + 100}-{2 * mib - 1}" in requested_ranges
 
 @pytest.mark.asyncio
 async def test_direct_download_rejects_html_from_probe(monkeypatch, tmp_path):
