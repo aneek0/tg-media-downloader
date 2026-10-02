@@ -32,7 +32,7 @@ async def ui_callback(query: CallbackQuery, callback_data: UiCallback) -> None:
 
 
 @router.callback_query(RequestCallback.filter())
-async def request_callback(
+async def request_callback(  # pylint: disable=too-many-positional-arguments
     query: CallbackQuery,
     callback_data: RequestCallback,
     settings: Settings,

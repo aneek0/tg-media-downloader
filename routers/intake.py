@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.message(F.chat.type == "private", F.text)
-async def intake_message(
+async def intake_message(  # pylint: disable=too-complex,too-many-positional-arguments
     message: Message,
     settings: Settings,
     cooldown: CooldownManager,

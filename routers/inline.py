@@ -62,7 +62,7 @@ def _first_url_in(raw: str) -> str:
     return rest[:end].rstrip(".,;:!?)]}\"'>")
 
 
-def _description_for(parsed: ParsedInput) -> str:
+def _description_for() -> str:
     return "Download this link and send the media here."
 
 
@@ -192,7 +192,7 @@ def _gallery_result(
     )
 
 
-async def _error_article(query: InlineQuery, message: str) -> InlineQueryResultArticle:
+async def _error_article(message: str) -> InlineQueryResultArticle:
     return InlineQueryResultArticle(
         id="error",
         title="Cannot download",
@@ -222,7 +222,7 @@ async def _answer_gallery_media(
         if twitter and probe.error and "Unsupported URL" not in probe.error:
             friendly = _gallery_friendly_error(probe.error, bool(settings.twitter_cookies))
             await query.answer(
-                [await _error_article(query, friendly)], cache_time=0, is_personal=True
+                [await _error_article(friendly)], cache_time=0, is_personal=True
             )
             return True
         return False
@@ -254,14 +254,14 @@ async def _answer_gallery_media(
                 probe.file_dicts,
                 parsed,
                 request_store,
-                body or _description_for(parsed),
+                body or _description_for(),
             )
         )
         if results:
             await query.answer(results, cache_time=0, is_personal=True)
             return True
         await query.answer(
-            [await _error_article(query, "No media found in this tweet")],
+            [await _error_article("No media found in this tweet")],
             cache_time=0,
             is_personal=True,
         )
@@ -436,7 +436,7 @@ async def inline_query_handler(
             InlineQueryResultArticle(
                 id=token,
                 title=text.INLINE_TITLE,
-                description=_description_for(parsed),
+                description=_description_for(),
                 input_message_content=InputTextMessageContent(
                     message_text=text.PROCESSING,
                 ),

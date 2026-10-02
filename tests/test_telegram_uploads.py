@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ def write_media(path: Path, kind: str) -> Path:
 def make_artifact(
     path: Path,
     send_type: str,
+    *,
     caption: str = "c",
     duration: int | None = None,
     width: int | None = None,
@@ -144,18 +146,16 @@ async def test_upload_artifacts_chunks_over_ten(tmp_path):
 
 @pytest.mark.asyncio
 async def test_upload_artifact_returns_cached_media(monkeypatch, tmp_path):
-    from contextlib import asynccontextmanager
-
     @asynccontextmanager
     async def _ctx(**_: object):
         yield None
 
     class _NoAction:
-        upload_photo = staticmethod(lambda **kw: _ctx(**kw))
-        upload_document = staticmethod(lambda **kw: _ctx(**kw))
-        upload_video = staticmethod(lambda **kw: _ctx(**kw))
-        upload_video_note = staticmethod(lambda **kw: _ctx(**kw))
-        upload_audio = staticmethod(lambda **kw: _ctx(**kw))
+        upload_photo = staticmethod(_ctx)
+        upload_document = staticmethod(_ctx)
+        upload_video = staticmethod(_ctx)
+        upload_video_note = staticmethod(_ctx)
+        upload_audio = staticmethod(_ctx)
 
     monkeypatch.setattr("services.telegram_uploads.ChatActionSender", _NoAction)
 
@@ -242,10 +242,6 @@ def test_media_item_falls_back_to_metadata(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_upload_artifact_prefers_artifact_metadata(monkeypatch, tmp_path):
-    from contextlib import asynccontextmanager
-
-    calls = []
-
     async def fail_duration(path):
         raise AssertionError("hachoir should not run when artifact fields are set")
 
@@ -254,11 +250,11 @@ async def test_upload_artifact_prefers_artifact_metadata(monkeypatch, tmp_path):
         yield None
 
     class _NoAction:
-        upload_video = staticmethod(lambda **kw: _ctx(**kw))
-        upload_document = staticmethod(lambda **kw: _ctx(**kw))
-        upload_video_note = staticmethod(lambda **kw: _ctx(**kw))
-        upload_audio = staticmethod(lambda **kw: _ctx(**kw))
-        upload_photo = staticmethod(lambda **kw: _ctx(**kw))
+        upload_video = staticmethod(_ctx)
+        upload_document = staticmethod(_ctx)
+        upload_video_note = staticmethod(_ctx)
+        upload_audio = staticmethod(_ctx)
+        upload_photo = staticmethod(_ctx)
 
     monkeypatch.setattr("services.telegram_uploads.ChatActionSender", _NoAction)
     monkeypatch.setattr("services.telegram_uploads.video_metadata", fail_duration)
@@ -295,18 +291,16 @@ async def test_upload_artifact_prefers_artifact_metadata(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_upload_artifact_falls_back_to_metadata(monkeypatch, tmp_path):
-    from contextlib import asynccontextmanager
-
     @asynccontextmanager
     async def _ctx(**_: object):
         yield None
 
     class _NoAction:
-        upload_video = staticmethod(lambda **kw: _ctx(**kw))
-        upload_document = staticmethod(lambda **kw: _ctx(**kw))
-        upload_video_note = staticmethod(lambda **kw: _ctx(**kw))
-        upload_audio = staticmethod(lambda **kw: _ctx(**kw))
-        upload_photo = staticmethod(lambda **kw: _ctx(**kw))
+        upload_video = staticmethod(_ctx)
+        upload_document = staticmethod(_ctx)
+        upload_video_note = staticmethod(_ctx)
+        upload_audio = staticmethod(_ctx)
+        upload_photo = staticmethod(_ctx)
 
     monkeypatch.setattr("services.telegram_uploads.ChatActionSender", _NoAction)
     monkeypatch.setattr(
@@ -337,18 +331,16 @@ async def test_upload_artifact_falls_back_to_metadata(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_upload_artifact_escapes_file_name_in_caption(monkeypatch, tmp_path):
-    from contextlib import asynccontextmanager
-
     @asynccontextmanager
     async def _ctx(**_: object):
         yield None
 
     class _NoAction:
-        upload_photo = staticmethod(lambda **kw: _ctx(**kw))
-        upload_document = staticmethod(lambda **kw: _ctx(**kw))
-        upload_video = staticmethod(lambda **kw: _ctx(**kw))
-        upload_video_note = staticmethod(lambda **kw: _ctx(**kw))
-        upload_audio = staticmethod(lambda **kw: _ctx(**kw))
+        upload_photo = staticmethod(_ctx)
+        upload_document = staticmethod(_ctx)
+        upload_video = staticmethod(_ctx)
+        upload_video_note = staticmethod(_ctx)
+        upload_audio = staticmethod(_ctx)
 
     monkeypatch.setattr("services.telegram_uploads.ChatActionSender", _NoAction)
 

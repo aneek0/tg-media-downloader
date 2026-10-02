@@ -54,7 +54,7 @@ def _parse_twitter_cookies(raw: str | None) -> str:
 
 
 @dataclass(slots=True)
-class Settings:
+class Settings:  # pylint: disable=too-many-instance-attributes
     bot_token: str
     owner_id: int
     auth_users: set[int]

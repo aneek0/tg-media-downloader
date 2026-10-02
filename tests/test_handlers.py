@@ -5,11 +5,12 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 
 from routers.callbacks import request_callback
-from services.gallery import GalleryProbe
 from routers.commands import about_command, help_command, start_command
 from routers.intake import intake_message
 from routers.thumbnails import delete_thumbnail, show_thumbnail
 from services.cooldown import CooldownManager
+from services.executor import execute_request
+from services.gallery import GalleryProbe
 from services.request_store import RequestStore
 from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
@@ -303,8 +304,6 @@ async def test_download_best_quality_audio_command(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_execute_request_gallery_media(monkeypatch, tmp_path):
-    from services.executor import execute_request
-
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
@@ -590,8 +589,6 @@ async def test_intake_direct_image_fast_path_falls_back_on_error(monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_path):
-    from services.executor import execute_request
-
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
@@ -600,14 +597,7 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
         token="tok-url",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
-        options=[
-            DownloadOption(
-                option_id="gallery_all",
-                label="Media",
-                send_type="photo",
-                mode="gallery",
-            )
-        ],
+        options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo", mode="gallery")],
         info={
             "url_media": [
                 {"url": "https://cdn/p1.jpg", "filename": "p1.jpg", "send_type": "photo", "caption": "c"},
@@ -651,8 +641,6 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkeypatch, tmp_path):
-    from services.executor import execute_request
-
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
@@ -661,14 +649,7 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
         token="tok-fb",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
-        options=[
-            DownloadOption(
-                option_id="gallery_all",
-                label="Media",
-                send_type="photo",
-                mode="gallery",
-            )
-        ],
+        options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo", mode="gallery")],
         info={
             "url_media": [
                 {"url": "https://cdn/p1.jpg", "filename": "p1.jpg", "send_type": "photo", "caption": None},

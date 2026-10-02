@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 from config import Settings
 from services.gallery import (
@@ -15,6 +15,7 @@ from services.gallery import (
     probe_gallery,
     small_thumbnail_url,
 )
+from utils.logging_config import redact_command
 from utils.models import ParsedInput
 
 
@@ -137,7 +138,7 @@ async def test_download_gallery_media_builds_artifacts(monkeypatch, tmp_path):
         ]
     )
 
-    async def fake_run(command, cwd=None, timeout=None):
+    async def fake_run(command, cwd=None, timeout=None):  # pylint: disable=unused-argument
         if "-j" in command:
             return (probe_json, "")
         (Path(cwd) / "2103014006747439474_1.jpg").write_bytes(b"\xff\xd8\xff\xe0jpg")
@@ -199,8 +200,6 @@ async def test_download_gallery_media_no_media(monkeypatch, tmp_path):
 
 
 def test_gallery_command_redacted():
-    from utils.logging_config import redact_command
-
     assert redact_command(["gallery-dl", "-C", "/tmp/c.txt"]) == [
         "gallery-dl",
         "-C",
@@ -308,8 +307,6 @@ def test_gallery_url_items_caption_and_types():
 
 
 def test_gallery_download_command_generic_filename_format(tmp_path):
-    from services.gallery import _gallery_download_command
-
     settings = make_gallery_settings(tmp_path, "", http_proxy="")
     command = _gallery_download_command(
         ParsedInput(source_url="https://pawchive.pw/post/1"), settings, tmp_path / "w"
@@ -319,8 +316,6 @@ def test_gallery_download_command_generic_filename_format(tmp_path):
 
 
 def test_gallery_download_command_twitter_filename_format(tmp_path):
-    from services.gallery import _gallery_download_command
-
     settings = make_gallery_settings(tmp_path, "", http_proxy="")
     command = _gallery_download_command(
         ParsedInput(source_url="https://x.com/a/status/1"), settings, tmp_path / "w"

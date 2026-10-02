@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import json
 import re
 
 import pytest
@@ -37,7 +36,7 @@ from utils.models import (
 
 
 @pytest.mark.asyncio
-async def test_inline_query_cache_hit_answers_cached_results(monkeypatch, tmp_path):
+async def test_inline_query_cache_hit_answers_cached_results(tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
@@ -66,7 +65,7 @@ async def test_inline_query_cache_hit_answers_cached_results(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_inline_query_cache_hit_with_photos_gets_pager(monkeypatch, tmp_path):
+async def test_inline_query_cache_hit_with_photos_gets_pager(tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)

@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from config import Settings
 from gallery_dl import extractor as _gdl_extractor
+
+from config import Settings
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
 from services.ytdlp import VIDEO_EXTENSIONS, _prepare_cookies_file

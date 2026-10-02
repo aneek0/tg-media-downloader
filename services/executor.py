@@ -27,7 +27,7 @@ from utils.models import DownloadOption, FileTooLargeError, StoredRequest
 logger = logging.getLogger(__name__)
 
 
-async def execute_request(
+async def execute_request(  # pylint: disable=too-complex
     *,
     stored: StoredRequest,
     option: DownloadOption,
