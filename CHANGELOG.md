@@ -6,8 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-05
+
+First tagged release of the fork: everything below since the fork is included.
+
 ### Added
 
+- CI (GitHub Actions): pytest + pylint (10/10 gate) on every push/PR, with uv caching.
+- Release pipeline: on `v*` tags — tests, multi-arch Docker image pushed to
+  `ghcr.io/aneek0/tg-media-downloader`, GitHub Release with generated notes.
+- Dependabot: weekly dependency (pip), GitHub Actions, and Docker base-image updates.
+- Multi-stage Dockerfile: builder on the official uv image, runtime on `python:3.11-slim`,
+  non-root `app` user, `DOWNLOADS` declared as a volume.
+- `compose.yml`: bot + local Bot API server (`aiogram/telegram-bot-api`) for 2000 MB uploads,
+  persistent state volumes.
+- systemd unit example for bare-metal deployments (hardened: DynamicUser, ProtectSystem, seccomp).
+- `SECURITY.md`: vulnerability reporting and sensitive-data handling (`TWITTER_COOKIES`, bot token).
+- README: full environment table (incl. `PROCESS_MAX_TIMEOUT`, `AUTO_BEST_QUALITY`,
+  `GALLERY_PROBE_TIMEOUT`), deployment section (Compose/Docker/ghcr/systemd), troubleshooting table.
+- `GALLERY_PROBE_TIMEOUT` added to `.env.example`.
 - `DOWNLOAD_THREADS` setting (default 16, clamped to 16): direct-link downloads are fetched over
   parallel HTTP range requests; servers without range support, files below 1 MiB, and
   `DOWNLOAD_THREADS=1` keep the previous single-stream behaviour.
@@ -50,13 +67,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hermetic config tests via `PYTHON_DOTENV_DISABLED`.
 - Parallel direct-download segments retry in place up to 3 times, resuming from the last
   written byte, before the whole file falls back to a single-stream restart.
+- Version bumped to 3.1.0.
 
 ### Removed
 
-- `docs/` external documentation site (Next.js/Nextra), `.hintrc`, `SECURITY.md`,
-  `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, GitHub Actions workflows (`.github/`), Renovate config,
-  Heroku `app.json`, Fiverr banner, upstream deploy buttons, contributor table workflow,
-  FUNDING.yml.
+- `docs/` external documentation site (Next.js/Nextra), `.hintrc`, `CODE_OF_CONDUCT.md`,
+  `CONTRIBUTING.md`, GitHub Actions workflows (`.github/`), Renovate config, Heroku `app.json`,
+  Fiverr banner, upstream deploy buttons, contributor table workflow, FUNDING.yml.
 
 ## [3.0.0] and earlier
 

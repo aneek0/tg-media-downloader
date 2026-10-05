@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "all-url-uploader"
-version = "3.0.0"
+version = "3.1.0"
 description = "Telegram bot that uploads direct links and yt-dlp supported media with aiogram."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

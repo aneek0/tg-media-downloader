@@ -4,8 +4,14 @@ __pycache__/
 .env
 .venv/
 .pytest_cache/
+.coverage
+.pylintrc
 DOWNLOADS/
 All-Url-Uploader.session
 docs/
 tests/
-  
+compose.yml
+examples/
+SECURITY.md
+CHANGELOG.md
+AGENTS.md

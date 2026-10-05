@@ -1,0 +1,51 @@
+# Example systemd unit for tg-media-downloader.
+#
+# Install:
+#   sudo cp examples/tg-media-downloader.service /etc/systemd/system/
+#   sudo cp .env /etc/tgmd/tg-media-downloader.env   # see EnvironmentFile below
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tg-media-downloader
+#
+# Adjust /var/lib/tg-media-downloader (RuntimeDir/StateDirectory) and the
+# user if you don't run it as the system service user "tgmd".
+
+[Unit]
+Description=tg-media-downloader Telegram bot
+Documentation=https://github.com/aneek0/tg-media-downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=tgmd
+Group=tgmd
+EnvironmentFile=/etc/tgmd/tg-media-downloader.env
+Environment=DOWNLOAD_LOCATION=/var/lib/tg-media-downloader
+WorkingDirectory=/opt/tg-media-downloader
+ExecStart=/opt/tg-media-downloader/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+# Hardening
+DynamicUser=yes
+StateDirectory=tg-media-downloader
+RuntimeDirectory=tg-media-downloader
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

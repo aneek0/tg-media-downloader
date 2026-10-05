@@ -11,9 +11,10 @@ Built with `aiogram`, `yt-dlp`, `gallery-dl`, and `uv`.
 
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3110/)
-[![License](https://img.shields.io/github/license/aneek0/tg-media-downloader)](LICENSE)
+[![CI](https://github.com/aneek0/tg-media-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/aneek0/tg-media-downloader/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/aneek0/tg-media-downloader)](LICENSE)
 
-[Changelog](CHANGELOG.md) · [Docker](Dockerfile) · [Issues](https://github.com/aneek0/tg-media-downloader/issues)
+[Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Issues](https://github.com/aneek0/tg-media-downloader/issues)
 
 </div>
 
@@ -87,13 +88,17 @@ uv run python bot.py
 - `CHUNK_SIZE` - optional direct-download chunk size; values below `1024` are treated as kilobytes for backward compatibility
 - `DOWNLOAD_THREADS` - optional; number of parallel HTTP connections for the raw (direct) downloader, clamped to 16 (default 16); `1` disables parallel segments and downloads the file in a single stream
 - `DOWNLOAD_LOCATION` - optional base directory for temporary downloads and uploads
+- `PROCESS_MAX_TIMEOUT` - optional hard timeout in seconds for one yt-dlp / gallery-dl process (default 3700)
+- `AUTO_BEST_QUALITY` - optional; when `true` (default) yt-dlp links skip the format-selection keyboard and download at the best quality within `MAX_HEIGHT`
 - `MAX_HEIGHT` - optional; maximum video height for auto downloads (default 1080)
+- `GALLERY_PROBE_TIMEOUT` - optional; gallery-dl probe timeout for Twitter/X posts in seconds (default 15)
 - `REQUEST_COOLDOWN_SECONDS` - optional per-user cooldown window in seconds (default 3600); `AUTH_USERS` bypass it
 - `MAX_UPLOAD_BYTES` - optional; downloads larger than this are skipped with a friendly message (default 1992294400 ≈ 1.9 GB, the local Bot API server limit; set 52428800 for the cloud Bot API)
 - `VERIFY_SSL` - optional; set false only for broken TLS interception (default true)
 - `HTTP_PROXY` - optional proxy URL used for direct downloads, yt-dlp, and gallery-dl
 - `TELEGRAM_PROXY` - optional proxy URL for the Telegram API connection only; falls back to `HTTP_PROXY` when unset. Ignored when `TELEGRAM_API_URL` points to a self-hosted server (reached directly)
 - `TELEGRAM_API_URL` - optional base URL of a self-hosted local Bot API server (e.g. `http://localhost:8081`); raises the bot upload limit from 50 MB to 2000 MB. Run the official `telegram-bot-api` binary with `--local --api-id ... --api-hash ...` (keys from my.telegram.org) next to the bot; leave empty for the cloud Bot API
+- `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` - not read by the bot itself; used by the local Bot API server (see [Docker Compose](#docker-compose-recommended)) — the same keys from my.telegram.org
 - `TWITTER_COOKIES_FILE` / `TWITTER_COOKIES` - optional; path to a Netscape-format cookies.txt exported from a logged-in X/Twitter account, or the file content pasted into `.env` as a multiline value; enables downloads of 18+ (NSFW) posts. Export cookies with a browser extension ("Get cookies.txt LOCALLY") while logged in to x.com.
 
 ## Project Layout
@@ -104,7 +109,25 @@ uv run python bot.py
 - shared helpers and models: `utils/`
 - tests: `tests/`
 
-## Docker
+## Deployment
+
+### Docker Compose (recommended)
+
+Runs the bot together with a local Bot API server and lifts the upload limit to 2000 MB:
+
+```bash
+cp .env.example .env   # fill BOT_TOKEN, OWNER_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH
+docker compose up -d
+```
+
+`compose.yml` pulls the published image `ghcr.io/aneek0/tg-media-downloader:latest`; comment in
+`build: .` to build from the source tree instead. State (media cache, thumbnails, pending requests)
+persists in the `downloads` volume.
+
+The local Bot API server requires the bot to run on the same host once before files are downloadable
+by URL; the bot already handles this (local mode files are uploaded by the bot itself).
+
+### Docker (manual)
 
 Build and run the container with your existing `.env` file:
 
@@ -113,9 +136,41 @@ docker build -t tg-media-downloader .
 docker run --env-file .env tg-media-downloader
 ```
 
+Or skip the build and use the published image:
+
+```bash
+docker run --env-file .env -v tgmd-downloads:/app/DOWNLOADS \
+  ghcr.io/aneek0/tg-media-downloader:latest
+```
+
+The image is multi-stage, runs as the non-root `app` user, and pins dependencies from `uv.lock`.
+
+### systemd (bare metal)
+
+```bash
+sudo cp examples/tg-media-downloader.service /etc/systemd/system/
+sudo mkdir /etc/tgmd && sudo cp .env /etc/tgmd/tg-media-downloader.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now tg-media-downloader
+```
+
+The unit assumes the checkout lives at `/opt/tg-media-downloader` (with `.venv` from `uv sync`) and
+runs under a dynamically provisioned user; adjust paths to your setup.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `WEBPAGE_CURL_FAILED` on tweet videos | Telegram's own fetcher refuses `video.twimg.com`. Tweet videos are download-on-tap articles — tap the result and let the bot download and upload it. Photos keep the instant CDN path. |
+| Twitter/X: "login required" or 18+ posts fail | `TWITTER_COOKIES(_FILE)` missing or the session expired. Re-export cookies.txt from a logged-in browser and update the value. |
+| Uploads fail above 50 MB | No local Bot API server: `TELEGRAM_API_URL` is unset, the server is down, or it was started without `--local` (compose sets it via `TELEGRAM_LOCAL=1`). Also set `MAX_UPLOAD_BYTES=1992280800` only if you run the local server; keep `52428800` for the cloud Bot API. |
+| Direct link arrives as a broken document / `text/html` rejected | The URL returns an HTML page, not a file. The bot rejects it on purpose — send it through the yt-dlp path instead (just paste the link; the probe routes it). |
+| `yt-dlp` or `gallery-dl` suddenly fails on a site | Extractors rot as sites change. Update the tools: `uv sync` refreshes the pinned versions; in Docker, pull a newer image. |
+| Bot replies "File too large to upload" | The resolved media exceeds `MAX_UPLOAD_BYTES`. Raise it only up to the 2000 MB local Bot API limit, or lower the requested quality. |
+
 ## Checks
 
-Run the checks locally:
+Run the checks locally (CI runs the same):
 
 ```bash
 uv run pytest

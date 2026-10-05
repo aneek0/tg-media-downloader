@@ -1,0 +1,32 @@
+services:
+  telegram-bot-api:
+    # Official image of the local Bot API server: https://github.com/aiogram/telegram-bot-api
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?}
+      TELEGRAM_LOCAL: 1
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "127.0.0.1:8081:8081"
+
+  bot:
+    image: ghcr.io/aneek0/tg-media-downloader:latest
+    # Build locally instead of pulling the published image:
+    # build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 2000 MB uploads via the local Bot API server above
+      TELEGRAM_API_URL: http://telegram-bot-api:8081
+      MAX_UPLOAD_BYTES: 1992294400
+    volumes:
+      - downloads:/app/DOWNLOADS
+    depends_on:
+      - telegram-bot-api
+
+volumes:
+  downloads:
+  telegram-bot-api-data:
