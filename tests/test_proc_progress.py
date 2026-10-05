@@ -67,6 +67,8 @@ async def test_status_progress_parses_and_rate_limits():
 
 @pytest.mark.asyncio
 async def test_status_progress_min_interval_blocks_updates():
+    """Pins the bug where the first progress line was throttled away when
+    time.monotonic() uptime was below min_interval (fresh CI runners)."""
     calls: list[str] = []
 
     async def edit(text: str) -> None:

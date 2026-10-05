@@ -88,7 +88,7 @@ class StatusProgress:
         self._edit_text = edit_text
         self._file_name = file_name
         self._min_interval = min_interval
-        self._last_update = 0.0
+        self._last_update: float | None = None
         self._last_text: str | None = None
 
     async def feed_line(self, line: str) -> None:
@@ -102,7 +102,7 @@ class StatusProgress:
             total, percent, aria2_speed, eta = aria2_match.groups()
             speed = f"{aria2_speed}/s" if aria2_speed else None
         now = time.monotonic()
-        if now - self._last_update < self._min_interval:
+        if self._last_update is not None and now - self._last_update < self._min_interval:
             return
         self._last_update = now
         text = f"Downloading <b>{self._file_name}</b>\n\n" + _render_progress(

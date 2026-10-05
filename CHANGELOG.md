@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- First status-progress update is no longer swallowed when `time.monotonic()` uptime is below
+  the throttle interval (fresh CI runners / short-lived processes): the first progress line
+  for a download now always reaches the Telegram status message.
+
 
 ## [3.1.0] - 2026-10-05
 
