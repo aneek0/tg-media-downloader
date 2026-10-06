@@ -5,12 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
-### Fixed
-
-- First status-progress update is no longer swallowed when `time.monotonic()` uptime is below
-  the throttle interval (fresh CI runners / short-lived processes): the first progress line
-  for a download now always reaches the Telegram status message.
-
 
 ## [3.1.0] - 2026-10-05
 
@@ -64,6 +58,9 @@ First tagged release of the fork: everything below since the fork is included.
   regular download-and-upload flow (same as every other link). Photos keep the instant CDN path.
   The tapped video is matched to the downloaded file by its expected `{tweet_id}_{num}.{extension}`
   name, so mixed photo/video albums pick the right item.
+- First status-progress update is no longer swallowed when `time.monotonic()` uptime is below
+  the throttle interval (fresh CI runners / short-lived processes): the first progress line
+  for a download now always reaches the Telegram status message.
 
 ### Changed
 
