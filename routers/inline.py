@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import aiohttp
+
 from aiogram import Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
@@ -13,6 +15,7 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultPhoto,
+    InlineQueryResultVideo,
     InputMediaPhoto,
     InputTextMessageContent,
     InlineQuery,
@@ -30,7 +33,7 @@ from services.inline_flow import InlineTaskRegistry, run_inline_download
 from services.media_cache import MediaCache, cached_inline_results
 from services.parsing import is_twitter_status_url, parse_user_input
 from services.request_store import RequestStore
-from services.ytdlp import _ext_from_url
+from services.ytdlp import _ext_from_url, probe_url
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
 from utils.keyboards import gallery_keyboard
 from utils.logging_config import safe_url_label
@@ -126,22 +129,92 @@ def _inline_photo_results(file_dicts: list[dict], caption: str) -> list:
     return results
 
 
-def _inline_video_results(
+_INLINE_VIDEO_MAX_BYTES = 16 * 1024 * 1024  # Telegram's URL-fetcher limit (~20MB, keep margin)
+
+
+async def _video_poster_url(parsed: ParsedInput, settings: Settings) -> str | None:
+    """Poster/thumbnail image URL for a video page (yt-dlp probe), or None.
+    Telegram fetches pbs.twimg.com posters itself, so the inline result
+    can be a real photo message that later edits into the video."""
+    if not is_twitter_status_url(parsed.source_url):
+        return None
+    try:
+        info = await probe_url(parsed, settings)
+    except (RuntimeError, ValueError):
+        return None
+    poster = info.get("thumbnail")
+    return poster if isinstance(poster, str) and poster.startswith("http") else None
+
+
+def _poster_photo_result(
+    token: str, poster_url: str, caption: str | None
+) -> InlineQueryResultPhoto:
+    """Inline result for a big video: its poster photo. A media message can
+    be edited into the video later (editMessageMedia), unlike a text
+    article - that edit is what used to fail silently."""
+    return InlineQueryResultPhoto(
+        id=token,
+        photo_url=poster_url,
+        thumbnail_url=small_thumbnail_url(poster_url) or poster_url,
+        caption=(caption or None),
+        reply_markup=_cancel_keyboard(token),
+    )
+
+
+async def _content_length(url: str) -> int | None:
+    """Content-Length of a media URL, or None when unreachable."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.head(
+                url,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as response:
+                if response.status != 200:
+                    return None
+                return response.content_length
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+
+
+async def _inline_video_results(
     file_dicts: list[dict],
     parsed: ParsedInput,
+    settings: Settings,
     request_store: RequestStore,
     description: str,
+    caption: str | None,
 ) -> list:
-    """Video items become tappable articles, not InlineQueryResultVideo:
-    Telegram's own fetcher cannot pull video.twimg.com URLs, so a
-    video_url result fails with WEBPAGE_CURL_FAILED on tap. The article
-    starts the bot's regular download-and-upload flow instead, via the
-    token in its result id."""
+    """Small videos become real InlineQueryResultVideo results: Telegram's
+    own fetcher pulls the CDN URL (works again since Oct 2026; verified by
+    a live sendVideo-by-URL), so tapping posts the video instantly - no
+    bot download, no edit, no DM. The URL fetcher caps around 20MB, so
+    anything above _INLINE_VIDEO_MAX_BYTES falls back to the poster-photo
+    flow: the result is the video's poster image (a real media message),
+    the background download swaps it for the video via editMessageMedia
+    (media -> media edits are allowed; text -> media are NOT - that was
+    the silent 'invalid message content specified' hang)."""
     results: list = []
     for media in file_dicts:
         if (media.get("extension") or "").lower() not in VIDEO_EXTENSIONS:
             continue
-        if not media.get("_url"):
+        url = media.get("_url")
+        if not url:
+            continue
+        size = await _content_length(url)
+        if size is not None and size <= _INLINE_VIDEO_MAX_BYTES:
+            extension = (media.get("extension") or "mp4").lower()
+            mime_type = "video/mp4" if extension != "webm" else "video/webm"
+            results.append(
+                InlineQueryResultVideo(
+                    id=f"video{len(results) + 1}",
+                    video_url=url,
+                    mime_type=mime_type,
+                    title="Video",  # required by the Bot API schema
+                    thumbnail_url=url,
+                    caption=(caption or None) if len(results) == 0 else None,
+                )
+            )
             continue
         token = request_store.create_token()
         # gallery-dl names twitter downloads "{tweet_id}_{num}.{extension}"
@@ -151,20 +224,35 @@ def _inline_video_results(
         preferred_name = None
         tweet_id = media.get("tweet_id")
         num = media.get("num")
-        extension = (media.get("extension") or "").lower()
+        extension = (media.get("extension") or "mp4").lower()
         if tweet_id and num and extension:
             preferred_name = f"{tweet_id}_{num}.{extension}"
+        poster = await _video_poster_url(parsed, settings)
         request_store.save(
             StoredRequest(
                 token=token,
                 request_type="inline_media",
                 parsed_input=parsed,
                 options=[],
-                info={"preferred_name": preferred_name},
+                info={
+                    "preferred_name": preferred_name,
+                    "poster_url": poster,
+                    # editMessageMedia on an inline message cannot upload a
+                    # new file (Bot API rule) - the media must be a URL or a
+                    # known file_id. The CDN URL is kept so the inline edit
+                    # can hand it to Telegram to fetch itself.
+                    "video_url": url,
+                },
             )
         )
         results.append(
-            InlineQueryResultArticle(
+            _poster_photo_result(
+                token,
+                poster,
+                caption if len(results) == 0 else None,
+            )
+            if poster
+            else InlineQueryResultArticle(
                 id=token,
                 title=f"Video {len(results) + 1}",
                 description=description[:120],
@@ -250,11 +338,13 @@ async def _answer_gallery_media(
             results.append(_gallery_result(token, gallery_photos, caption))
         results.extend(_inline_photo_results(probe.file_dicts, caption))
         results.extend(
-            _inline_video_results(
+            await _inline_video_results(
                 probe.file_dicts,
                 parsed,
+                settings,
                 request_store,
                 body or _description_for(),
+                caption,
             )
         )
         if results:
@@ -466,6 +556,7 @@ async def inline_chosen_handler(
         or token == "help"
         or token.startswith("cached")
         or token.startswith("gallery:")
+        or token.startswith("video")
     ):
         return
 

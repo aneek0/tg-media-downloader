@@ -5,11 +5,13 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
+from aiogram.types import FSInputFile, InputMediaVideo
 
 from config import Settings
 from services.direct_downloads import download_direct_file
 from services.gallery import download_gallery_media, probe_gallery
 from services.media_cache import MediaCache, cached_media_from
+from services.media import video_metadata
 from services.progress import StatusProgress, humanbytes
 from services.request_store import RequestStore
 from services.telegram_uploads import _media_item
@@ -55,13 +57,20 @@ class InlineTaskRegistry:
 
 class _InlineStatus:
     """Duck-typed status-message shim: lets download_direct_file edit the
-    inline message's text while it streams progress updates."""
+    inline message's text while it streams progress updates. When the
+    inline message is a media message (poster-photo flow), text edits are
+    impossible - they become no-ops and the poster stays visible."""
 
-    def __init__(self, bot: Bot, inline_message_id: str) -> None:
+    def __init__(
+        self, bot: Bot, inline_message_id: str, *, media_message: bool = False
+    ) -> None:
         self._bot = bot
         self._inline_message_id = inline_message_id
+        self._media_message = media_message
 
     async def edit_text(self, message_text: str, **_: object) -> None:
+        if self._media_message:
+            return
         await self._bot.edit_message_text(
             inline_message_id=self._inline_message_id,
             text=message_text,
@@ -149,13 +158,16 @@ async def _download_artifacts(
     request_store: RequestStore,
 ) -> list[DownloadArtifact]:
     """Edit the inline message into the downloading state, then fetch the
-    media via the gallery or the direct downloader."""
-    await bot.edit_message_text(
-        inline_message_id=inline_message_id,
-        text=text.DOWNLOAD_START.format(
-            name=text.esc(stored.parsed_input.source_url)
-        ),
-    )
+    media via the gallery or the direct downloader. In the poster-photo
+    flow (big videos) the message is already a photo, so the text-status
+    edit is skipped and the poster stays on screen while downloading."""
+    if not stored.info.get("poster_url"):
+        await bot.edit_message_text(
+            inline_message_id=inline_message_id,
+            text=text.DOWNLOAD_START.format(
+                name=text.esc(stored.parsed_input.source_url)
+            ),
+        )
 
     probe = await probe_gallery(stored.parsed_input, settings)
     if probe.file_dicts:
@@ -190,7 +202,11 @@ async def _download_artifacts(
                 work_dir=request_store.work_directory(stored.token),
                 info=info,
                 progress=StatusProgress(
-                    _InlineStatus(bot, inline_message_id).edit_text,
+                    _InlineStatus(
+                        bot,
+                        inline_message_id,
+                        media_message=bool(stored.info.get("poster_url")),
+                    ).edit_text,
                     text.esc(stored.parsed_input.source_url),
                 ),
             )
@@ -199,7 +215,11 @@ async def _download_artifacts(
     option = build_direct_options(stored.parsed_input)[0]
     return [
         await download_direct_file(
-            status_message=_InlineStatus(bot, inline_message_id),
+            status_message=_InlineStatus(
+                bot,
+                inline_message_id,
+                media_message=bool(stored.info.get("poster_url")),
+            ),
             parsed_input=stored.parsed_input,
             option=option,
             settings=settings,
@@ -324,9 +344,60 @@ async def run_inline_download(
     caption = (first.caption or first.file_name)[:1000] + dm_note
     edited: object = None
     try:
+        # Bot API rule: editing an INLINE message cannot upload a new file -
+        # media must be a file_id or a URL. For big videos (poster flow) the
+        # URL fetcher also fails (>20MB), so the video is uploaded to the
+        # user's DM first (sendVideo accepts uploads), its file_id is then
+        # used to edit the inline message. The DM copy doubles as the
+        # delivery when the inline edit itself is impossible.
+        video_url = stored.info.get("video_url")
+        media = _media_item(first, caption)
+        if video_url and first.send_type == "video":
+            try:
+                width = first.width
+                height = first.height
+                duration = first.duration
+                if width is None or height is None or duration is None:
+                    (
+                        fallback_width,
+                        fallback_height,
+                        fallback_duration,
+                    ) = await asyncio.to_thread(video_metadata, first.path)
+                    width = fallback_width if width is None else width
+                    height = fallback_height if height is None else height
+                    duration = fallback_duration if duration is None else duration
+                sent = await bot.send_video(
+                    chat_id=user_id,
+                    video=FSInputFile(first.path),
+                    caption=caption,
+                    width=width,
+                    height=height,
+                    duration=duration,
+                    supports_streaming=True,
+                )
+                dm_entry = cached_media_from(
+                    sent,
+                    send_type="video",
+                    file_name=first.file_name,
+                    caption=first.caption,
+                )
+                if dm_entry:
+                    dm_entries = [dm_entry, *dm_entries]
+                    media = InputMediaVideo(
+                        media=dm_entry.file_id,
+                        width=width,
+                        height=height,
+                        duration=duration,
+                        supports_streaming=True,
+                        caption=caption,
+                    )
+            except TelegramAPIError as exc:
+                logger.info(
+                    "Inline DM upload failed | user=%s error=%s", user_id, exc
+                )
         edited = await bot.edit_message_media(
             inline_message_id=inline_message_id,
-            media=_media_item(first, caption),
+            media=media,
         )
     except TelegramAPIError as exc:
         logger.exception(
@@ -334,6 +405,14 @@ async def run_inline_download(
             user_id,
             token,
             exc,
+        )
+        # Never hang silently: the user must learn the media could not be
+        # placed into the inline message. A media message can be edited to
+        # text, so this failure notice reaches the poster/photo flows too.
+        await _fail_inline_message(
+            bot,
+            inline_message_id,
+            f"{text.INLINE_FAILED}\n<code>{text.esc(str(exc))}</code>",
         )
     logger.info(
         "Inline request complete | user=%s token=%s files=%s dm_rest=%s",

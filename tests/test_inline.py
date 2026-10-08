@@ -484,12 +484,12 @@ async def test_inline_twitter_gallery_single_photo_not_created(
     assert not list((settings.requests_dir).iterdir())
 
 @pytest.mark.asyncio
-async def test_inline_twitter_video_is_download_article_not_video_result(
+async def test_inline_twitter_small_video_is_instant_video_result(
     monkeypatch, tmp_path
 ):
-    """Telegram cannot fetch video.twimg.com, so a video_url result fails
-    with WEBPAGE_CURL_FAILED on tap. Video tweets must produce a
-    download-on-tap article bound to a request token instead."""
+    """Telegram's URL fetcher pulls video.twimg.com again (verified live) but
+    caps around 20MB, so a small video becomes a real InlineQueryResultVideo
+    that posts instantly - no download token, no cancel keyboard."""
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
@@ -506,6 +506,57 @@ async def test_inline_twitter_video_is_download_article_not_video_result(
     monkeypatch.setattr(
         "routers.inline.probe_gallery",
         AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
+    )
+    # 2MB -> within the instant-video size cap
+    monkeypatch.setattr(
+        "routers.inline._content_length", AsyncMock(return_value=2 * 1024 * 1024)
+    )
+
+    query = SimpleNamespace(
+        query="https://x.com/a/status/1",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    results = query.answer.await_args.args[0]
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, InlineQueryResultVideo)
+    assert result.video_url == "https://video.twimg.com/amplify_video/1/vid/x.mp4"
+    assert result.id.startswith("video")
+    assert result.caption and "https://x.com/a/status/1" in result.caption
+    # instant result: no request token was created
+    assert not list((settings.requests_dir).iterdir())
+
+
+@pytest.mark.asyncio
+async def test_inline_twitter_large_video_is_download_article(
+    monkeypatch, tmp_path
+):
+    """Above the URL-fetcher size cap the video falls back to a
+    download-on-tap article bound to a request token."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {
+            "_url": "https://video.twimg.com/amplify_video/1/vid/x.mp4",
+            "extension": "mp4",
+            "tweet_id": 999,
+            "num": 1,
+        }
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
+    )
+    # 100MB -> above the cap
+    monkeypatch.setattr(
+        "routers.inline._content_length", AsyncMock(return_value=100 * 1024 * 1024)
     )
 
     query = SimpleNamespace(
@@ -558,6 +609,10 @@ async def test_inline_twitter_album_keeps_photo_cdn_and_video_article(
     monkeypatch.setattr(
         "routers.inline.probe_gallery",
         AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="tweet text", error=None)),
+    )
+    # large videos -> articles (the album keeps its download-on-tap path)
+    monkeypatch.setattr(
+        "routers.inline._content_length", AsyncMock(return_value=100 * 1024 * 1024)
     )
 
     query = SimpleNamespace(
