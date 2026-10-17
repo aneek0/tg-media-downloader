@@ -13,7 +13,7 @@ Single-process aiogram polling bot. Entry: `bot.py` → `app.py:run()` → `Sett
 Layers and their contracts:
 
 - **`routers/`** — aiogram handlers only. Registered in order `commands → thumbnails → inline → intake → callbacks` (order matters: `intake`'s catch-all `F.text` must come last). Routers never download or upload themselves; they build a `StoredRequest` + `DownloadOption` and hand off to the executor.
-- **`services/executor.py`** — the *single* dispatch point. `execute_request(stored, option, ...)` branches on `stored.request_type` (`"gallery_media"`, `"direct_download"`, `"youtube_quick"`, `"ytdlp_auto"`, `"ytdlp_selection"`, `"inline_media"`) → download service → `telegram_uploads` → `media_cache.record`. Always ends with `request_store.delete(token)` in `finally`.
+- **`services/executor.py`** — dispatch point for the **DM flow only**. `execute_request(stored, option, ...)` branches on `stored.request_type` (`"gallery_media"`, `"youtube_quick"`, `"ytdlp_selection"`, `"direct_download"`, `"ytdlp_auto"`) → download service → `telegram_uploads` → `media_cache.record`. Always ends with `request_store.delete(token)` in `finally`. Inline requests (`inline_media`, `inline_gallery`) bypass this and dispatch through `services/inline_flow.py:run_inline_download`.
 - **`services/`** — downloaders (`ytdlp.py`, `gallery.py`, `direct_downloads.py`), upload (`telegram_uploads.py`), and state stores (`request_store.py`, `media_cache.py`, `thumbnail_store.py`, `cooldown.py`).
 - **`utils/`** — pure helpers: `models.py` (shared dataclasses), `callbacks.py` (typed `CallbackData`), `keyboards.py`, `text.py` (all user-facing strings), `logging_config.py`.
 
@@ -63,19 +63,19 @@ docker build -t tg-media-downloader . && docker run --env-file .env tg-media-dow
 - **Naming**: snake_case functions/modules, PascalCase classes, UPPER_CASE consts, `_` prefix for private helpers. Pylint bans `map()` and `input()`.
 - **Line length 120** (pylint operative limit; the `autopep8` 150 config in pyproject is unused — autopep8 isn't a dev dep).
 - **Cleanup invariant**: every terminal path must delete per-request state (`request_store.delete`) and uploaded local files (`path.unlink(missing_ok=True)`). Preserve this when adding flows.
-- **Request types and send types are string literals** (`"gallery_media"`, `"direct_download"`, …; `"photo"|"video"|"audio"|"video_note"|"document"|"animation"`) — keep them consistent across `intake.py`, `executor.py`, and `utils/models.py`.
+- **Request types and send types are string literals** (`"gallery_media"`, `"youtube_quick"`, `"ytdlp_selection"`, `"direct_download"`, `"ytdlp_auto"`, `"inline_media"`, `"inline_gallery"`; `"photo"|"video"|"audio"|"video_note"|"document"|"animation"`) — keep them consistent across `intake.py`, `inline.py`, `executor.py`, `inline_flow.py`, and `utils/models.py`. `DownloadOption.mode` is written but never read — dispatch happens on `request_type`.
 
 ## Important Files
 
 - `bot.py`, `app.py` — entry point and wiring (session selection: local Bot API / proxy / default)
 - `config.py` — `Settings` dataclass + `from_env()`; all env parsing lives here (strict parsers raise `RuntimeError`)
-- `services/executor.py` — request-type dispatch; the one place download→upload→cache comes together
-- `services/telegram_uploads.py` — all Telegram sends (CDN-by-URL `send_url_media`, file uploads, albums of 10)
+- `services/executor.py` — request-type dispatch for the DM flow; the one place download→upload→cache comes together there
+- `services/telegram_uploads.py` — all Telegram sends (Telegram Fetch `send_url_media`, Direct Upload, albums of 10)
 - `utils/models.py` — `ParsedInput`, `StoredRequest`, `DownloadOption`, `DownloadArtifact`, `CachedMedia`, `FileTooLargeError`
 - `utils/callbacks.py` — typed callback prefixes: `ui:`, `req:`, `icxl`, `gnav:`
-- `.env.example` — all config vars; `README.md` + `CHANGELOG.md` are the only docs (Keep a Changelog format, fork changes under `[Unreleased]`)
+- `.env.example` — all config vars; `README.md` + `CHANGELOG.md` are the primary docs (Keep a Changelog format, fork changes under `[Unreleased]`). `GLOSSARY.md` holds the domain vocabulary — canonical names for terms, `_Avoid_` lists; read it before naming anything new.
 
-Notable env vars (defaults in `config.py`): `BOT_TOKEN`/`OWNER_ID` required; `TELEGRAM_API_URL` (local Bot API, 2000 MB uploads); `TELEGRAM_PROXY` (falls back to `HTTP_PROXY`); `TWITTER_COOKIES` (Netscape cookies.txt *path or inline content*, used by both yt-dlp and gallery-dl); `DOWNLOAD_THREADS` (16, capped); `MAX_UPLOAD_BYTES` (default ≈1.9 GB; set 52428800 for cloud API); `REQUEST_COOLDOWN_SECONDS` (3600; `AUTH_USERS` bypass). `GALLERY_PROBE_TIMEOUT` (15s) exists in code but is missing from `.env.example`.
+Notable env vars (defaults in `config.py`): `BOT_TOKEN`/`OWNER_ID` required; `TELEGRAM_API_URL` (local Bot API, 2000 MB uploads); `TELEGRAM_PROXY` (falls back to `HTTP_PROXY`); `TWITTER_COOKIES` (Netscape cookies.txt *path or inline content*, used by both yt-dlp and gallery-dl); `DOWNLOAD_THREADS` (16, capped); `MAX_UPLOAD_BYTES` (default ≈1.9 GB; set 52428800 for cloud API); `REQUEST_COOLDOWN_SECONDS` (3600; `AUTH_USERS` bypass). `GALLERY_PROBE_TIMEOUT` (15s) is documented in `.env.example:19`.
 
 ## Runtime/Tooling Preferences
 

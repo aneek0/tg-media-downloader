@@ -264,7 +264,6 @@ async def _run_auto_best(
                 option_id="auto_best",
                 label="Best quality",
                 send_type="video",
-                mode="ytdlp_auto",
             )
         ]
         request_type = "ytdlp_auto"
@@ -323,7 +322,6 @@ async def _run_gallery_download(
                 option_id="gallery_all",
                 label="Media",
                 send_type="photo",
-                mode="gallery",
             )
         ],
         info={

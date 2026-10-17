@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- `DownloadOption.mode`: written at 6 call sites, read at one (`services/ytdlp.py` audio
+  branch). The `--extract-audio` path now keys off `audio_quality`, which only mp3 options
+  set, so the duplicate discriminator is gone. Stale request files that still contain
+  `mode` are tolerated: `DownloadOption.from_dict` drops unknown keys.
+
+### Added
+
+- `GLOSSARY.md`: domain vocabulary (Request, Option, Artifact, Media Cache, Preview Store,
+  Telegram Fetch, Direct Upload, …) with `_Avoid_` lists, one section per delivery flow.
+
 ## [3.1.0] - 2026-10-05
 
 First tagged release of the fork: everything below since the fork is included.

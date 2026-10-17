@@ -140,13 +140,11 @@ def build_quick_youtube_options() -> list[DownloadOption]:
             option_id="quick_audio",
             label="Audio",
             send_type="audio",
-            mode="youtube_quick",
         ),
         DownloadOption(
             option_id="quick_video",
             label="Video",
             send_type="video",
-            mode="youtube_quick",
         ),
     ]
 
@@ -169,7 +167,6 @@ def build_ytdlp_options(info: dict) -> list[DownloadOption]:
                 option_id=_option_id("fmt", len(options)),
                 label=_label_for_format(format_data, index),
                 send_type="video",
-                mode="ytdlp_format",
                 format_id=str(format_id),
                 file_ext=ext,
             )
@@ -182,7 +179,6 @@ def build_ytdlp_options(info: dict) -> list[DownloadOption]:
                     option_id=_option_id("audio", len(options)),
                     label=f"MP3 ({quality})",
                     send_type="audio",
-                    mode="ytdlp_audio",
                     file_ext="mp3",
                     audio_quality=quality,
                 )
@@ -211,7 +207,6 @@ def build_direct_options(
             option_id="direct_primary",
             label="Send as media" if send_type != "document" else "Send as document",
             send_type=send_type,
-            mode="direct",
             file_ext=ext,
         )
     ]
@@ -221,7 +216,6 @@ def build_direct_options(
                 option_id="direct_document",
                 label="Send as document",
                 send_type="document",
-                mode="direct",
                 file_ext=ext,
             )
         )
@@ -453,7 +447,7 @@ async def download_selected_format(
     output_template = str(work_dir / "%(title)s [%(id)s].%(ext)s")
     command.extend(["--newline", "--progress"])
 
-    if option.mode == "ytdlp_audio":
+    if option.audio_quality is not None:
         command.extend(
             [
                 "--no-playlist",
@@ -486,9 +480,8 @@ async def download_selected_format(
         send_type = option.send_type
 
     logger.info(
-        "Starting yt-dlp format download | source=%s mode=%s format=%s send_type=%s work_dir=%s",
+        "Starting yt-dlp format download | source=%s selector=%s send_type=%s work_dir=%s",
         safe_url_label(parsed_input.source_url),
-        option.mode,
         option.format_id or option.audio_quality or option.file_ext or "-",
         send_type,
         work_dir,

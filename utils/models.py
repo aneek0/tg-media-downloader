@@ -18,7 +18,6 @@ class DownloadOption:
     option_id: str
     label: str
     send_type: str
-    mode: str
     format_id: str | None = None
     file_ext: str | None = None
     audio_quality: str | None = None
@@ -28,7 +27,10 @@ class DownloadOption:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DownloadOption":
-        return cls(**payload)
+        # Request files on disk may predate the removal of `mode`; unknown
+        # keys are dropped so a stale token resolves instead of raising.
+        known = {"option_id", "label", "send_type", "format_id", "file_ext", "audio_quality"}
+        return cls(**{key: payload[key] for key in known if key in payload})
 
 
 @dataclass(slots=True)

@@ -89,7 +89,6 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
                 option_id="direct_primary",
                 label="Send as media",
                 send_type="video",
-                mode="direct",
                 file_ext="mp4",
             )
         ],
@@ -317,7 +316,6 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
                 option_id="gallery_all",
                 label="Media",
                 send_type="photo",
-                mode="gallery",
             )
         ],
     )
@@ -597,7 +595,7 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
         token="tok-url",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
-        options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo", mode="gallery")],
+        options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo")],
         info={
             "url_media": [
                 {"url": "https://cdn/p1.jpg", "filename": "p1.jpg", "send_type": "photo", "caption": "c"},
@@ -649,7 +647,7 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
         token="tok-fb",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
-        options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo", mode="gallery")],
+        options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo")],
         info={
             "url_media": [
                 {"url": "https://cdn/p1.jpg", "filename": "p1.jpg", "send_type": "photo", "caption": None},

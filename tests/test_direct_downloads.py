@@ -171,7 +171,6 @@ def make_option() -> DownloadOption:
         option_id="direct",
         label="File",
         send_type="document",
-        mode="direct",
     )
 
 

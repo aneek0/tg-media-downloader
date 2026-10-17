@@ -205,9 +205,7 @@ async def test_download_quick_youtube_metadata_and_flags(monkeypatch, tmp_path):
     media.parent.mkdir(parents=True)
     media.write_bytes(b"x")
     parsed = ParsedInput(source_url="https://youtu.be/w")
-    option = DownloadOption(
-        option_id="quick_video", label="Video", send_type="video", mode="youtube_quick"
-    )
+    option = DownloadOption(option_id="quick_video", label="Video", send_type="video")
 
     artifact = await download_quick_youtube(parsed, option, settings, tmp_path / "work")
 
@@ -231,9 +229,7 @@ async def test_download_quick_youtube_metadata_defaults_to_none(monkeypatch, tmp
     media.parent.mkdir(parents=True)
     media.write_bytes(b"x")
     parsed = ParsedInput(source_url="https://youtu.be/w")
-    option = DownloadOption(
-        option_id="quick_audio", label="Audio", send_type="audio", mode="youtube_quick"
-    )
+    option = DownloadOption(option_id="quick_audio", label="Audio", send_type="audio")
 
     artifact = await download_quick_youtube(parsed, option, settings, tmp_path / "work")
 
@@ -288,7 +284,6 @@ async def test_download_selected_format_metadata_and_flags(monkeypatch, tmp_path
         option_id="v0",
         label="Video 360p mp4",
         send_type="video",
-        mode="ytdlp_format",
         format_id="137",
     )
 
@@ -306,3 +301,40 @@ async def test_download_selected_format_metadata_and_flags(monkeypatch, tmp_path
     command = run_mock.await_args.args[0]
     assert "--no-playlist" in command
     assert run_mock.await_args.kwargs["timeout"] == settings.process_max_timeout
+
+
+@pytest.mark.asyncio
+async def test_download_selected_format_audio_option_extracts_mp3(monkeypatch, tmp_path):
+    """Audio options no longer carry `mode`; `audio_quality` alone must select
+    the `--extract-audio` path. Without this the mp3 format choice silently
+    downloads a video stream."""
+    settings = make_cookie_settings(tmp_path, "")
+    info = {"title": "Track", "duration": 120, "width": None, "height": None}
+    run_mock = AsyncMock(return_value=("", ""))
+    monkeypatch.setattr("services.ytdlp._run_command", run_mock)
+    media = tmp_path / "work" / "Track [id].mp3"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"x")
+    parsed = ParsedInput(source_url="https://youtu.be/w")
+    option = DownloadOption(
+        option_id="audio2",
+        label="MP3 (320k)",
+        send_type="audio",
+        file_ext="mp3",
+        audio_quality="320k",
+    )
+
+    artifact = await download_selected_format(
+        parsed_input=parsed,
+        option=option,
+        info=info,
+        settings=settings,
+        work_dir=tmp_path / "work",
+    )
+
+    command = run_mock.await_args.args[0]
+    assert "--extract-audio" in command
+    assert command[command.index("--audio-format") + 1] == "mp3"
+    assert command[command.index("--audio-quality") + 1] == "320k"
+    assert "-f" not in command
+    assert artifact.send_type == "audio"
