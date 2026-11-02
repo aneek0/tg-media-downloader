@@ -72,6 +72,10 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     telegram_api_url: str = ""
     telegram_proxy: str = ""
     download_threads: int = 16
+    mornye_services: str = ""
+    mornye_quality: str = "LOSSLESS"
+    mornye_transcode: str = ""
+    spotify_collection_cap: int = 50
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -131,6 +135,14 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             ),
             download_threads=min(
                 _parse_positive_int(os.environ.get("DOWNLOAD_THREADS"), default=16), 16
+            ),
+            mornye_services=os.environ.get("MORNYE_SERVICES", "").strip(),
+            mornye_quality=(
+                os.environ.get("MORNYE_QUALITY", "LOSSLESS").strip() or "LOSSLESS"
+            ),
+            mornye_transcode=os.environ.get("MORNYE_TRANSCODE", "").strip().lower(),
+            spotify_collection_cap=_parse_positive_int(
+                os.environ.get("SPOTIFY_COLLECTION_CAP"), default=50
             ),
         )
 

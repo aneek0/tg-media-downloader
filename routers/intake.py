@@ -11,31 +11,22 @@ from aiogram.types import Message
 from config import Settings
 from services.cooldown import CooldownManager
 from services.executor import execute_request
-from services.gallery import (
-    _gallery_friendly_error,
-    gallery_url_items,
-    probe_gallery,
-)
+from services.gallery import _gallery_friendly_error
 from services.media_cache import MediaCache, cached_media_from, send_cached_media
+from services.mornye import MornyeService
 from services.parsing import (
     extract_link_text,
-    is_probable_youtube_url,
     is_twitter_status_url,
     parse_user_input,
 )
+from services.pipeline import prepare_request
 from services.request_store import RequestStore
+from services.status import chat_status
 from services.thumbnail_store import ThumbnailStore
-from services.ytdlp import (
-    _ext_from_url,
-    build_direct_options,
-    build_quick_youtube_options,
-    build_ytdlp_options,
-    probe_url,
-)
+from services.sources import SourceKind, classify
 from utils import text
 from utils.keyboards import format_keyboard
 from utils.logging_config import safe_url_label
-from utils.models import DownloadOption, ParsedInput, StoredRequest
 
 router = Router(name="intake")
 logger = logging.getLogger(__name__)
@@ -49,6 +40,7 @@ async def intake_message(  # pylint: disable=too-complex,too-many-positional-arg
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
     media_cache: MediaCache,
+    mornye: MornyeService | None = None,
 ) -> None:
     raw_text = message.text or ""
     if not extract_link_text(raw_text, message.entities):
@@ -58,6 +50,7 @@ async def intake_message(  # pylint: disable=too-complex,too-many-positional-arg
         return
 
     parsed = parse_user_input(raw_text, message.entities)
+    source = classify(parsed)
     logger.info(
         "Incoming link | user=%s chat=%s source=%s",
         message.from_user.id,
@@ -97,16 +90,12 @@ async def intake_message(  # pylint: disable=too-complex,too-many-positional-arg
             await media_cache.remove(parsed.source_url)
             # fall through to the normal download flow
     status_message = await message.reply(text.PROCESSING)
+    status = chat_status(status_message)
 
     # Fast-path: direct image links are outsourced to Telegram's CDN fetch
     # (symmetry with the inline image branch). On any API error fall
     # through to the normal probe flow.
-    ext = _ext_from_url(parsed.source_url)
-    if (
-        ext
-        and ext.lower() in {"jpg", "jpeg", "png", "webp"}
-        and not is_twitter_status_url(parsed.source_url)
-    ):
+    if source.kind is SourceKind.IMAGE and not source.is_twitter:
         file_name = (
             parsed.custom_file_name
             or Path(urlparse(parsed.source_url).path).name
@@ -129,221 +118,63 @@ async def intake_message(  # pylint: disable=too-complex,too-many-positional-arg
             )
             if entry:
                 await media_cache.record(parsed.source_url, [entry])
-            await status_message.edit_text(
-                text.DONE.format(download_seconds=0, upload_seconds=1)
-            )
+            await status.done(download_seconds=0, upload_seconds=1)
             return
 
-    gallery_probe = await probe_gallery(parsed, settings)
-    if gallery_probe.file_dicts:
-        await _run_gallery_download(
-            message=message,
-            parsed=parsed,
-            status_message=status_message,
-            settings=settings,
-            request_store=request_store,
-            thumbnail_store=thumbnail_store,
-            media_cache=media_cache,
-            probe=gallery_probe,
+    if mornye and mornye.enabled and source.kind is SourceKind.MUSIC:
+        await status.edit(text.MUSIC_RESOLVING)
+
+    try:
+        prepared = await prepare_request(
+            request_store, parsed, settings, mornye=mornye
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "Request preparation failed | user=%s source=%s error=%s",
+            message.from_user.id,
+            safe_url_label(parsed.source_url),
+            exc,
+        )
+        await status.fail(
+            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(str(exc))}</code>"
         )
         return
+
+    stored = prepared.stored
     if (
         is_twitter_status_url(parsed.source_url)
-        and gallery_probe.error
-        and "Unsupported URL" not in gallery_probe.error
+        and prepared.gallery.error
+        and "Unsupported URL" not in prepared.gallery.error
     ):
-        await status_message.edit_text(
-            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(_gallery_friendly_error(gallery_probe.error, bool(settings.twitter_cookies)))}</code>"
+        await status.fail(
+            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(_gallery_friendly_error(prepared.gallery.error, bool(settings.twitter_cookies)))}</code>"
         )
         return
 
-    if settings.auto_best_quality:
-        await _run_auto_best(
-            message=message,
-            parsed=parsed,
-            status_message=status_message,
+    logger.info(
+        "Prepared request | user=%s token=%s type=%s source=%s options=%s",
+        message.from_user.id,
+        stored.token,
+        stored.request_type,
+        safe_url_label(parsed.source_url),
+        len(stored.options),
+    )
+    if prepared.immediate or settings.auto_best_quality:
+        await execute_request(
+            stored=stored,
+            option=stored.options[0],
+            bot=message.bot,
+            status=status,
+            source_message=message,
+            user_id=message.from_user.id,
             settings=settings,
             request_store=request_store,
             thumbnail_store=thumbnail_store,
             media_cache=media_cache,
+            mornye=mornye,
         )
         return
-
-    if is_probable_youtube_url(parsed.source_url):
-        token = request_store.create_token()
-        stored = StoredRequest(
-            token=token,
-            request_type="youtube_quick",
-            parsed_input=parsed,
-            options=build_quick_youtube_options(),
-        )
-        request_store.save(stored)
-        logger.info(
-            "Prepared quick YouTube request | user=%s token=%s source=%s options=%s",
-            message.from_user.id,
-            token,
-            safe_url_label(parsed.source_url),
-            len(stored.options),
-        )
-        await status_message.edit_text(
-            text.QUICK_CHOICE,
-            reply_markup=format_keyboard(token, stored.options),
-        )
-        return
-
-    try:
-        info = await probe_url(parsed, settings)
-    except RuntimeError as exc:  # pragma: no cover - network/tool error path
-        logger.warning(
-            "yt-dlp probe failed | user=%s source=%s error=%s",
-            message.from_user.id,
-            safe_url_label(parsed.source_url),
-            exc,
-        )
-        info = None
-
-    token = request_store.create_token()
-    if info:
-        options = build_ytdlp_options(info)
-        request_type = "ytdlp_selection"
-        if not options:
-            options = build_direct_options(parsed, info=info)
-            request_type = "direct_download"
-    else:
-        options = build_direct_options(parsed, info=None)
-        request_type = "direct_download"
-
-    stored = StoredRequest(
-        token=token,
-        request_type=request_type,
-        parsed_input=parsed,
-        options=options,
-        info=info or {},
-    )
-    request_store.save(stored)
-    logger.info(
-        "Prepared request | user=%s token=%s type=%s source=%s options=%s title=%s",
-        message.from_user.id,
-        token,
-        request_type,
-        safe_url_label(parsed.source_url),
-        len(options),
-        (info or {}).get("title", "-"),
-    )
-    await status_message.edit_text(
+    await status.edit(
         text.FORMAT_SELECTION,
-        reply_markup=format_keyboard(token, options),
-    )
-
-
-async def _run_auto_best(
-    *,
-    message: Message,
-    parsed: ParsedInput,
-    status_message: Message,
-    settings: Settings,
-    request_store: RequestStore,
-    thumbnail_store: ThumbnailStore,
-    media_cache: MediaCache,
-) -> None:
-    try:
-        info = await probe_url(parsed, settings)
-    except RuntimeError as exc:  # pragma: no cover - network/tool error path
-        logger.warning(
-            "yt-dlp probe failed | user=%s source=%s error=%s",
-            message.from_user.id,
-            safe_url_label(parsed.source_url),
-            exc,
-        )
-        info = None
-
-    token = request_store.create_token()
-    if info:
-        options = [
-            DownloadOption(
-                option_id="auto_best",
-                label="Best quality",
-                send_type="video",
-            )
-        ]
-        request_type = "ytdlp_auto"
-    else:
-        options = build_direct_options(parsed, info=None)
-        request_type = "direct_download"
-
-    stored = StoredRequest(
-        token=token,
-        request_type=request_type,
-        parsed_input=parsed,
-        options=options,
-        info=info or {},
-    )
-    request_store.save(stored)
-    logger.info(
-        "Prepared auto request | user=%s token=%s type=%s source=%s title=%s",
-        message.from_user.id,
-        token,
-        request_type,
-        safe_url_label(parsed.source_url),
-        (info or {}).get("title", "-"),
-    )
-    await execute_request(
-        stored=stored,
-        option=stored.options[0],
-        bot=message.bot,
-        status_message=status_message,
-        source_message=message,
-        user_id=message.from_user.id,
-        settings=settings,
-        request_store=request_store,
-        thumbnail_store=thumbnail_store,
-        media_cache=media_cache,
-    )
-
-
-async def _run_gallery_download(
-    *,
-    message: Message,
-    parsed: ParsedInput,
-    status_message: Message,
-    settings: Settings,
-    request_store: RequestStore,
-    thumbnail_store: ThumbnailStore,
-    media_cache: MediaCache,
-    probe: "services.gallery.GalleryProbe",
-) -> None:
-    token = request_store.create_token()
-    stored = StoredRequest(
-        token=token,
-        request_type="gallery_media",
-        parsed_input=parsed,
-        options=[
-            DownloadOption(
-                option_id="gallery_all",
-                label="Media",
-                send_type="photo",
-            )
-        ],
-        info={
-            "url_media": gallery_url_items(probe.file_dicts, probe.content, parsed),
-        },
-    )
-    request_store.save(stored)
-    logger.info(
-        "Prepared gallery request | user=%s token=%s source=%s",
-        message.from_user.id,
-        token,
-        safe_url_label(parsed.source_url),
-    )
-    await execute_request(
-        stored=stored,
-        option=stored.options[0],
-        bot=message.bot,
-        status_message=status_message,
-        source_message=message,
-        user_id=message.from_user.id,
-        settings=settings,
-        request_store=request_store,
-        thumbnail_store=thumbnail_store,
-        media_cache=media_cache,
+        reply_markup=format_keyboard(stored.token, stored.options),
     )

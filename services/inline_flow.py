@@ -2,30 +2,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, InputMediaVideo
 
 from config import Settings
-from services.direct_downloads import download_direct_file
-from services.gallery import download_gallery_media, probe_gallery
+
 from services.media_cache import MediaCache, cached_media_from
 from services.media import video_metadata
-from services.progress import StatusProgress, humanbytes
+from services.progress import humanbytes
+from services.status import StatusSurface, inline_status
 from services.request_store import RequestStore
-from services.telegram_uploads import _media_item
-from services.ytdlp import (
-    build_direct_options,
-    download_best_quality,
-    probe_url,
-)
+from services.mornye import MornyeService
+from services.requests import lifecycle
+from services.delivery import DirectDelivery, media_item
+from services.pipeline import download_inline
 from utils import text
-from utils.logging_config import safe_url_label
 from utils.models import (
     CachedMedia,
     DownloadArtifact,
     FileTooLargeError,
+    InlineMediaPayload,
     StoredRequest,
 )
 
@@ -55,191 +54,44 @@ class InlineTaskRegistry:
         return token in self._tasks
 
 
-class _InlineStatus:
-    """Duck-typed status-message shim: lets download_direct_file edit the
-    inline message's text while it streams progress updates. When the
-    inline message is a media message (poster-photo flow), text edits are
-    impossible - they become no-ops and the poster stays visible."""
 
-    def __init__(
-        self, bot: Bot, inline_message_id: str, *, media_message: bool = False
-    ) -> None:
-        self._bot = bot
-        self._inline_message_id = inline_message_id
-        self._media_message = media_message
-
-    async def edit_text(self, message_text: str, **_: object) -> None:
-        if self._media_message:
-            return
-        await self._bot.edit_message_text(
-            inline_message_id=self._inline_message_id,
-            text=message_text,
-        )
 
 
 async def _dm_send_artifacts(
     bot: Bot, user_id: int, artifacts: list[DownloadArtifact]
 ) -> list[CachedMedia]:
-    sent_media: list[CachedMedia] = []
-    for start in range(0, len(artifacts), 10):
-        chunk = artifacts[start : start + 10]
-        if len(chunk) == 1:
-            artifact = chunk[0]
-            if artifact.send_type == "photo":
-                sent = await bot.send_photo(
-                    chat_id=user_id, photo=artifact.path, caption=artifact.caption
-                )
-                sent_media.append(
-                    cached_media_from(
-                        sent,
-                        send_type="photo",
-                        file_name=artifact.file_name,
-                        caption=artifact.caption,
-                    )
-                )
-            elif artifact.send_type == "video":
-                sent = await bot.send_video(
-                    chat_id=user_id,
-                    video=artifact.path,
-                    caption=artifact.caption,
-                    supports_streaming=True,
-                )
-                sent_media.append(
-                    cached_media_from(
-                        sent,
-                        send_type="video",
-                        file_name=artifact.file_name,
-                        caption=artifact.caption,
-                    )
-                )
-            else:
-                sent = await bot.send_document(
-                    chat_id=user_id,
-                    document=artifact.path,
-                    caption=artifact.caption,
-                )
-                sent_media.append(
-                    cached_media_from(
-                        sent,
-                        send_type="document",
-                        file_name=artifact.file_name,
-                        caption=artifact.caption,
-                    )
-                )
-        else:
-            sent_group = await bot.send_media_group(
-                chat_id=user_id,
-                media=[
-                    _media_item(
-                        artifact,
-                        artifacts[0].caption if start == 0 and index == 0 else None,
-                    )
-                    for index, artifact in enumerate(chunk)
-                ],
-            )
-            for artifact, sent in zip(chunk, sent_group):
-                sent_media.append(
-                    cached_media_from(
-                        sent,
-                        send_type=artifact.send_type,
-                        file_name=artifact.file_name,
-                        caption=artifact.caption,
-                    )
-                )
-    return sent_media
+    """Send spillover artifacts into the user's private chat."""
+    return await DirectDelivery(bot, user_id).deliver(
+        artifacts, started_at=datetime.now()
+    )
 
 
 async def _download_artifacts(
     *,
-    bot: Bot,
-    inline_message_id: str,
+    status: StatusSurface,
     stored: StoredRequest,
     settings: Settings,
     request_store: RequestStore,
+    mornye: MornyeService | None = None,
 ) -> list[DownloadArtifact]:
     """Edit the inline message into the downloading state, then fetch the
-    media via the gallery or the direct downloader. In the poster-photo
-    flow (big videos) the message is already a photo, so the text-status
-    edit is skipped and the poster stays on screen while downloading."""
-    if not stored.info.get("poster_url"):
-        await bot.edit_message_text(
-            inline_message_id=inline_message_id,
-            text=text.DOWNLOAD_START.format(
-                name=text.esc(stored.parsed_input.source_url)
-            ),
-        )
-
-    probe = await probe_gallery(stored.parsed_input, settings)
-    if probe.file_dicts:
-        return await download_gallery_media(
-            parsed_input=stored.parsed_input,
-            settings=settings,
-            work_dir=request_store.work_directory(stored.token),
-            file_dicts=probe.file_dicts,
-            content=probe.content,
-        )
-
-    # Page URLs (TikTok, YouTube, Reddit, …) are not direct media links:
-    # a plain HTTP GET would save the HTML page as a fake "document".
-    # Ask yt-dlp first; only fall back to the direct downloader when the
-    # URL is not a media page yt-dlp can resolve.
-    try:
-        info = await probe_url(stored.parsed_input, settings)
-    except RuntimeError as exc:
-        logger.info(
-            "Inline yt-dlp probe failed, trying direct download | token=%s source=%s error=%s",
-            stored.token,
-            safe_url_label(stored.parsed_input.source_url),
-            exc,
-        )
-        info = None
-
-    if info is not None:
-        return [
-            await download_best_quality(
-                parsed_input=stored.parsed_input,
-                settings=settings,
-                work_dir=request_store.work_directory(stored.token),
-                info=info,
-                progress=StatusProgress(
-                    _InlineStatus(
-                        bot,
-                        inline_message_id,
-                        media_message=bool(stored.info.get("poster_url")),
-                    ).edit_text,
-                    text.esc(stored.parsed_input.source_url),
-                ),
-            )
-        ]
-
-    option = build_direct_options(stored.parsed_input)[0]
-    return [
-        await download_direct_file(
-            status_message=_InlineStatus(
-                bot,
-                inline_message_id,
-                media_message=bool(stored.info.get("poster_url")),
-            ),
-            parsed_input=stored.parsed_input,
-            option=option,
-            settings=settings,
-            work_dir=request_store.work_directory(stored.token),
-        )
-    ]
+    media through the shared probe ladder."""
+    await status.edit(
+        text.DOWNLOAD_START.format(name=text.esc(stored.parsed_input.source_url))
+    )
+    return await download_inline(
+        stored,
+        settings=settings,
+        status=status,
+        work_dir=request_store.work_directory(stored.token),
+        mornye=mornye,
+    )
 
 
-async def _fail_inline_message(
-    bot: Bot, inline_message_id: str, message: str
-) -> None:
-    """Edit the inline message to a failure text; edit errors (message
-    deleted, not modified) must not mask the failure handling."""
-    try:
-        await bot.edit_message_text(
-            inline_message_id=inline_message_id,
-            text=message,
-        )
-    except TelegramAPIError:
-        pass
+async def _fail_inline_message(status: StatusSurface, message: str) -> None:
+    """Show a failure in the inline message; a dead message must not mask
+    the failure handling."""
+    await status.fail(message)
 
 
 async def _spillover_dm(
@@ -259,10 +111,12 @@ async def _spillover_dm(
         return f"\n(+{len(rest)} more files — open the bot and send the link)", []
 
 
-def _selected_artifact(artifacts: list[DownloadArtifact], info: dict) -> int | None:
+def _selected_artifact(
+    artifacts: list[DownloadArtifact], payload: InlineMediaPayload
+) -> int | None:
     """Index of the artifact the user tapped, or None: by exact file name
     when the probe knew it, otherwise by probe-order index."""
-    preferred_name = info.get("preferred_name")
+    preferred_name = payload.preferred_name
     if preferred_name:
         for index, artifact in enumerate(artifacts):
             if artifact.file_name == preferred_name:
@@ -273,7 +127,7 @@ def _selected_artifact(artifacts: list[DownloadArtifact], info: dict) -> int | N
             [artifact.file_name for artifact in artifacts],
         )
         return None
-    preferred = info.get("preferred_index") or 0
+    preferred = payload.preferred_index or 0
     if 0 < preferred < len(artifacts):
         return preferred
     return None
@@ -288,84 +142,52 @@ async def run_inline_download(
     settings: Settings,
     request_store: RequestStore,
     media_cache: MediaCache,
+    mornye: MornyeService | None = None,
 ) -> None:
-    token = stored.token
-
-    try:
-        artifacts = await _download_artifacts(
+    """Own the inline request lifecycle: every terminal path deletes the
+    token and its work directory."""
+    with lifecycle(request_store, stored.token):
+        await _run_inline_download(
             bot=bot,
+            user_id=user_id,
             inline_message_id=inline_message_id,
             stored=stored,
             settings=settings,
             request_store=request_store,
+            media_cache=media_cache,
+            mornye=mornye,
         )
-    except asyncio.CancelledError:
-        # user hit Cancel: the cancel callback already edited the message
-        # and removed the token; just stop quietly
-        logger.info(
-            "Inline download cancelled | user=%s token=%s", user_id, token
-        )
-        raise
-    except FileTooLargeError:
-        logger.warning(
-            "Inline download too large | user=%s token=%s", user_id, token
-        )
-        await _fail_inline_message(
-            bot,
-            inline_message_id,
-            text.TOO_LARGE.format(size=humanbytes(settings.max_upload_bytes)),
-        )
-        request_store.delete(token)
-        return
-    except Exception as exc:  # pylint: disable=broad-exception-caught  # pragma: no cover - user-facing safety boundary
-        logger.exception(
-            "Inline request failed | user=%s token=%s", user_id, token
-        )
-        await _fail_inline_message(
-            bot,
-            inline_message_id,
-            f"{text.INLINE_FAILED}\n<code>{text.esc(str(exc))}</code>",
-        )
-        request_store.delete(token)
-        return
 
-    # The tapped item goes into the message; the rest keep their original
-    # order for the DM spillover. Videos are identified by their expected
-    # download name (probe order != artifact order in mixed-media albums);
-    # photos by their probe-order index.
-    selected = _selected_artifact(artifacts, stored.info)
-    if selected is not None and selected != 0:
-        artifacts = [artifacts[selected]] + artifacts[:selected] + artifacts[selected + 1 :]
 
-    rest = artifacts[1:]
-    dm_note, dm_entries = await _spillover_dm(bot, user_id, rest)
+async def _deliver_first(
+    *,
+    bot: Bot,
+    user_id: int,
+    token: str,
+    inline_message_id: str,
+    status: StatusSurface,
+    first: DownloadArtifact,
+    caption: str,
+    dm_entries: list[CachedMedia],
+    dm_upload: bool,
+) -> tuple[object, list[CachedMedia]]:
+    """Swap the inline message into the tapped artifact and return the
+    edited message plus the DM entries to cache (the poster flow prepends
+    its DM video copy).
 
-    first = artifacts[0]
-    caption = (first.caption or first.file_name)[:1000] + dm_note
+    Bot API rule: editing an INLINE message cannot upload a new file -
+    media must be a file_id or a URL. For big videos (poster flow) the URL
+    fetcher also fails (>20MB), so the video is uploaded to the user's DM
+    first (sendVideo accepts uploads) and its file_id edits the inline
+    message. The DM copy doubles as the delivery when the inline edit is
+    impossible.
+    """
+    item, cover = media_item(first, caption)
     edited: object = None
     try:
-        # Bot API rule: editing an INLINE message cannot upload a new file -
-        # media must be a file_id or a URL. For big videos (poster flow) the
-        # URL fetcher also fails (>20MB), so the video is uploaded to the
-        # user's DM first (sendVideo accepts uploads), its file_id is then
-        # used to edit the inline message. The DM copy doubles as the
-        # delivery when the inline edit itself is impossible.
-        video_url = stored.info.get("video_url")
-        media = _media_item(first, caption)
-        if video_url and first.send_type == "video":
+        if dm_upload and first.send_type == "video":
             try:
-                width = first.width
-                height = first.height
-                duration = first.duration
-                if width is None or height is None or duration is None:
-                    (
-                        fallback_width,
-                        fallback_height,
-                        fallback_duration,
-                    ) = await asyncio.to_thread(video_metadata, first.path)
-                    width = fallback_width if width is None else width
-                    height = fallback_height if height is None else height
-                    duration = fallback_duration if duration is None else duration
+                width, height, duration = await _video_dimensions(first)
                 sent = await bot.send_video(
                     chat_id=user_id,
                     video=FSInputFile(first.path),
@@ -383,7 +205,7 @@ async def run_inline_download(
                 )
                 if dm_entry:
                     dm_entries = [dm_entry, *dm_entries]
-                    media = InputMediaVideo(
+                    item = InputMediaVideo(
                         media=dm_entry.file_id,
                         width=width,
                         height=height,
@@ -397,7 +219,7 @@ async def run_inline_download(
                 )
         edited = await bot.edit_message_media(
             inline_message_id=inline_message_id,
-            media=media,
+            media=item,
         )
     except TelegramAPIError as exc:
         logger.exception(
@@ -410,10 +232,113 @@ async def run_inline_download(
         # placed into the inline message. A media message can be edited to
         # text, so this failure notice reaches the poster/photo flows too.
         await _fail_inline_message(
-            bot,
-            inline_message_id,
+            status,
             f"{text.INLINE_FAILED}\n<code>{text.esc(str(exc))}</code>",
         )
+    finally:
+        if cover is not None:
+            cover.unlink(missing_ok=True)
+        first.path.unlink(missing_ok=True)
+    return edited, dm_entries
+
+
+async def _video_dimensions(first: DownloadArtifact) -> tuple[int, int, int]:
+    """Width/height/duration for the DM upload: reuse what the downloader
+    probed, otherwise read the file off the event loop."""
+    if (
+        first.width is not None
+        and first.height is not None
+        and first.duration is not None
+    ):
+        return first.width, first.height, first.duration
+    return await asyncio.to_thread(video_metadata, first.path)
+
+
+
+async def _run_inline_download(
+    *,
+    bot: Bot,
+    user_id: int,
+    inline_message_id: str,
+    stored: StoredRequest,
+    settings: Settings,
+    request_store: RequestStore,
+    media_cache: MediaCache,
+    mornye: MornyeService | None = None,
+) -> None:
+    token = stored.token
+    media_payload = (
+        stored.payload
+        if isinstance(stored.payload, InlineMediaPayload)
+        else InlineMediaPayload()
+    )
+    # A poster-photo result is already a media message: text edits are
+    # impossible there, so progress stays silent until the final media edit.
+    status = inline_status(
+        bot,
+        inline_message_id,
+        name=text.esc(stored.parsed_input.source_url),
+        media_message=bool(media_payload.poster_url),
+    )
+
+    try:
+        artifacts = await _download_artifacts(
+            status=status,
+            stored=stored,
+            settings=settings,
+            request_store=request_store,
+            mornye=mornye,
+        )
+    except asyncio.CancelledError:
+        # user hit Cancel: the cancel callback already edited the message
+        # and removed the token; just stop quietly
+        logger.info(
+            "Inline download cancelled | user=%s token=%s", user_id, token
+        )
+        raise
+    except FileTooLargeError:
+        logger.warning(
+            "Inline download too large | user=%s token=%s", user_id, token
+        )
+        await _fail_inline_message(
+            status,
+            text.TOO_LARGE.format(size=humanbytes(settings.max_upload_bytes)),
+        )
+        return
+    except Exception as exc:  # pylint: disable=broad-exception-caught  # pragma: no cover - user-facing safety boundary
+        logger.exception(
+            "Inline request failed | user=%s token=%s", user_id, token
+        )
+        await _fail_inline_message(
+            status,
+            f"{text.INLINE_FAILED}\n<code>{text.esc(str(exc))}</code>",
+        )
+        return
+
+    # The tapped item goes into the message; the rest keep their original
+    # order for the DM spillover. Videos are identified by their expected
+    # download name (probe order != artifact order in mixed-media albums);
+    # photos by their probe-order index.
+    selected = _selected_artifact(artifacts, media_payload)
+    if selected is not None and selected != 0:
+        artifacts = [artifacts[selected]] + artifacts[:selected] + artifacts[selected + 1 :]
+
+    rest = artifacts[1:]
+    dm_note, dm_entries = await _spillover_dm(bot, user_id, rest)
+
+    first = artifacts[0]
+    caption = (first.caption or first.file_name)[:1000] + dm_note
+    edited, dm_entries = await _deliver_first(
+        bot=bot,
+        user_id=user_id,
+        token=token,
+        inline_message_id=inline_message_id,
+        status=status,
+        first=first,
+        caption=caption,
+        dm_entries=dm_entries,
+        dm_upload=bool(media_payload.video_url),
+    )
     logger.info(
         "Inline request complete | user=%s token=%s files=%s dm_rest=%s",
         user_id,
@@ -430,4 +355,3 @@ async def run_inline_download(
     entries = ([first_entry] if first_entry else []) + dm_entries
     if entries:
         await media_cache.record(stored.parsed_input.source_url, entries)
-    request_store.delete(token)

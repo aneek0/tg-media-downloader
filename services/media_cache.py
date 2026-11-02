@@ -20,6 +20,7 @@ from aiogram.types import (
     Message,
 )
 
+from utils import text
 from utils.models import CachedMedia
 
 logger = logging.getLogger(__name__)
@@ -134,11 +135,12 @@ def cached_media_from(
     )
 
 
-def _cap(entry: CachedMedia) -> str | None:
-    return entry.caption[:_MAX_CAPTION] if entry.caption else None
+def _caption_parts(entry: CachedMedia) -> tuple[str | None, list[str]]:
+    """Caption for a resent file plus the text that overflows it."""
+    return text.split_caption(entry.caption)
 
 
-async def send_cached_media(
+async def send_cached_media(  # pylint: disable=too-complex
     bot: Bot, chat_id: int, entries: list[CachedMedia]
 ) -> list[Message]:
     """Resend cached file_ids to a chat; raises TelegramAPIError to the
@@ -151,35 +153,39 @@ async def send_cached_media(
     ):
         for start in range(0, len(entries), _ALBUM_CHUNK):
             chunk = entries[start : start + _ALBUM_CHUNK]
+            caption, overflow = _caption_parts(chunk[0])
             items = [
                 (
                     InputMediaPhoto(
                         media=entry.file_id,
-                        caption=_cap(entry) if index == 0 else None,
+                        caption=caption if index == 0 else None,
                     )
                     if entry.send_type == "photo"
                     else InputMediaVideo(
                         media=entry.file_id,
                         supports_streaming=True,
-                        caption=_cap(entry) if index == 0 else None,
+                        caption=caption if index == 0 else None,
                     )
                 )
                 for index, entry in enumerate(chunk)
             ]
             sent_messages.extend(await bot.send_media_group(chat_id, media=items))
+            for part in overflow:
+                sent_messages.append(await bot.send_message(chat_id, part))
         return sent_messages
 
     for entry in entries:
+        caption, overflow = _caption_parts(entry)
         if entry.send_type == "photo":
             sent_messages.append(
-                await bot.send_photo(chat_id, photo=entry.file_id, caption=_cap(entry))
+                await bot.send_photo(chat_id, photo=entry.file_id, caption=caption)
             )
         elif entry.send_type == "video":
             sent_messages.append(
                 await bot.send_video(
                     chat_id,
                     video=entry.file_id,
-                    caption=_cap(entry),
+                    caption=caption,
                     supports_streaming=True,
                 )
             )
@@ -188,14 +194,14 @@ async def send_cached_media(
                 await bot.send_audio(
                     chat_id,
                     audio=entry.file_id,
-                    caption=_cap(entry),
+                    caption=caption,
                     title=entry.file_name,
                 )
             )
         elif entry.send_type == "animation":
             sent_messages.append(
                 await bot.send_animation(
-                    chat_id, animation=entry.file_id, caption=_cap(entry)
+                    chat_id, animation=entry.file_id, caption=caption
                 )
             )
         elif entry.send_type == "video_note":
@@ -205,9 +211,11 @@ async def send_cached_media(
         else:
             sent_messages.append(
                 await bot.send_document(
-                    chat_id, document=entry.file_id, caption=_cap(entry)
+                    chat_id, document=entry.file_id, caption=caption
                 )
             )
+        for part in overflow:
+            sent_messages.append(await bot.send_message(chat_id, part))
     return sent_messages
 
 

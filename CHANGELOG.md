@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Upstream music library renamed: `spotiflac` → `mornye` (repo
+  [mornyeapp/Mornye-Python](https://github.com/mornyeapp/Mornye-Python), PyPI
+  `mornye`). Internal API surface used by the bot is unchanged
+  (`DownloadWorker`, `DownloadOptions`, `SpotifyMetadataClient`,
+  `ExtensionMetadataClient`, `ExtensionManager`); all env vars renamed
+  `SPOTIFLAC_*` → `MORNYE_*` (`MORNYE_SERVICES`, `MORNYE_QUALITY`,
+  `MORNYE_TRANSCODE`, `MORNYE_EXT_ALLOW_PRIVATE_NETWORK`). Module renamed
+  `services/spotiflac.py` → `services/mornye.py` (`MornyeService`),
+  request type string `"spotiflac"` → `"mornye"`; stale request files with
+  the old literal are swept like any other 24 h-old state. Old `~/.spotiflac`
+  extension registry is not reused — mornye re-syncs into `~/.mornye` on
+  first start.
+
+- One download pipeline (`services/pipeline.py`): the probe ladder (music →
+  gallery → auto-best/YouTube → yt-dlp → direct) and downloader dispatch now
+  live in one module; intake, the DM executor and inline taps all use it.
+- Request construction and cleanup moved to `services/requests.py`: named
+  per-flow constructors, typed per-variant payloads (`utils.models.RequestType`
+  + payload dataclasses), and one `lifecycle` context manager that deletes the
+  token and work directory.
+- Uploads split into `services/delivery.py` (Telegram sends, thumbnail,
+  metadata, album chunking) and `services/status.py` (chat/inline status
+  surface, progress throttling); `services/telegram_uploads.py` is gone.
+- Source classification extracted to `services/sources.py` (`SourceKind`,
+  `classify`, direct-download option builder).
+- Inline big-video delivery now runs through the same status surface as every
+  other flow: the poster-photo message is `media_message=True`, so download and
+  upload progress edits are dropped instead of failing against a media message,
+  while failures still edit the poster into an explicit error. `poster_url` and
+  `video_url` moved from raw `info` keys into `InlineMediaPayload`.
+
 ### Removed
 
 - `DownloadOption.mode`: written at 6 call sites, read at one (`services/ytdlp.py` audio
@@ -17,6 +50,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `GLOSSARY.md`: domain vocabulary (Request, Option, Artifact, Media Cache, Preview Store,
   Telegram Fetch, Direct Upload, …) with `_Avoid_` lists, one section per delivery flow.
+
+- Rich messages (Bot API `sendRichMessage`) for posts that overflow the 1024-character
+  caption limit: a photo post with long text goes out as **one** message with the image
+  and the full text (up to 32 768 characters), in DM and as an inline `Full post` result
+  (`InputRichMessageContent`). Servers or chats without rich-message support keep the
+  photo + follow-up-text fallback. Rich messages expose no re-usable `file_id`, so they
+  are not written to the media cache and a repeat re-sends them from the CDN.
+
+- Rich block conversion (`services/delivery.py:rich_blocks`): a plain caption becomes
+  real blocks — all-caps section lines → `<h3>`, `1. …` runs → `<ol>`, `- …` runs →
+  `<ul>`, paragraphs with `<br>` for single line breaks. Rich HTML drops bare newlines,
+  so without this the whole post collapsed into one paragraph.
+
+### Fixed
+
+- Long posts (X/Twitter, pawchive) no longer arrive collapsed and truncated:
+  `plain_caption` keeps the author's line breaks instead of flattening the text
+  into one paragraph, and text over Telegram's 1024-character caption limit now
+  follows the media as a separate message (up to 4096 characters each) instead
+  of being cut at character 1000/1024 — the tail links of long posts survive.
+  Long captions are likewise replayed from the media cache instead of being
+  truncated again. Gallery captions are HTML-escaped for the bot's parse mode,
+  so posts containing `&` no longer fail to send.
 
 ## [3.1.0] - 2026-10-05
 

@@ -10,6 +10,8 @@ from routers.commands import handle_ui_callback
 from services.executor import execute_request
 from services.media_cache import MediaCache
 from services.request_store import RequestStore
+from services.status import chat_status
+from services.mornye import MornyeService
 from services.thumbnail_store import ThumbnailStore
 from utils import text
 from utils.callbacks import RequestCallback, UiCallback
@@ -39,6 +41,7 @@ async def request_callback(  # pylint: disable=too-many-positional-arguments
     request_store: RequestStore,
     thumbnail_store: ThumbnailStore,
     media_cache: MediaCache,
+    mornye: MornyeService | None = None,
 ) -> None:
     if not query.message:
         await query.answer()
@@ -72,12 +75,13 @@ async def request_callback(  # pylint: disable=too-many-positional-arguments
         stored=stored,
         option=option,
         bot=query.bot,
-        status_message=query.message,
+        status=chat_status(query.message),
         source_message=query.message.reply_to_message or query.message,
         user_id=query.from_user.id,
         settings=settings,
         request_store=request_store,
         thumbnail_store=thumbnail_store,
         media_cache=media_cache,
+        mornye=mornye,
     )
     await query.answer()

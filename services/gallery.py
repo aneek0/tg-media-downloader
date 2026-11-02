@@ -7,32 +7,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from gallery_dl import extractor as _gdl_extractor
-
 from config import Settings
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
-from services.ytdlp import VIDEO_EXTENSIONS, _prepare_cookies_file
+from services.sources import VIDEO_EXTENSIONS, gallery_supports_url, send_type_for_extension
+from services.ytdlp import _prepare_cookies_file
+from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, ParsedInput
 
 logger = logging.getLogger(__name__)
 
-IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 GALLERY_FILENAME_FORMAT = "{tweet_id}_{num}.{extension}"
 GENERIC_GALLERY_FILENAME_FORMAT = "{filename}.{extension}"
 
 MAX_GALLERY_PHOTOS = 50  # local ceiling; twitter itself never exceeds ~4 per status
-
-
-def gallery_supports_url(url: str) -> bool:
-    """In-process extractor gate: URLs gallery-dl cannot handle (YouTube,
-    unknown hosts) are rejected without spawning a subprocess. The first
-    call warms the extractor table once; later calls cost microseconds."""
-    try:
-        return _gdl_extractor.find(url) is not None
-    except Exception:  # pylint: disable=broad-exception-caught  # gallery-dl API, not our contract
-        return False
 
 
 def split_tweet_media(file_dicts: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -151,13 +140,18 @@ def small_thumbnail_url(url: str) -> str | None:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_INLINE_SPACE_RE = re.compile(r"[^\S\n]+")
+_BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 
 def plain_caption(content: str | None) -> str | None:
-    """Strip HTML tags (pawchive returns <p>...</p>) and collapse spaces."""
+    """Strip HTML tags (pawchive returns <p>...</p>), collapse runs of spaces
+    and keep the author's line breaks."""
     if not content:
         return None
-    cleaned = re.sub(r"\s+", " ", _TAG_RE.sub(" ", content)).strip()
+    cleaned = _INLINE_SPACE_RE.sub(" ", _TAG_RE.sub(" ", content))
+    cleaned = _BLANK_LINES_RE.sub("\n\n", cleaned)
+    cleaned = "\n".join(line.strip() for line in cleaned.split("\n")).strip()
     return cleaned or None
 
 
@@ -177,20 +171,13 @@ def _gallery_friendly_error(error: str, cookies_configured: bool) -> str:
     return error
 
 
-def _send_type_for_extension(ext: str) -> str:
-    if ext in IMAGE_EXTENSIONS:
-        return "photo"
-    if ext in VIDEO_EXTENSIONS:
-        return "video"
-    return "document"
-
-
 def gallery_url_items(
     file_dicts: list[dict], content: str | None, parsed_input: ParsedInput
 ) -> list[dict]:
     """URL-send items for the Telegram-CDN path (stored.info['url_media']):
     Telegram fetches each raw CDN URL itself."""
-    caption = parsed_input.custom_file_name or plain_caption(content)
+    body = parsed_input.custom_file_name or plain_caption(content)
+    caption = text.esc(body) if body else None
     items: list[dict] = []
     for media in file_dicts:
         url = media.get("_url")
@@ -204,8 +191,8 @@ def gallery_url_items(
             {
                 "url": url,
                 "filename": name,
-                "send_type": _send_type_for_extension(ext),
-                "caption": caption[:1024] if (caption and not items) else None,
+                "send_type": send_type_for_extension(ext),
+                "caption": caption if not items else None,
             }
         )
     return items
@@ -252,13 +239,13 @@ async def download_gallery_media(
         raise RuntimeError("gallery-dl downloaded no files")
 
     body = parsed_input.custom_file_name or plain_caption(content) or files[0].stem
-    caption = f"{parsed_input.source_url}\n{body}"
+    caption = f"{text.esc(parsed_input.source_url)}\n{text.esc(body)}"
     artifacts = [
         DownloadArtifact(
             path=path,
             file_name=path.name,
-            send_type=_send_type_for_extension(path.suffix.lstrip(".").lower()),
-            caption=caption[:1000],
+            send_type=send_type_for_extension(path.suffix.lstrip(".").lower()),
+            caption=caption,
         )
         for path in files
     ]

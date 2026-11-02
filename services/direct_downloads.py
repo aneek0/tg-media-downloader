@@ -10,10 +10,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
-from aiogram.types import Message
 
 from config import Settings
 from services.progress import format_download_progress
+from services.status import StatusSurface
 from utils.logging_config import safe_url_label
 from utils.models import (
     DownloadArtifact,
@@ -221,7 +221,7 @@ async def _download_segment(
 
 async def _progress_monitor(
     *,
-    status_message: Message,
+    status: StatusSurface,
     file_name: str,
     downloaded: list[int],
     total: int,
@@ -241,23 +241,20 @@ async def _progress_monitor(
                 current,
                 total,
             )
-        try:
-            await status_message.edit_text(
-                format_download_progress(
-                    file_name=file_name,
-                    downloaded=current,
-                    total=total,
-                    started_at=started_at,
-                )
-            )
-        except Exception:  # pylint: disable=broad-exception-caught
-            # Progress reporting must never fail the download.
-            pass
+        await status.progress(
+            format_download_progress(
+                file_name=file_name,
+                downloaded=current,
+                total=total,
+                started_at=started_at,
+            ),
+            force=True,
+        )
 
 
 async def _report_completion(
     *,
-    status_message: Message,
+    status: StatusSurface,
     file_name: str,
     total: int,
     started: float,
@@ -271,18 +268,15 @@ async def _report_completion(
             total,
             total,
         )
-    try:
-        await status_message.edit_text(
-            format_download_progress(
-                file_name=file_name,
-                downloaded=total,
-                total=total,
-                started_at=started,
-            )
-        )
-    except Exception:  # pylint: disable=broad-exception-caught
-        # Progress reporting must never fail a completed download.
-        pass
+    await status.progress(
+        format_download_progress(
+            file_name=file_name,
+            downloaded=total,
+            total=total,
+            started_at=started,
+        ),
+        force=True,
+    )
 
 
 async def _run_segments(
@@ -319,7 +313,7 @@ async def _download_parallel(
     total: int,
     destination: Path,
     file_name: str,
-    status_message: Message,
+    status: StatusSurface,
     settings: Settings,
     started: float,
 ) -> tuple[Path, str] | None:
@@ -337,7 +331,7 @@ async def _download_parallel(
     logged_milestones: set[int] = set()
     monitor = asyncio.create_task(
         _progress_monitor(
-            status_message=status_message,
+            status=status,
             file_name=file_name,
             downloaded=downloaded,
             total=total,
@@ -385,7 +379,7 @@ async def _download_parallel(
         return None
 
     await _report_completion(
-        status_message=status_message,
+        status=status,
         file_name=file_name,
         total=total,
         started=started,
@@ -403,7 +397,7 @@ async def _download_single(
     file_name: str,
     option: DownloadOption,
     suggested_ext: str | None,
-    status_message: Message,
+    status: StatusSurface,
     settings: Settings,
     started: float,
 ) -> tuple[Path, str]:
@@ -446,13 +440,14 @@ async def _download_single(
                         total,
                     )
                 if total and (now - last_update >= 2 or downloaded >= total):
-                    await status_message.edit_text(
+                    await status.progress(
                         format_download_progress(
                             file_name=file_name,
                             downloaded=downloaded,
                             total=total,
                             started_at=started,
-                        )
+                        ),
+                        force=True,
                     )
                     last_update = now
     return destination, file_name
@@ -460,7 +455,7 @@ async def _download_single(
 
 async def download_direct_file(
     *,
-    status_message: Message,
+    status: StatusSurface,
     parsed_input: ParsedInput,
     option: DownloadOption,
     settings: Settings,
@@ -506,7 +501,7 @@ async def download_direct_file(
                     total=total,
                     destination=destination,
                     file_name=resolved_name,
-                    status_message=status_message,
+                    status=status,
                     settings=settings,
                     started=started,
                 )
@@ -520,7 +515,7 @@ async def download_direct_file(
                 file_name=file_name,
                 option=option,
                 suggested_ext=suggested_ext,
-                status_message=status_message,
+                status=status,
                 settings=settings,
                 started=started,
             )

@@ -146,7 +146,7 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
         path=media, file_name="v.mp4", send_type="video", caption=None
     )
     monkeypatch.setattr(
-        "services.inline_flow.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(
             return_value=GalleryProbe(
                 file_dicts=[{"_url": "https://cdn/x.mp4", "extension": "mp4"}],
@@ -156,7 +156,7 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(
-        "services.inline_flow.download_gallery_media",
+        "services.pipeline.download_gallery_media",
         AsyncMock(return_value=[artifact]),
     )
 
@@ -202,7 +202,7 @@ async def test_run_inline_download_too_large_shows_limit_and_deletes_token(
     store.save(stored)
 
     monkeypatch.setattr(
-        "services.inline_flow.download_direct_file",
+        "services.pipeline.download_direct_file",
         AsyncMock(side_effect=FileTooLargeError("file exceeds upload limit")),
     )
 
@@ -248,11 +248,11 @@ async def test_run_inline_download_generic_failure_escapes_error_text(
     store.save(stored)
 
     monkeypatch.setattr(
-        "services.inline_flow.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe([], None, "Unsupported URL: " + url)),
     )
     monkeypatch.setattr(
-        "services.inline_flow.download_direct_file",
+        "services.pipeline.download_direct_file",
         AsyncMock(side_effect=RuntimeError("<b>&boom</b>")),
     )
 
@@ -296,7 +296,7 @@ async def test_run_inline_download_escapes_url_in_download_start(
     store.save(stored)
 
     monkeypatch.setattr(
-        "services.inline_flow.download_direct_file",
+        "services.pipeline.download_direct_file",
         AsyncMock(side_effect=RuntimeError("stop after start")),
     )
 
@@ -338,7 +338,7 @@ async def test_run_inline_download_start_edit_failure_falls_into_error_branch(
     store.save(stored)
 
     download_mock = AsyncMock()
-    monkeypatch.setattr("services.inline_flow.download_direct_file", download_mock)
+    monkeypatch.setattr("services.pipeline.download_direct_file", download_mock)
 
     class _FakeMethod:
         __name__ = "editMessageText"
@@ -482,6 +482,46 @@ async def test_inline_twitter_gallery_single_photo_not_created(
     assert not any(result.id.startswith("gallery:") for result in results)
     assert [result.id for result in results] == ["photo1"]
     assert not list((settings.requests_dir).iterdir())
+
+
+@pytest.mark.asyncio
+async def test_inline_twitter_long_post_gets_rich_result(monkeypatch, tmp_path):
+    """Regression: a tweet longer than the 1024-character photo caption limit
+    now also offers one rich result with the full text and its photo."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    content = "\n".join(
+        f"step {index} https://example.com/{index}" for index in range(80)
+    )
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(
+            return_value=GalleryProbe(
+                file_dicts=[{"_url": "https://c/1.jpg", "extension": "jpg"}],
+                content=content,
+                error=None,
+            )
+        ),
+    )
+    query = SimpleNamespace(
+        query="https://x.com/a/status/1",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, settings, store, cache)
+
+    results = query.answer.await_args.args[0]
+    rich = [result for result in results if result.id == "rich"]
+    assert len(rich) == 1
+    html = rich[0].input_message_content.rich_message.html
+    assert html.startswith('<img src="https://c/1.jpg"/>')
+    assert "https://example.com/79" in html
+    photo = [result for result in results if result.id == "photo1"][0]
+    assert len(photo.caption) == 1024
 
 @pytest.mark.asyncio
 async def test_inline_twitter_small_video_is_instant_video_result(
@@ -671,11 +711,11 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
 
     artifacts = [_artifact("999_1.mp4"), _artifact("999_2.mp4")]
     monkeypatch.setattr(
-        "services.inline_flow.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe(file_dicts=[{"_url": "u"}], content=None, error=None)),
     )
     monkeypatch.setattr(
-        "services.inline_flow.download_gallery_media",
+        "services.pipeline.download_gallery_media",
         AsyncMock(return_value=artifacts),
     )
 
@@ -795,7 +835,7 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     store.save(stored)
 
     probe_mock = AsyncMock(return_value={"title": "T", "id": "1", "duration": 9})
-    monkeypatch.setattr("services.inline_flow.probe_url", probe_mock)
+    monkeypatch.setattr("services.pipeline.probe_url", probe_mock)
 
     media = tmp_path / "v.mp4"
     media.parent.mkdir(parents=True, exist_ok=True)
@@ -804,9 +844,9 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
         path=media, file_name="v.mp4", send_type="video", caption=None
     )
     best_mock = AsyncMock(return_value=artifact)
-    monkeypatch.setattr("services.inline_flow.download_best_quality", best_mock)
+    monkeypatch.setattr("services.pipeline.download_best_quality", best_mock)
     direct_mock = AsyncMock()
-    monkeypatch.setattr("services.inline_flow.download_direct_file", direct_mock)
+    monkeypatch.setattr("services.pipeline.download_direct_file", direct_mock)
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
@@ -852,7 +892,7 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
     store.save(stored)
 
     probe_mock = AsyncMock(side_effect=RuntimeError("Unsupported URL"))
-    monkeypatch.setattr("services.inline_flow.probe_url", probe_mock)
+    monkeypatch.setattr("services.pipeline.probe_url", probe_mock)
 
     media = tmp_path / "f.bin"
     media.parent.mkdir(parents=True, exist_ok=True)
@@ -861,9 +901,9 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
         path=media, file_name="f.bin", send_type="document", caption=None
     )
     direct_mock = AsyncMock(return_value=artifact)
-    monkeypatch.setattr("services.inline_flow.download_direct_file", direct_mock)
+    monkeypatch.setattr("services.pipeline.download_direct_file", direct_mock)
     best_mock = AsyncMock()
-    monkeypatch.setattr("services.inline_flow.download_best_quality", best_mock)
+    monkeypatch.setattr("services.pipeline.download_best_quality", best_mock)
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
@@ -1002,11 +1042,11 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
 
     artifacts = [_artifact("a.jpg"), _artifact("b.jpg"), _artifact("c.jpg")]
     monkeypatch.setattr(
-        "services.inline_flow.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe(file_dicts=[{"_url": "u"}], content=None, error=None)),
     )
     monkeypatch.setattr(
-        "services.inline_flow.download_gallery_media",
+        "services.pipeline.download_gallery_media",
         AsyncMock(return_value=artifacts),
     )
 
@@ -1045,3 +1085,147 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
     assert entries[0].file_id == "PH_B"
     assert [e.file_id for e in entries[1:]] == ["PH_A", "PH_C"]
     assert store.load("tok-idx") is None
+
+@pytest.mark.asyncio
+async def test_run_inline_download_poster_flow_keeps_media_and_uploads_by_file_id(
+    monkeypatch, tmp_path
+):
+    """Pins the big-video poster flow: while the message still holds the
+    poster photo no status text may be edited onto it, and the finished
+    video is uploaded to the DM first so the inline edit can use its
+    file_id (Bot API forbids new-file uploads on inline message edits)."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    url = "https://x.com/a/status/1"
+    poster = "https://pbs.twimg.com/ext_tw_video/1/pu/ths/1.jpg"
+    video_cdn = "https://video.twimg.com/ext_tw_video/1/vid/720p.mp4"
+    stored = StoredRequest(
+        token="tok-poster",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url=url),
+        options=[],
+        info={
+            "preferred_name": "999_1.mp4",
+            "poster_url": poster,
+            "video_url": video_cdn,
+        },
+    )
+    store.save(stored)
+
+    path = tmp_path / "999_1.mp4"
+    path.write_bytes(b"\x00\x00\x00\x18" + b"m" * 10)
+    artifact = DownloadArtifact(
+        path=path,
+        file_name="999_1.mp4",
+        send_type="video",
+        caption=None,
+        width=720,
+        height=1280,
+        duration=12,
+    )
+    monkeypatch.setattr(
+        "services.pipeline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=[{"_url": "u"}], content=None, error=None)),
+    )
+    monkeypatch.setattr(
+        "services.pipeline.download_gallery_media",
+        AsyncMock(return_value=[artifact]),
+    )
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC50"))
+        ),
+        send_media_group=AsyncMock(return_value=[]),
+        send_video=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC51"))
+        ),
+    )
+
+    await run_inline_download(
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+        settings=settings,
+        request_store=store,
+        media_cache=cache,
+    )
+
+    # Poster stays on screen: no download/upload status text was edited in.
+    bot.edit_message_text.assert_not_awaited()
+    # The video reached the DM and the inline edit reused that file_id.
+    bot.send_video.assert_awaited_once()
+    media = bot.edit_message_media.await_args.kwargs["media"]
+    assert media.media == "BAAC51"
+    assert (media.width, media.height, media.duration) == (720, 1280, 12)
+    assert media.supports_streaming is True
+    # Both copies are cached and the local file plus token are gone.
+    entries = cache.get(url)
+    assert entries is not None
+    assert [e.file_id for e in entries] == ["BAAC50", "BAAC51"]
+    assert not path.exists()
+    assert store.load("tok-poster") is None
+
+
+@pytest.mark.asyncio
+async def test_run_inline_download_poster_flow_still_reports_failure(
+    monkeypatch, tmp_path
+):
+    """A muted (poster) surface must not swallow errors: the poster is
+    edited into an explicit failure notice instead of a silent hang."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    stored = StoredRequest(
+        token="tok-poster-fail",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url="https://x.com/a/status/2"),
+        options=[],
+        info={"poster_url": "https://pbs.twimg.com/p/1.jpg", "video_url": "https://v/1.mp4"},
+    )
+    store.save(stored)
+
+    path = tmp_path / "999_1.mp4"
+    path.write_bytes(b"\x00\x00\x00\x18" + b"m" * 10)
+    artifact = DownloadArtifact(
+        path=path, file_name="999_1.mp4", send_type="video", caption=None
+    )
+    monkeypatch.setattr(
+        "services.pipeline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=[{"_url": "u"}], content=None, error=None)),
+    )
+    monkeypatch.setattr(
+        "services.pipeline.download_gallery_media",
+        AsyncMock(return_value=[artifact]),
+    )
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            side_effect=TelegramBadRequest(method="EditMessageMedia", message="bad webhook response")
+        ),
+        send_media_group=AsyncMock(return_value=[]),
+        send_video=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC52"))
+        ),
+    )
+
+    await run_inline_download(
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+        settings=settings,
+        request_store=store,
+        media_cache=cache,
+    )
+
+    notice = bot.edit_message_text.await_args.kwargs["text"]
+    assert text.INLINE_FAILED in notice
+    assert "bad webhook response" in notice
+    assert store.load("tok-poster-fail") is None

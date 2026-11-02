@@ -59,6 +59,16 @@ THUMB_REMOVED = "Your thumbnail was removed successfully."
 
 PROCESSING = "Processing your link..."
 FORMAT_SELECTION = "Choose the format you want."
+
+MUSIC_RESOLVING = "Looking up your music link..."
+MUSIC_DOWNLOAD = "Downloading <b>{name}</b> ({kind}, {count} track(s))..."
+ALBUM_INFO_CAPTION = (
+    "💽 Album: <b>{name}</b>\n👤 Artist: {artist}\n📅 Date: {date}\n"
+    "🎧 Total tracks: {count}"
+)
+SPOTIFY_PARTIAL = "{sent} track(s) sent, {failed} failed: {titles}"
+SPOTIFY_FAILED_SINGLE = "No audio downloaded for that link."
+SPOTIFY_TRACK_CAPTION = "{artists} — {title}"
 DOWNLOAD_START = "Downloading <b>{name}</b>"
 UPLOAD_START = "Uploading <b>{name}</b>"
 QUICK_CHOICE = "Choose how you want this YouTube link downloaded."
@@ -96,3 +106,39 @@ def download_caption(name: str) -> str:
 def esc(value: str) -> str:
     """HTML-escape untrusted text for ParseMode.HTML messages."""
     return html.escape(value, quote=False)
+
+
+CAPTION_LIMIT = 1024
+TEXT_LIMIT = 4096
+
+
+def split_caption(caption: str | None) -> tuple[str | None, list[str]]:
+    """Fit post text into Telegram limits: (media_caption, follow-up chunks).
+
+    A media caption holds 1024 characters, so longer text travels as plain
+    messages of up to 4096 instead of being truncated mid-link."""
+    if not caption or len(caption) <= CAPTION_LIMIT:
+        return caption, []
+    return None, split_message(caption)
+
+
+def split_message(value: str, limit: int = TEXT_LIMIT) -> list[str]:
+    """Split text on line boundaries; over-long single lines are hard-wrapped."""
+    chunks: list[str] = []
+    current = ""
+    for line in value.split("\n"):
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return [chunk for chunk in chunks if chunk]

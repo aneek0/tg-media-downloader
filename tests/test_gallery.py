@@ -290,6 +290,34 @@ def test_plain_caption_strips_html():
     assert plain_caption("   ") is None
 
 
+def test_plain_caption_keeps_line_breaks():
+    """Regression: a numbered X post used to collapse into one paragraph."""
+    assert plain_caption("a\n\n\n\nb") == "a\n\nb"
+    assert plain_caption("1. one  \r\n2. two") == "1. one\n2. two"
+
+
+def test_gallery_url_items_keeps_long_caption():
+    """Regression: captions were cut at 1024 characters, dropping the tail
+    links of long posts."""
+    body = "\n".join(f"line {index} https://example.com/{index}" for index in range(80))
+    items = gallery_url_items(
+        [{"_url": "https://c/a.jpg", "extension": "jpg", "filename": "a"}],
+        body,
+        ParsedInput(source_url="https://s/1"),
+    )
+    assert items[0]["caption"] == body
+    assert items[0]["caption"].endswith("https://example.com/79")
+
+
+def test_gallery_url_items_escapes_markup():
+    items = gallery_url_items(
+        [{"_url": "https://c/a.jpg", "extension": "jpg", "filename": "a"}],
+        "AT&T <b>leak</b>",
+        ParsedInput(source_url="https://s/1"),
+    )
+    assert items[0]["caption"] == "AT&amp;T leak"
+
+
 def test_gallery_url_items_caption_and_types():
     items = gallery_url_items(
         [

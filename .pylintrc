@@ -107,6 +107,7 @@ disable=
     fixme,
     cyclic-import,
     import-error,
+    import-outside-toplevel,
     C0116, 
     C0114
 

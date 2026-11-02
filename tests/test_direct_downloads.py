@@ -7,6 +7,7 @@ import pytest
 from config import Settings
 
 from services.direct_downloads import download_direct_file
+from services.status import StatusSurface
 from utils.models import DownloadOption, FileTooLargeError, ParsedInput
 
 
@@ -137,7 +138,7 @@ async def run_download(
     )
     status = StatusMessage()
     artifact = await download_direct_file(
-        status_message=status,
+        status=status.surface,
         parsed_input=ParsedInput(source_url=url),
         option=make_option(),
         settings=settings,
@@ -177,7 +178,7 @@ def make_option() -> DownloadOption:
 class StatusMessage:
     def __init__(self) -> None:
         self.texts: list[str] = []
-
+        self.surface = StatusSurface(self.edit_text)
     async def edit_text(self, text: str) -> None:
         self.texts.append(text)
 
@@ -195,7 +196,7 @@ async def test_direct_download_aborts_when_content_length_exceeds_limit(
 
     with pytest.raises(FileTooLargeError) as exc_info:
         await download_direct_file(
-            status_message=StatusMessage(),
+            status=StatusMessage().surface,
             parsed_input=ParsedInput(source_url="https://example.com/f.bin"),
             option=make_option(),
             settings=settings,
@@ -222,7 +223,7 @@ async def test_direct_download_aborts_mid_stream_without_content_length(
 
     with pytest.raises(FileTooLargeError) as exc_info:
         await download_direct_file(
-            status_message=StatusMessage(),
+            status=StatusMessage().surface,
             parsed_input=ParsedInput(source_url="https://example.com/f.bin"),
             option=make_option(),
             settings=settings,
@@ -242,7 +243,7 @@ async def test_direct_download_completes_within_limit(monkeypatch, tmp_path):
     settings = make_settings(tmp_path, max_upload_bytes=100)
 
     artifact = await download_direct_file(
-        status_message=StatusMessage(),
+        status=StatusMessage().surface,
         parsed_input=ParsedInput(source_url="https://example.com/f.bin"),
         option=make_option(),
         settings=settings,
@@ -267,7 +268,7 @@ async def test_direct_download_rejects_html_page(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError) as exc_info:
         await download_direct_file(
-            status_message=StatusMessage(),
+            status=StatusMessage().surface,
             parsed_input=ParsedInput(source_url="https://vt.tiktok.com/ZSbj8LgVN/"),
             option=make_option(),
             settings=settings,

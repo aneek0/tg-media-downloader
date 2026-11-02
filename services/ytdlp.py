@@ -6,17 +6,14 @@ import re
 import shutil
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from urllib.parse import urlparse
-
 from config import Settings
 from services.proc import run_command
-from services.progress import StatusProgress, humanbytes
+from services.progress import humanbytes
+from services.status import StatusSurface
+from services.sources import send_type_for_extension
 from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, DownloadOption, ParsedInput
 
-
-VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov"}
-AUDIO_EXTENSIONS = {"mp3", "m4a", "aac", "wav", "flac", "opus", "weba"}
 logger = logging.getLogger(__name__)
 
 
@@ -101,11 +98,6 @@ def _label_for_format(format_data: dict, index: int) -> str:
     return f"Video {format_note} {ext} {humanbytes(size)}".strip()
 
 
-def _ext_from_url(url: str) -> str | None:
-    suffix = Path(urlparse(url).path).suffix
-    return suffix.lstrip(".") if suffix else None
-
-
 def _option_id(prefix: str, index: int) -> str:
     return f"{prefix}{index}"
 
@@ -186,42 +178,6 @@ def build_ytdlp_options(info: dict) -> list[DownloadOption]:
     return options
 
 
-def build_direct_options(
-    parsed_input: ParsedInput, info: dict | None = None
-) -> list[DownloadOption]:
-    ext = None
-    source_url = parsed_input.source_url
-    if info:
-        ext = info.get("ext")
-    if not ext:
-        ext = _ext_from_url(source_url)
-
-    send_type = "document"
-    if ext and ext.lower() in VIDEO_EXTENSIONS:
-        send_type = "video"
-    elif ext and ext.lower() in AUDIO_EXTENSIONS:
-        send_type = "audio"
-
-    options = [
-        DownloadOption(
-            option_id="direct_primary",
-            label="Send as media" if send_type != "document" else "Send as document",
-            send_type=send_type,
-            file_ext=ext,
-        )
-    ]
-    if send_type != "document":
-        options.append(
-            DownloadOption(
-                option_id="direct_document",
-                label="Send as document",
-                send_type="document",
-                file_ext=ext,
-            )
-        )
-    return options
-
-
 def _pick_downloaded_file(work_dir: Path) -> Path:
     files = [
         path
@@ -259,7 +215,7 @@ async def download_quick_youtube(
     option: DownloadOption,
     settings: Settings,
     work_dir: Path,
-    progress: StatusProgress | None = None,
+    status: StatusSurface | None = None,
 ) -> DownloadArtifact:
     info = await probe_url(parsed_input, settings)
     work_dir = work_dir.resolve()
@@ -306,7 +262,7 @@ async def download_quick_youtube(
         command,
         cwd=work_dir,
         timeout=settings.process_max_timeout,
-        on_output=progress.feed_line if progress else None,
+        on_output=status.feed_line if status else None,
     )
     file_path = _pick_downloaded_file(work_dir)
     logger.info(
@@ -342,21 +298,13 @@ def _is_audio_source(info: dict) -> bool:
     return all(format_data.get("vcodec") == "none" for format_data in formats)
 
 
-def _send_type_for_extension(ext: str) -> str:
-    if ext in VIDEO_EXTENSIONS:
-        return "video"
-    if ext in AUDIO_EXTENSIONS:
-        return "audio"
-    return "document"
-
-
 async def download_best_quality(
     *,
     parsed_input: ParsedInput,
     settings: Settings,
     work_dir: Path,
     info: dict,
-    progress: StatusProgress | None = None,
+    status: StatusSurface | None = None,
 ) -> DownloadArtifact:
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -407,13 +355,13 @@ async def download_best_quality(
         command,
         cwd=work_dir,
         timeout=settings.process_max_timeout,
-        on_output=progress.feed_line if progress else None,
+        on_output=status.feed_line if status else None,
     )
     file_path = _pick_downloaded_file(work_dir)
     send_type = (
         "audio"
         if audio_source
-        else _send_type_for_extension(file_path.suffix.lstrip(".").lower())
+        else send_type_for_extension(file_path.suffix.lstrip(".").lower())
     )
     logger.info(
         "Auto best-quality download complete | file=%s bytes=%s send_type=%s",
@@ -439,7 +387,7 @@ async def download_selected_format(
     info: dict,
     settings: Settings,
     work_dir: Path,
-    progress: StatusProgress | None = None,
+    status: StatusSurface | None = None,
 ) -> DownloadArtifact:
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -490,7 +438,7 @@ async def download_selected_format(
         command,
         cwd=work_dir,
         timeout=settings.process_max_timeout,
-        on_output=progress.feed_line if progress else None,
+        on_output=status.feed_line if status else None,
     )
     file_path = _pick_downloaded_file(work_dir)
     logger.info(

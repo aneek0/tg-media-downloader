@@ -12,6 +12,7 @@ from services.cooldown import CooldownManager
 from services.executor import execute_request
 from services.gallery import GalleryProbe
 from services.request_store import RequestStore
+from services.status import StatusSurface
 from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
     _auto_video_sort,
@@ -110,11 +111,11 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr(
-        "services.executor.download_direct_file",
+        "services.pipeline.download_direct_file",
         download_mock,
     )
     monkeypatch.setattr(
-        "services.executor.upload_artifact",
+        "services.executor.ChatDelivery.deliver",
         upload_mock,
     )
 
@@ -172,7 +173,7 @@ async def test_intake_auto_best_downloads_without_keyboard(monkeypatch, tmp_path
     message.reply.return_value = status_message
 
     monkeypatch.setattr(
-        "routers.intake.probe_url",
+        "services.pipeline.probe_url",
         AsyncMock(return_value={"title": "T", "formats": [{"vcodec": "avc1.64001f"}]}),
     )
     artifact = SimpleNamespace(
@@ -184,8 +185,8 @@ async def test_intake_auto_best_downloads_without_keyboard(monkeypatch, tmp_path
             CachedMedia(file_id="F1", send_type="video", file_name="v.mp4", caption="c")
         ]
     )
-    monkeypatch.setattr("services.executor.download_best_quality", download_mock)
-    monkeypatch.setattr("services.executor.upload_artifact", upload_mock)
+    monkeypatch.setattr("services.pipeline.download_best_quality", download_mock)
+    monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
     await intake_message(
         message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
@@ -213,11 +214,11 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
     message.reply.return_value = status_message
 
     monkeypatch.setattr(
-        "routers.intake.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe([], None, None)),
     )
     monkeypatch.setattr(
-        "routers.intake.probe_url",
+        "services.pipeline.probe_url",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     artifact = SimpleNamespace(
@@ -230,9 +231,9 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
             CachedMedia(file_id="F1", send_type="document", file_name="f.mp4", caption="c")
         ]
     )
-    monkeypatch.setattr("services.executor.download_direct_file", direct_mock)
-    monkeypatch.setattr("services.executor.download_best_quality", best_mock)
-    monkeypatch.setattr("services.executor.upload_artifact", upload_mock)
+    monkeypatch.setattr("services.pipeline.download_direct_file", direct_mock)
+    monkeypatch.setattr("services.pipeline.download_best_quality", best_mock)
+    monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
     await intake_message(
         message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
@@ -334,8 +335,8 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
             CachedMedia(file_id="A2", send_type="photo", file_name="a_2.jpg", caption="c"),
         ]
     )
-    monkeypatch.setattr("services.executor.download_gallery_media", download_mock)
-    monkeypatch.setattr("services.executor.upload_artifacts", upload_mock)
+    monkeypatch.setattr("services.pipeline.download_gallery_media", download_mock)
+    monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
     status_message = SimpleNamespace(edit_text=AsyncMock())
     source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
@@ -344,7 +345,7 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
         stored=stored,
         option=stored.options[0],
         bot=None,
-        status_message=status_message,
+        status=StatusSurface(status_message.edit_text),
         source_message=source_message,
         user_id=99,
         settings=settings,
@@ -368,7 +369,7 @@ async def test_intake_twitter_routes_to_gallery(monkeypatch, tmp_path):
     cooldown = CooldownManager(timeout_seconds=60)
 
     monkeypatch.setattr(
-        "routers.intake.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(
             return_value=GalleryProbe(
                 file_dicts=[
@@ -417,7 +418,7 @@ async def test_intake_cache_hit_sends_file_id_without_download(monkeypatch, tmp_
     message.text = "https://example.com/file.mp4"
     message.bot = SimpleNamespace(send_video=AsyncMock())
     probe_mock = AsyncMock()
-    monkeypatch.setattr("routers.intake.probe_url", probe_mock)
+    monkeypatch.setattr("services.pipeline.probe_url", probe_mock)
 
     await intake_message(message, settings, cooldown, store, thumbnails, cache)
 
@@ -452,11 +453,11 @@ async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message.reply.return_value = status_message
     monkeypatch.setattr(
-        "routers.intake.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe([], None, None)),
     )
     monkeypatch.setattr(
-        "routers.intake.probe_url",
+        "services.pipeline.probe_url",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     artifact = SimpleNamespace(
@@ -468,13 +469,13 @@ async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path
             CachedMedia(file_id="F1", send_type="document", file_name="f.mp4", caption="c")
         ]
     )
-    monkeypatch.setattr("services.executor.download_direct_file", direct_mock)
-    monkeypatch.setattr("services.executor.upload_artifact", upload_mock)
+    monkeypatch.setattr("services.pipeline.download_direct_file", direct_mock)
+    monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
     await intake_message(message, settings, cooldown, store, thumbnails, cache)
 
     upload_mock.assert_awaited_once()
-    assert cache.get(url) is None
+    assert [entry.file_id for entry in cache.get(url)] == ["F1"]
 
 
 @pytest.mark.asyncio
@@ -489,7 +490,7 @@ async def test_intake_gallery_probe_hit_routes_to_gallery(monkeypatch, tmp_path)
         {"_url": "https://cdn.pawchive/x.jpg", "extension": "jpg", "filename": "x"},
     ]
     monkeypatch.setattr(
-        "routers.intake.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="c", error=None)),
     )
     execute_mock = AsyncMock()
@@ -522,7 +523,7 @@ async def test_intake_direct_image_fast_path_cdn(monkeypatch, tmp_path):
     url = "https://img.pawchive.pw/thumbnail/data/x.jpeg"
 
     monkeypatch.setattr(
-        "routers.intake.probe_gallery",
+        "services.pipeline.probe_gallery",
         AsyncMock(return_value=GalleryProbe([], None, None)),
     )
     message = make_message()
@@ -553,18 +554,18 @@ async def test_intake_direct_image_fast_path_falls_back_on_error(monkeypatch, tm
     url = "https://example.com/a.jpg"
 
     probe_mock = AsyncMock(return_value=GalleryProbe([], None, None))
-    monkeypatch.setattr("routers.intake.probe_gallery", probe_mock)
+    monkeypatch.setattr("services.pipeline.probe_gallery", probe_mock)
     monkeypatch.setattr(
-        "routers.intake.probe_url",
+        "services.pipeline.probe_url",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     artifact = SimpleNamespace(
         path=tmp_path / "a.jpg", file_name="a.jpg", send_type="photo", caption="c"
     )
     direct_mock = AsyncMock(return_value=artifact)
-    monkeypatch.setattr("services.executor.download_direct_file", direct_mock)
+    monkeypatch.setattr("services.pipeline.download_direct_file", direct_mock)
     monkeypatch.setattr(
-        "services.executor.upload_artifact",
+        "services.executor.ChatDelivery.deliver",
         AsyncMock(return_value=[CachedMedia(file_id="F1", send_type="photo", file_name="a.jpg", caption="c")]),
     )
 
@@ -605,7 +606,7 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
     )
     cache = make_media_cache(tmp_path)
     download_mock = AsyncMock()
-    monkeypatch.setattr("services.executor.download_gallery_media", download_mock)
+    monkeypatch.setattr("services.pipeline.download_gallery_media", download_mock)
     monkeypatch.setattr(
         "services.executor.send_url_media",
         AsyncMock(
@@ -622,7 +623,7 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
         stored=stored,
         option=stored.options[0],
         bot=SimpleNamespace(),
-        status_message=status_message,
+        status=StatusSurface(status_message.edit_text),
         source_message=source_message,
         user_id=99,
         settings=settings,
@@ -658,9 +659,9 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
     f1.write_bytes(b"j")
     artifacts = [DownloadArtifact(path=f1, file_name="p1.jpg", send_type="photo", caption="")]
     download_mock = AsyncMock(return_value=artifacts)
-    monkeypatch.setattr("services.executor.download_gallery_media", download_mock)
+    monkeypatch.setattr("services.pipeline.download_gallery_media", download_mock)
     monkeypatch.setattr(
-        "services.executor.upload_artifacts",
+        "services.executor.ChatDelivery.deliver",
         AsyncMock(return_value=[CachedMedia(file_id="L1", send_type="photo", file_name="p1.jpg", caption="")]),
     )
     monkeypatch.setattr(
@@ -674,7 +675,7 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
         stored=stored,
         option=stored.options[0],
         bot=SimpleNamespace(),
-        status_message=status_message,
+        status=StatusSurface(status_message.edit_text),
         source_message=source_message,
         user_id=99,
         settings=settings,

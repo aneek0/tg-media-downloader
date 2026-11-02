@@ -17,12 +17,14 @@ from aiogram.types import (
     InlineQueryResultPhoto,
     InlineQueryResultVideo,
     InputMediaPhoto,
+    InputRichMessage,
+    InputRichMessageContent,
     InputTextMessageContent,
     InlineQuery,
 )
 from config import Settings
+from services.delivery import rich_post_html
 from services.gallery import (
-    VIDEO_EXTENSIONS,
     _gallery_friendly_error,
     plain_caption,
     probe_gallery,
@@ -32,19 +34,21 @@ from services.gallery import (
 from services.inline_flow import InlineTaskRegistry, run_inline_download
 from services.media_cache import MediaCache, cached_inline_results
 from services.parsing import is_twitter_status_url, parse_user_input
+from services.requests import inline_gallery_request, inline_media_request
 from services.request_store import RequestStore
-from services.ytdlp import _ext_from_url, probe_url
+from services.mornye import MornyeService
+from services.sources import VIDEO_EXTENSIONS, SourceKind, classify
+from services.ytdlp import probe_url
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
 from utils.keyboards import gallery_keyboard
 from utils.logging_config import safe_url_label
 from utils import text
-from utils.models import ParsedInput, StoredRequest
+from utils.models import InlineGalleryPayload, ParsedInput
 
 router = Router(name="inline")
 logger = logging.getLogger(__name__)
 
 _inline_tasks = InlineTaskRegistry()
-INLINE_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 
 
 def _first_url_in(raw: str) -> str:
@@ -179,6 +183,7 @@ async def _content_length(url: str) -> int | None:
 
 async def _inline_video_results(
     file_dicts: list[dict],
+    *,
     parsed: ParsedInput,
     settings: Settings,
     request_store: RequestStore,
@@ -216,7 +221,7 @@ async def _inline_video_results(
                 )
             )
             continue
-        token = request_store.create_token()
+
         # gallery-dl names twitter downloads "{tweet_id}_{num}.{extension}"
         # (GALLERY_FILENAME_FORMAT). That name identifies the tapped item
         # among the downloaded artifacts; probe order alone does not, since
@@ -228,23 +233,18 @@ async def _inline_video_results(
         if tweet_id and num and extension:
             preferred_name = f"{tweet_id}_{num}.{extension}"
         poster = await _video_poster_url(parsed, settings)
-        request_store.save(
-            StoredRequest(
-                token=token,
-                request_type="inline_media",
-                parsed_input=parsed,
-                options=[],
-                info={
-                    "preferred_name": preferred_name,
-                    "poster_url": poster,
-                    # editMessageMedia on an inline message cannot upload a
-                    # new file (Bot API rule) - the media must be a URL or a
-                    # known file_id. The CDN URL is kept so the inline edit
-                    # can hand it to Telegram to fetch itself.
-                    "video_url": url,
-                },
-            )
+        stored = inline_media_request(
+            request_store,
+            parsed,
+            preferred_name=preferred_name,
+            poster_url=poster,
+            # editMessageMedia on an inline message cannot upload a new
+            # file (Bot API rule) - the media must be a URL or a known
+            # file_id. The CDN URL is kept so the inline edit can hand it
+            # to Telegram to fetch itself.
+            video_url=url,
         )
+        token = stored.token
         results.append(
             _poster_photo_result(
                 token,
@@ -278,6 +278,28 @@ def _gallery_result(
         caption=caption,
         reply_markup=gallery_keyboard(token=token, count=len(photos), index=0),
     )
+
+
+def _rich_results(
+    full_caption: str, photo_urls: list[str]
+) -> list[InlineQueryResultArticle]:
+    """Rich results for posts that overflow the 1024-character caption limit
+    of photo results: one message with the images and the complete text."""
+    if not photo_urls or len(full_caption) <= text.CAPTION_LIMIT:
+        return []
+    return [
+        InlineQueryResultArticle(
+            id="rich",
+            title="Full post",
+            description=full_caption[:120],
+            input_message_content=InputRichMessageContent(
+                rich_message=InputRichMessage(
+                    html=rich_post_html(photo_urls, text.esc(full_caption))
+                )
+            ),
+        )
+    ]
+
 
 
 async def _error_article(message: str) -> InlineQueryResultArticle:
@@ -320,31 +342,29 @@ async def _answer_gallery_media(
         # pbs.twimg.com itself); with >=2 photos the first result is a
         # gallery pager. Videos cannot be CDN results - Telegram's fetcher
         # refuses video.twimg.com - so they become download-on-tap articles.
-        caption = _probe_caption(probe.file_dicts, probe.content, parsed.source_url)[:1024]
+        full_caption = _probe_caption(
+            probe.file_dicts, probe.content, parsed.source_url
+        )
+        caption = full_caption[: text.CAPTION_LIMIT]
         body = plain_caption(probe.content) or ""
         results: list = []
         gallery_photos = [m["_url"] for m in photos if m.get("_url")]
+        results.extend(_rich_results(full_caption, gallery_photos))
         if len(gallery_photos) >= 2:
-            token = request_store.create_token()
-            request_store.save(
-                StoredRequest(
-                    token=token,
-                    request_type="inline_gallery",
-                    parsed_input=parsed,
-                    options=[],
-                    info={"photos": gallery_photos, "caption": caption},
-                )
+            stored = inline_gallery_request(
+                request_store, parsed, gallery_photos, caption
             )
+            token = stored.token
             results.append(_gallery_result(token, gallery_photos, caption))
         results.extend(_inline_photo_results(probe.file_dicts, caption))
         results.extend(
             await _inline_video_results(
                 probe.file_dicts,
-                parsed,
-                settings,
-                request_store,
-                body or _description_for(),
-                caption,
+                parsed=parsed,
+                settings=settings,
+                request_store=request_store,
+                description=body or _description_for(),
+                caption=caption,
             )
         )
         if results:
@@ -363,36 +383,27 @@ async def _answer_gallery_media(
     ]
     if not preview_urls:
         return False  # videos/attachments only - generic article path
-    caption = _probe_caption(probe.file_dicts, probe.content, parsed.source_url)[:1024]
+    full_caption = _probe_caption(probe.file_dicts, probe.content, parsed.source_url)
+    caption = full_caption[: text.CAPTION_LIMIT]
     results: list = []
+    results.extend(_rich_results(full_caption, preview_urls))
     if len(preview_urls) >= 2:
         # Preview pager over thumbnails (Telegram CAN fetch the thumbnail
         # CDN even when the full files sit behind DDoS-Guard).
-        token = request_store.create_token()
-        stored = StoredRequest(
-            token=token,
-            request_type="inline_gallery",
-            parsed_input=parsed,
-            options=[],
-            info={"photos": preview_urls, "caption": caption},
+        stored = inline_gallery_request(
+            request_store, parsed, preview_urls, caption
         )
-        request_store.save(stored)
+        token = stored.token
         results.append(_gallery_result(token, preview_urls, caption))
     for index, preview in enumerate(preview_urls):
         # result_id = token -> chosen_inline_result starts the background
         # download that swaps the small preview for the full-size file.
         # preferred_index puts the tapped photo into the message, the
         # remaining files go to the DM spillover.
-        token = request_store.create_token()
-        request_store.save(
-            StoredRequest(
-                token=token,
-                request_type="inline_media",
-                parsed_input=parsed,
-                options=[],
-                info={"preferred_index": index},
-            )
+        stored = inline_media_request(
+            request_store, parsed, preferred_index=index
         )
+        token = stored.token
         results.append(
             InlineQueryResultPhoto(
                 id=token,
@@ -407,11 +418,12 @@ async def _answer_gallery_media(
 
 
 @router.inline_query()
-async def inline_query_handler(
+async def inline_query_handler(  # pylint: disable=too-complex
     query: InlineQuery,
     settings: Settings,
     request_store: RequestStore,
     media_cache: MediaCache,
+    mornye: MornyeService | None = None,
 ) -> None:
     raw = (query.query or "").strip()
     if not raw:
@@ -446,6 +458,7 @@ async def inline_query_handler(
     except ValueError:
         logger.info("Inline query ignored (no URL) | user=%s", query.from_user.id)
         return
+    source = classify(parsed)
 
     cached = media_cache.get(parsed.source_url)
     if cached:
@@ -455,24 +468,19 @@ async def inline_query_handler(
             if len(cached_photos) >= 2:
                 # Same pager as the fresh-probe path, but over cached
                 # file_ids (edit_message_media accepts file_id media).
-                token = request_store.create_token()
                 raw_caption = (cached_photos[0].caption or "")[:1000]
                 caption = (
                     raw_caption
                     if parsed.source_url in raw_caption
                     else (f"{parsed.source_url}\n{raw_caption}" if raw_caption else parsed.source_url)
                 )[:1024]
-                stored = StoredRequest(
-                    token=token,
-                    request_type="inline_gallery",
-                    parsed_input=parsed,
-                    options=[],
-                    info={
-                        "photos": [entry.file_id for entry in cached_photos],
-                        "caption": caption,
-                    },
+                stored = inline_gallery_request(
+                    request_store,
+                    parsed,
+                    [entry.file_id for entry in cached_photos],
+                    caption,
                 )
-                request_store.save(stored)
+                token = stored.token
                 results.insert(
                     0,
                     InlineQueryResultCachedPhoto(
@@ -487,10 +495,7 @@ async def inline_query_handler(
             await query.answer(results, cache_time=0, is_personal=True)
             return
 
-    ext = _ext_from_url(parsed.source_url)
-    if ext and ext.lower() in INLINE_IMAGE_EXTENSIONS and not is_twitter_status_url(
-        parsed.source_url
-    ):
+    if source.kind is SourceKind.IMAGE and not source.is_twitter:
         await query.answer(
             [
                 InlineQueryResultPhoto(
@@ -503,18 +508,52 @@ async def inline_query_handler(
         )
         return
 
+    if mornye and mornye.enabled and source.kind is SourceKind.MUSIC:
+        try:
+            target = await mornye.resolve_url(parsed.source_url)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.info(
+                "Inline spotify resolve failed | user=%s source=%s error=%s",
+                query.from_user.id,
+                safe_url_label(parsed.source_url),
+                exc,
+            )
+            await query.answer(
+                [await _error_article(text.INLINE_FAILED)], cache_time=0
+            )
+            return
+        title = target.name
+        description = (
+            "Spotify track — tap to download"
+            if target.kind == "track"
+            else f"Spotify {target.kind} — {len(target.tracks)} track(s), tap to download"
+        )
+        stored = inline_media_request(request_store, parsed)
+        token = stored.token
+        await query.answer(
+            [
+                InlineQueryResultArticle(
+                    id=token,
+                    title=text.esc(title),
+                    description=description,
+                    thumbnail_url=target.cover_url or None,
+                    input_message_content=InputTextMessageContent(
+                        message_text=text.PROCESSING,
+                    ),
+                    reply_markup=_cancel_keyboard(token),
+                )
+            ],
+            cache_time=0,
+            is_personal=True,
+        )
+        return
+
     if await _answer_gallery_media(query, parsed, settings, request_store):
         return
 
     # result_id doubles as the request token: ChosenInlineResult carries it back
-    token = request_store.create_token()
-    stored = StoredRequest(
-        token=token,
-        request_type="inline_media",
-        parsed_input=parsed,
-        options=[],
-    )
-    request_store.save(stored)
+    stored = inline_media_request(request_store, parsed)
+    token = stored.token
     logger.info(
         "Prepared inline request | user=%s token=%s source=%s",
         query.from_user.id,
@@ -538,26 +577,30 @@ async def inline_query_handler(
     )
 
 
+def _result_needs_no_download(token: str, inline_message_id: str | None) -> bool:
+    """True for result ids that must never start a download: 'cached*' ids
+    post media instantly client-side, 'gallery:' ids are their own
+    self-contained pager (the saved token drives navigation), 'video*' ids
+    are instant CDN videos, and a missing inline_message_id leaves nothing
+    to edit."""
+    if not inline_message_id:
+        return True
+    return token in {"help", "rich"} or token.startswith(
+        ("cached", "gallery:", "video")
+    )
+
+
 @router.chosen_inline_result()
 async def inline_chosen_handler(
     chosen: ChosenInlineResult,
     settings: Settings,
     request_store: RequestStore,
     media_cache: MediaCache,
+    mornye: MornyeService | None = None,
 ) -> None:
     token = chosen.result_id
     inline_message_id = chosen.inline_message_id
-    # 'cached*' results post media instantly client-side; they must never
-    # reach the expired-request branch. 'gallery:' results are their own
-    # self-contained pager - the saved token drives navigation, not
-    # chosen_inline_result.
-    if (
-        not inline_message_id
-        or token == "help"
-        or token.startswith("cached")
-        or token.startswith("gallery:")
-        or token.startswith("video")
-    ):
+    if _result_needs_no_download(token, inline_message_id):
         return
 
     stored = request_store.load(token)
@@ -583,6 +626,7 @@ async def inline_chosen_handler(
             settings=settings,
             request_store=request_store,
             media_cache=media_cache,
+            mornye=mornye,
         )
     )
     _inline_tasks.start(token, task)
@@ -621,7 +665,8 @@ async def gallery_nav_callback(
     request_store: RequestStore,
 ) -> None:
     stored = request_store.load(callback_data.token)
-    photos = (stored.info.get("photos") if stored else None) or []
+    payload = stored.payload if stored else None
+    photos = payload.photos if isinstance(payload, InlineGalleryPayload) else []
     if not query.inline_message_id or not photos:
         await query.answer("This gallery is expired. Send the link again.")
         return
@@ -631,7 +676,11 @@ async def gallery_nav_callback(
             inline_message_id=query.inline_message_id,
             media=InputMediaPhoto(
                 media=photos[index],
-                caption=stored.info.get("caption"),
+                caption=(
+                    payload.caption
+                    if isinstance(payload, InlineGalleryPayload)
+                    else None
+                ),
                 parse_mode=None,
             ),
             reply_markup=gallery_keyboard(

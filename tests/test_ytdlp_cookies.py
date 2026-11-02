@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from config import Settings
-from services.progress import StatusProgress
+from services.status import StatusSurface
 from services.ytdlp import (
     _command_base,
     _friendly_error,
@@ -34,21 +34,21 @@ async def test_download_best_quality_progress_flags_and_forwarding(monkeypatch, 
     async def edit(_text: str) -> None:
         return None
 
-    progress = StatusProgress(edit, "Track", min_interval=0)
+    status = StatusSurface(edit, name="Track", min_interval=0)
 
     await download_best_quality(
         parsed_input=parsed,
         settings=settings,
         work_dir=tmp_path / "work",
         info=info,
-        progress=progress,
+        status=status,
     )
 
     kwargs = run_mock.await_args.kwargs
     command = run_mock.await_args.args[0]
     assert "--newline" in command
     assert "--progress" in command
-    assert kwargs["on_output"].__func__ is StatusProgress.feed_line
+    assert kwargs["on_output"].__func__ is StatusSurface.feed_line
     assert kwargs["timeout"] == settings.process_max_timeout
 
 

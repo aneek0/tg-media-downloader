@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from services.proc import run_command
-from services.progress import StatusProgress
 
 
 @pytest.mark.asyncio
@@ -43,70 +42,3 @@ async def test_run_command_still_times_out_with_streaming():
             run_command(["sleep", "5"], timeout=0.3, on_output=None), timeout=2
         )
 
-
-@pytest.mark.asyncio
-async def test_status_progress_parses_and_rate_limits():
-    calls: list[str] = []
-
-    async def edit(text: str) -> None:
-        calls.append(text)
-
-    reporter = StatusProgress(edit, "video.mp4", min_interval=0)
-    await reporter.feed_line("[download]  10.0% of ~100.00MiB at 5.00MiB/s ETA 00:18")
-    await reporter.feed_line("not a progress line")
-    await reporter.feed_line("[download]  10.0% of ~100.00MiB at 5.00MiB/s ETA 00:18")
-    await reporter.feed_line("[download]  55.5% of ~100.00MiB")
-
-    assert len(calls) == 2
-    assert "10.0% of 100.00MiB" in calls[0]
-    assert "Speed: 5.00MiB/s" in calls[0]
-    assert "ETA: 00:18" in calls[0]
-    assert "55.5% of 100.00MiB" in calls[1]
-    assert "Speed" not in calls[1]
-
-
-@pytest.mark.asyncio
-async def test_status_progress_min_interval_blocks_updates():
-    """Pins the bug where the first progress line was throttled away when
-    time.monotonic() uptime was below min_interval (fresh CI runners)."""
-    calls: list[str] = []
-
-    async def edit(text: str) -> None:
-        calls.append(text)
-
-    reporter = StatusProgress(edit, "v.mp4", min_interval=60)
-    await reporter.feed_line("[download]  10.0% of ~100.00MiB")
-    await reporter.feed_line("[download]  40.0% of ~100.00MiB")
-    await reporter.feed_line("[download]  80.0% of ~100.00MiB")
-
-    assert len(calls) == 1
-    assert "10.0%" in calls[0]
-
-
-@pytest.mark.asyncio
-async def test_status_progress_swallows_edit_errors():
-    async def broken_edit(_text: str) -> None:
-        raise RuntimeError("message to edit not found")
-
-    reporter = StatusProgress(broken_edit, "v.mp4", min_interval=0)
-    await reporter.feed_line("[download]  10.0% of ~100.00MiB")  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_status_progress_parses_aria2c_lines():
-    calls: list[str] = []
-
-    async def edit(text: str) -> None:
-        calls.append(text)
-
-    reporter = StatusProgress(edit, "video.mp4", min_interval=0)
-    await reporter.feed_line(
-        "[#1a2b3c 40.0MiB/200.0MiB(20%) CN:16 DL:9.5MiB ETA:16s]"
-    )
-    await reporter.feed_line("[#1a2b3c 100.0MiB/200.0MiB(50%) CN:16]")
-
-    assert len(calls) == 2
-    assert "20% of 200.0MiB" in calls[0]
-    assert "Speed: 9.5MiB/s" in calls[0]
-    assert "ETA: 16s" in calls[0]
-    assert "50% of 200.0MiB" in calls[1]
