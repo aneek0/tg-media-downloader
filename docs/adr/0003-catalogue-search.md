@@ -1,72 +1,71 @@
-# ADR 0003: Поиск по музыкальным каталогам
+# ADR 0003: Catalogue Search
 
-**Статус:** Accepted
-**Дата:** 2026-11-04
+**Status:** Accepted
+**Date:** 2026-11-04
 
-## Контекст
+## Context
 
-Music Request начинается с готовой Source URL. Пользователю нужен обратный вход:
-обычный текст превращается в поиск по Deezer/Spotify/Tidal, а выбранный результат —
-в существующий Music Request. DeezLoad используется как UX-образец: фильтры
-track/album/artist/playlist, карточка артиста, TOP 30, альбомы и скачивание по
-нажатию. YT Music в фазу не входит: установленное расширение
-`ytmusic-spotiflac` возвращает пустой `customSearch`, тогда как Deezer и Spotify
-отвечают корректно.
+Music Request starts with a ready Source URL. Users need the reverse entry point:
+plain text becomes a search across Deezer/Spotify/Tidal, and the selected result
+becomes an existing Music Request. DeezLoad is used as the UX reference: filters for
+track/album/artist/playlist, an Artist Card, TOP 30, albums, and Tap-to-Download.
+YT Music is not included in this phase: the installed `ytmusic-spotiflac` extension
+returns an empty `customSearch`, whereas Deezer and Spotify respond correctly.
 
-Поиск не должен создавать второй музыкальный конвейер. Найденная сущность даёт
-Source URL, после чего ADR 0002 и существующие `pipeline`/`inline_flow`
-выполняют скачивание и доставку.
+Search must not create a second music pipeline. A found entity provides a
+Source URL, after which ADR 0002 and the existing `pipeline`/`inline_flow`
+handle downloading and delivery.
 
-## Решение
+## Decision
 
-1. **Провайдер поиска один на запрос.** Поддерживаются `deezer`, `spotify-web` и `tidal-web`.
-   Дефолт задаётся `SEARCH_PROVIDER=deezer`, пользователь может выбрать другой
-   в `/settings`. Поиск использует `customSearch` установленного mornye-
-   расширения; результаты нормализуются в независимые от JS доменные записи.
-   Ошибки одного каталога показываются как ошибка поиска, без скрытого fallback
-   на другой каталог.
-   Результаты Tidal без внешнего URL сохраняют Tidal Source URL, а не превращаются
-   в некорректную Deezer-ссылку.
+1. **One search provider per request.** `deezer`, `spotify-web`, and `tidal-web` are supported.
+   The default is set by `SEARCH_PROVIDER=deezer`; the user can select another
+   in `/settings`. Search uses the `customSearch` of the installed mornye
+   extension; results are normalized into JS-independent domain records.
+   Errors from one catalogue are shown as a search error, with no hidden fallback
+   to another catalogue.
+   Tidal results without an external URL retain their Tidal Source URL rather than
+   being converted into an invalid Deezer link.
 
-2. **Search Query и Search Filter.** Голый текст означает global search;
-   префиксы `.trk`, `.a`, `.art`, `.pla` ограничивают поиск. Запрос короче двух
-   символов получает подсказку без обращения к API. Ответы Telegram кэшируются
-   на 30 секунд, повторные одинаковые запросы — в памяти на 60 секунд, частота
-   ограничена одним поиском за 1.5 секунды на пользователя. REQUEST_COOLDOWN
-   применяется только к скачиванию.
+2. **Search Query and Search Filter.** Bare text means global search;
+   the `.trk`, `.a`, `.art`, and `.pla` prefixes restrict the search. A query shorter
+   than two characters receives a hint without an API call. Telegram responses are cached
+   for 30 seconds, repeated identical queries are cached in memory for 60 seconds, and the rate
+   is limited to one search per 1.5 seconds per user. REQUEST_COOLDOWN
+   applies only to downloads.
 
-3. **Один рендер результатов.** Отфильтрованный поиск показывает до восьми
-   результатов выбранного типа; global search — до четырёх каждого типа. Треки
-   и коллекции представлены статьями с обложкой, `Artist — Title` и описанием
-   `Album: … · mm:ss`. Тап создаёт Music Request по `external_urls`.
+3. **A single results renderer.** Filtered search shows up to eight
+   results of the selected type; global search shows up to four of each type. Tracks
+   and collections are represented as articles with a cover, `Artist — Title`, and the description
+   `Album: … · mm:ss`. A tap creates a Music Request from `external_urls`.
 
-4. **Artist Card создаётся по выбору.** Первый inline result для артиста
-   использует уже полученные search metadata и не запускает второй API-вызов.
-   При выборе результата `getArtist` наполняет обложку, число слушателей, TOP и
-   ALBUMS. Deezer extension ограничивает TOP двадцатью треками, поэтому
-   публичный `api.deezer.com/artist/{id}/top?limit=30` дополняет их до 30 с
-   merge по id. TOP содержит до 30 треков, ALBUMS — до 50 альбомов. Каждый трек
-   получает собственный `inline_media` token; TOP/ALBUMS/BACK меняют только
-   существующую карточку по `inline_message_id`. Follow переключает запись из
-   ADR 0004. Внешний URL в `callback_data` не используется: лимит Bot API —
-   64 байта.
-5. **Album Card и скачивание.** Альбом из ALBUMS открывает обложку, метаданные,
-   треки и кнопки `GET ALL`, `Download ZIP`, `BACK`. GET ALL скачивает
-   коллекцию через существующий mornye pipeline и отправляет аудио по одному.
-   ZIP собирает реально скачанные файлы в один архив; inline-сообщение меняется
-   на document через file_id предварительной DM-загрузки, поскольку Bot API не
-   позволяет загрузить новый файл прямо в inline message edit.
-6. **Доставка трека в инлайне.** Сообщение сначала показывает Downloading,
-   затем файл загружается в личный чат для получения `file_id`, после чего
-   `editMessageMedia` заменяет содержимое на `InputMediaAudio`. Личная копия
-   остаётся доставкой и резервом при неуспешной правке.
+4. **Artist Card is created on selection.** The first inline result for an artist
+   uses the search metadata already retrieved and does not trigger a second API call.
+   When the result is selected, `getArtist` populates the cover, listener count, TOP, and
+   ALBUMS. The Deezer extension limits TOP to twenty tracks, so the public
+   `api.deezer.com/artist/{id}/top?limit=30` supplements them to 30, merging by id.
+   TOP contains up to 30 tracks, and ALBUMS contains up to 50 albums. Each track
+   receives its own `inline_media` token; TOP/ALBUMS/BACK modify only the
+   existing card via `inline_message_id`. Follow toggles the record from
+   ADR 0004. An external URL is not used in `callback_data`: the Bot API limit is
+   64 bytes.
+5. **Album Card and downloading.** An album from ALBUMS opens its cover, metadata,
+   tracks, and the `GET ALL`, `Download ZIP`, and `BACK` buttons. GET ALL downloads
+   the collection through the existing mornye pipeline and sends the audio files one by one.
+   ZIP packages the actually downloaded files into a single archive; the inline message is changed
+   to a document using the file_id from a preliminary DM upload, because the Bot API does
+   not allow uploading a new file directly in an inline message edit.
+6. **Inline track delivery.** The message first shows Downloading,
+   then the file is uploaded to the private chat to obtain a `file_id`, after which
+   `editMessageMedia` replaces the content with `InputMediaAudio`. The private copy
+   remains as delivery and a fallback if the edit fails.
 
-## Риски и последствия
+## Risks and Consequences
 
-- Поиск зависит от нестабильного JS runtime расширений; запросы изолируются
-  таймаутом mornye и не блокируют URL-конвейер.
-- Редактирование старого inline-сообщения требует сохранить состояние артиста
-  в Request Store; протухший токен получает понятный ответ вместо traceback.
-- Включённый текстовый поиск меняет поведение обычных сообщений в личке, но
-  только для сообщений без URL и с обратимым per-user переключателем.
-- Транскод MP3 требует ffmpeg, уже необходимого yt-dlp.
+- Search depends on the unstable JS runtime of the extensions; requests are isolated
+  by the mornye timeout and do not block the URL pipeline.
+- Editing an old inline message requires preserving the artist state
+  in Request Store; a stale token receives a clear response instead of a traceback.
+- Enabling text search changes the handling of ordinary private-chat messages, but
+  only for messages without URLs, and the behavior has a reversible per-user toggle.
+- MP3 transcoding requires ffmpeg, which yt-dlp already requires.

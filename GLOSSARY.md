@@ -1,168 +1,170 @@
 # tg-media-downloader
 
-Telegram-бот, который по ссылке достаёт медиа и возвращает его в чат. Глоссарий
-описывает язык предметной области: как бот называет вещи, которые пользователь
-видит как «одно действие — один результат». Реализация сюда не попадает.
+A Telegram bot that fetches media from a link and returns it to the chat. The glossary
+describes the domain language: how the bot names things that the user sees as
+“one action — one result”. Implementation is out of scope here.
 
-## Общие термины
+## General terms
 
-Оба конвейера — личные сообщения и инлайн — используют этот словарь.
+Both pipelines — direct messages and inline — use this vocabulary.
 
 **Source URL**:
-Адрес, который пользователь дал боту и из которого бот достаёт медиа.
-_Avoid_: ссылка, URL, адрес
+The address the user gave the bot and from which the bot fetches media.
+_Avoid_: link, URL, address
 
 **Parsed Input**:
-Source URL плюс необязательные части, которые пользователь дописал после него:
-имя файла, логин, пароль.
-_Avoid_: ввод, аргументы, параметры
+Source URL plus the optional parts the user added after it: file name, login,
+password.
+_Avoid_: input, arguments, parameters
 
 **Request**:
-Единица работы, которую бот взял на себя по одной Source URL и держит, пока
-пользователь выбирает, что именно скачать. У Request есть Token.
-_Avoid_: задача, запрос, job
+A unit of work the bot has taken on for one Source URL and keeps while the user
+chooses what exactly to download. A Request has a Token.
+_Avoid_: task, request, job
 
 **Token**:
-Короткий идентификатор Request, по которому бот находит его позже, когда
-пользователь нажимает кнопку. Ссылка на Request для пользователя.
-_Avoid_: id, ключ, request_id
+A short identifier for a Request, used by the bot to find it later when the
+user presses a button. The user-facing reference to a Request.
+_Avoid_: id, key, request_id
 
 **Option**:
-Один вариант, который пользователь может выбрать внутри Request: конкретное
-качество, формат или «лучшее из доступного». У Option есть Send Type.
-_Avoid_: кнопка, пункт, выбор
+One choice the user can select within a Request: a specific quality, format,
+or “best available”. An Option has a Send Type.
+_Avoid_: button, item, choice
 
 **Send Type**:
-Как Telegram должен принять файл: photo, video, audio, video_note, document
-или animation. Определяет, каким методом бот отправит результат.
-_Avoid_: тип файла, формат, mime
+How Telegram should accept the file: photo, video, audio, video_note, document,
+or animation. It determines which method the bot uses to send the result.
+_Avoid_: file type, format, mime
 
 **Artifact**:
-Скачанный файл на диске плюс Send Type, подпись и метаданные, нужные Telegram.
-Промежуточный результат, ещё не отправленный пользователю.
-_Avoid_: файл, download, результат
+The downloaded file on disk plus the Send Type, caption, and metadata Telegram
+needs. An intermediate result that has not yet been sent to the user.
+_Avoid_: file, download, result
 
 **Download Pipeline**:
-Единственное место, которое по Source URL и Parsed Input решает, чем качать:
-музыка, галерея, yt-dlp или прямая загрузка. Intake спрашивает его про Options,
-остальные конвейеры — про Artifacts.
-_Avoid_: executor, диспетчер, роутер
+The single place that decides, from a Source URL and Parsed Input, what to
+download with: music, gallery, yt-dlp, or direct download. Intake asks it for
+Options; the other pipelines ask it for Artifacts.
+_Avoid_: executor, dispatcher, router
 
 **Media Cache**:
-Хранилище соответствий Source URL → file_id уже отправленного медиа. Повторный
-запрос того же URL отдаётся мгновенно, без скачивания. Записи вытесняются по
-лимиту, удаляются вручную.
-_Avoid_: кэш файлов, storage, box
+A store of mappings from Source URL → file_id for already sent media. A repeated
+request for the same URL is served instantly, without downloading. Entries are
+evicted by limit and deleted manually.
+_Avoid_: file cache, storage, box
 
 **Preview Store**:
-Хранилище личной картинки-превью пользователя, которую бот прикрепляет к его
-отправкам. У каждого пользователя своя; срок жизни задаёт сам пользователь.
-_Avoid_: thumbnail store, cache, аватар
+A store of a user's personal preview image, which the bot attaches to that
+user's sends. Each user has their own; its lifetime is set by the user.
+_Avoid_: thumbnail store, cache, avatar
 
 **Session**:
-Всё, чем владеет один запуск бота: Settings, Cooldown, Media Cache, Preview
-Store, Token-хранилище Requests и музыкальный Provider. Обработчики и
-конвейеры получают его одним аргументом, а не списком зависимостей.
-_Avoid_: контекст, зависимости, bot state
+Everything owned by one bot run: Settings, Cooldown, Media Cache, Preview
+Store, the Token store for Requests, and the music Provider. Handlers and
+pipelines receive it as one argument rather than a list of dependencies.
+_Avoid_: context, dependencies, bot state
 
-## Доставка в личных сообщениях
+## Direct-message delivery
 
 **Intake**:
-Вход всей цепочки: разбор сообщения, проверка ограничений, попадание в Media
-Cache, выбор галереи или формата, показ клавиатуры.
-_Avoid_: intake handler, парсер, разбор
+The entry point of the whole chain: parsing the message, checking limits,
+hitting the Media Cache, choosing the gallery or format, and showing the
+keyboard.
+_Avoid_: intake handler, parser, parsing
 
 **Cooldown**:
-Ограничение, из-за которого пользователь не может отправлять боту новые ссылки
-чаще заданного интервала.
-_Avoid_: rate limit, антифлуд, троттлинг
+A restriction that prevents the user from sending the bot new links more often
+than a set interval.
+_Avoid_: rate limit, anti-flood, throttling
 
 **Work Directory**:
-Временная папка Request, где лежат скачанные файлы. Удаляется вместе с
-Request.
-_Avoid_: tmp, папка загрузки, staging
+A Request's temporary folder holding the downloaded files. Deleted together
+with the Request.
+_Avoid_: tmp, downloads folder, staging
 
-## Инлайн-доставка
+## Inline delivery
 
 **Inline Result**:
-То, что бот показывает в выпадающем списке автодополнения. Может быть готовым
-медиа или кнопкой, которая запускает скачивание по нажатию.
-_Avoid_: результат, айтем, предложение
+What the bot shows in the autocomplete dropdown. It can be ready media or a
+button that starts a download when pressed.
+_Avoid_: result, item, suggestion
 
 **Tap-to-Download**:
-Inline Result, который сам по себе не несёт медиа, а скачивает её при нажатии.
-Применяется там, где Telegram не может забрать файл сам.
-_Avoid_: ссылка на скачивание, заглушка, превью
+An Inline Result that carries no media itself and downloads it when pressed.
+Used where Telegram cannot fetch the file itself.
+_Avoid_: download link, placeholder, preview
 
 **Telegram Fetch**:
-Способ доставки, при котором бот отдаёт Telegram адрес и не скачивает файл сам:
-Telegram забирает медиа своими серверами.
-_Avoid_: CDN-отправка, отправка по ссылке, outsource
+A delivery method in which the bot gives Telegram an address and does not
+download the file itself: Telegram fetches the media with its own servers.
+_Avoid_: CDN sending, sending by link, outsource
 
 **Direct Upload**:
-Способ доставки, при котором бот скачивает файл к себе и отправляет его
-Telegram сам. Единственный способ доставить то, что Telegram Fetch
-забрать не может.
-_Avoid_: аплоад, отправка файла, загрузка
+A delivery method in which the bot downloads the file itself and sends it to
+Telegram. The only way to deliver what Telegram Fetch cannot fetch.
+_Avoid_: upload, sending a file, download
 
 **Overflow DM**:
-Лишние медиа из альбома, которые не поместились в Inline Result и отправлены
-пользователю в личные сообщения.
-_Avoid_: хвост, добавка, остаток
+Extra media from an album that did not fit into the Inline Result and was sent
+to the user in direct messages.
+_Avoid_: tail, extra, remainder
 
-## Музыка
+## Music
 
 **Source Domain**:
-Происхождение Source URL: общий сайт, tweet-пост или музыкальный сервис.
-Домен решает, каким конвейером Request превратится в Artifact. Текущие:
-guess (общий), twitter, spotify, deezer, tidal, soundcloud.
-_Avoid_: платформа, тип ссылки, провайдер
+The origin of a Source URL: a general site, a tweet post, or a music service.
+The domain determines which pipeline turns a Request into an Artifact. Current
+ones: guess (general), twitter, spotify, deezer, tidal, soundcloud.
+_Avoid_: platform, link type, provider
 
 **Music Request**:
-Request по Source URL с музыкальным Source Domain (spotify, deezer, tidal,
-soundcloud): track, album или playlist. Метаданные резолвятся до клавиатуры,
-скачивание выполняет mornye через Provider'ы. Track Collection обрезается до капа.
-_Avoid_: Spotify Request, музыкальный запрос, mornye request, трек
+A Request for a Source URL with a music Source Domain (spotify, deezer, tidal,
+soundcloud): track, album, or playlist. Metadata is resolved before the
+keyboard; the download is performed by mornye through Providers. Track
+Collection is truncated to the cap.
+_Avoid_: Spotify Request, music request, mornye request, track
 
 **Provider**:
-Расширение mornye, из которого качается FLAC (ext:deezer, ext:tidal-web,
-…). Набор и порядок задаются конфигом; ни одного нет в комплекте с
-mornye — реестр выбирает владелец бота.
-_Avoid_: сервис, источник, расширение
+A mornye extension from which FLAC is downloaded (ext:deezer, ext:tidal-web,
+…). The set and order are set by config; none ship with
+mornye — the registry is chosen by the bot owner.
+_Avoid_: service, source, extension
 
 **Track Collection**:
-Музыкальный контейнер больше одного трека: album, playlist, artist
-discography. Скачивается целиком (до капа), отправляется документами
-по одному с обложкой.
-_Avoid_: альбом, плейлист, набор
+A music container with more than one track: album, playlist, artist
+discography. Downloaded in full (up to the cap), sent as documents one by one
+with cover art.
+_Avoid_: album, playlist, set
 
 **Search Query**:
-Текст, который пользователь ищет в музыкальном каталоге, плюс необязательный
-Search Filter. Не является Source URL до выбора результата.
-_Avoid_: запрос, текст, сообщение
+The text the user searches for in the music catalogue, plus an optional
+Search Filter. It is not a Source URL until a result is selected.
+_Avoid_: query, text, message
 
 **Search Filter**:
-Ограничение Search Query одним видом результата: track, album, artist или
-playlist. Без фильтра выполняется global search по всем четырём видам.
-_Avoid_: вкладка, режим, тип поиска
+A restriction of a Search Query to one kind of result: track, album, artist, or
+playlist. Without a filter, a global search runs across all four kinds.
+_Avoid_: tab, mode, search type
 
 **Catalogue Search**:
-Поиск по одному выбранному каталогу (deezer, spotify-web или tidal-web). Не скачивает
-файлы и не расходует Request Cooldown; выбранный результат создаёт Music
-Request по его Source URL.
-_Avoid_: глобальный поиск, дизер, спотифай
+A search within one selected catalogue (deezer, spotify-web, or tidal-web). It
+does not download files or consume Request Cooldown; the selected result
+creates a Music Request for its Source URL.
+_Avoid_: global search, deezer, spotify
 
 **Artist Card**:
-Inline Result с фотографией артиста, числом альбомов и слушателей и кнопками
-TOP 30, ALBUMS и Follow. Кнопки редактируют то же сообщение.
-_Avoid_: карточка, профиль, артист-результат
+An Inline Result with the artist's photo, album and listener counts, and the
+TOP 30, ALBUMS, and Follow buttons. The buttons edit the same message.
+_Avoid_: card, profile, artist result
 
 **Follow**:
-Локальная подписка Telegram-пользователя на новые релизы артиста в каталоге.
-Первый Follow сохраняет baseline существующих релизов и ничего не присылает.
-_Avoid_: подписка Deezer, избранное, слежение
+A local subscription of a Telegram user to an artist's new releases in the
+catalogue. The first Follow saves the baseline of existing releases and sends
+nothing.
+_Avoid_: Deezer subscription, favorites, following
 
 **Release Notification**:
-Одно личное сообщение о новых релизах артиста после опроса Follow: обложка,
-до пяти названий и кнопка отписки.
-_Avoid_: рассылка, новость, алерт
+A single direct message about an artist's new releases after polling Follow:
+the cover, up to five titles, and an unsubscribe button.
+_Avoid_: broadcast, news, alert

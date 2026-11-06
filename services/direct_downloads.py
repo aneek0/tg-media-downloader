@@ -32,8 +32,8 @@ _PROGRESS_INTERVAL_SECONDS = 2
 # ~10 KiB/s to stay under it; it fires only when a server parks a range request.
 _SEGMENT_STALL_SECONDS = 15
 
-# Попыток на сегмент; каждый ретрай возобновляется с последнего записанного
-# смещения, поэтому флаки-соединение стоит остаток одного сегмента, а не весь файл.
+# Attempts per segment; each retry resumes from the last written
+# offset, so a flaky connection costs only the remainder of one segment, not the whole file.
 _SEGMENT_MAX_ATTEMPTS = 3
 
 
@@ -146,10 +146,10 @@ async def _fetch_segment_range(
     downloaded: list[int],
     settings: Settings,
 ) -> None:
-    """Скачать байты ``position[0]..end`` включительно, продвигая ``position[0]`` по мере записи.
+    """Download bytes ``position[0]..end`` inclusive, advancing ``position[0]`` while writing.
 
-    ``position`` разделяется с вызывающим циклом ретраев, поэтому при обрыве
-    посреди потока уже записанный прогресс не теряется.
+    ``position`` is shared with the caller's retry loop, so a mid-stream
+    failure does not lose progress that has already been written.
     """
     headers = {"Range": f"bytes={position[0]}-{end}", "Accept-Encoding": "identity"}
     # sock_read turns a stalled connection into ServerTimeoutError instead of hanging

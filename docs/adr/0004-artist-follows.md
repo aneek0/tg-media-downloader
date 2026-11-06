@@ -1,45 +1,24 @@
-# ADR 0004: Подписки на новые релизы артистов
+# ADR 0004: Subscriptions to new artist releases
 
-**Статус:** Accepted
-**Дата:** 2026-11-04
+**Status:** Accepted
+**Date:** 2026-11-04
 
-## Контекст
+## Context
 
-Follow на Artist Card должен следить за новыми релизами для Telegram-
-пользователя. Аккаунт Deezer не требуется: `getArtist` возвращает публичные
-`albums[]`, `top_tracks[]`, обложку и число слушателей. Установленное
-расширение уже предоставляет все данные для сравнения снимков каталога.
+Follow on the Artist Card must track new releases for the Telegram user. No Deezer account is required: `getArtist` returns public `albums[]`, `top_tracks[]`, cover art, and listener counts. The installed extension already provides all the data needed to compare catalogue snapshots.
 
-## Решение
+## Decision
 
-1. **Follow — локальная связь.** Запись содержит Telegram user id, провайдера,
-   id и имя артиста, обложку и известные id релизов. Хранилище —
-   `DOWNLOADS/follows.json`, атомарная запись по образцу Media Cache. Один
-   пользователь не может подписаться на одного артиста дважды; разные
-   пользователи имеют независимые подписки.
+1. **Follow is a local association.** The record contains the Telegram user id, Provider, artist id and name, cover art, and known release ids. Storage is `DOWNLOADS/follows.json`, written atomically following the Media Cache pattern. A user cannot follow the same artist twice; different users have independent follows.
 
-2. **Первый Follow только фиксирует baseline.** Существующие альбомы не
-   приводят к массовой рассылке. При последующих опросах новые id образуют
-   одно уведомление на артиста с максимум пятью релизами; остальные учитываются
-   в baseline и не создают лавину сообщений.
+2. **The first Follow only records the baseline.** Existing albums do not trigger a mass mailing. On subsequent polls, new ids form one Release Notification per artist with at most five releases; the rest are recorded in the baseline and do not create a flood of messages.
 
-3. **Опрос раз в шесть часов.** Фоновая asyncio-задача запускается вместе с
-   polling и останавливается на shutdown. Обходятся только артисты с
-   подписчиками; ошибка одного провайдера не меняет baseline и не мешает
-   остальным. Доставка пользователю выполняется независимо от остальных.
+3. **Polling every six hours.** A background asyncio task starts with polling and stops on shutdown. Only artists with followers are traversed; a failure of one Provider neither changes the baseline nor affects the others. Delivery to each user happens independently of the others.
 
-4. **Управление.** Кнопка `FOLLOW ➕`/`FOLLOWING ✓` на Artist Card переключает
-   подписку. `/follows` показывает список с кнопками отписки, `/unfollows`
-   открывает тот же список; `/follow <artist-url>` добавляет подписку по
-   публичной ссылке. Уведомление содержит обложку, артиста, названия и даты
-   релизов и кнопку отписки. Синглы и альбомы не фильтруются.
+4. **Management.** The `FOLLOW ➕`/`FOLLOWING ✓` button on the Artist Card toggles the follow. `/follows` shows a list with unfollow buttons, `/unfollows` opens the same list; `/follow <artist-url>` adds a follow by public link. The Release Notification contains the cover art, artist, release titles and dates, and an unfollow button. Singles and albums are not filtered.
 
-## Риски и последствия
+## Risks and consequences
 
-- Каталог может удалить или переиздать релиз: сравнение идёт по id, поэтому
-  переиздание с новым id считается новым релизом, исчезновение — не удалением
-  подписки.
-- Бот офлайн пропускает опросы, но baseline сохраняет релизы и следующий запуск
-  обнаруживает их. При первом запуске после внедрения рассылки старого каталога
-  нет.
-- Публичные метаданные не дают RADIO/RELATED; эти функции не входят в решение.
+- The catalogue may delete or reissue a release: comparison is by id, so a reissue with a new id counts as a new release, while a disappearance is not treated as an unfollow.
+- If the bot is offline, polls are skipped without losing releases: the baseline is preserved, and the next start discovers them. On the first start after the notification feature is introduced, there is no mass mailing of the old catalogue.
+- Public metadata does not provide RADIO/RELATED; those features are out of scope for this decision.

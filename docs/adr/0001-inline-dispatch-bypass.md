@@ -1,42 +1,43 @@
-# ADR 0001: Инлайн-доставка диспатчится отдельно от DM
+# ADR 0001: Inline delivery is dispatched separately from DM
 
-**Статус:** Accepted (зафиксирует статус-кво)
-**Дата:** 2026-10-17
+**Status:** Accepted (records the status quo)
+**Date:** 2026-10-17
 
-## Контекст
+## Context
 
-`services/executor.py` долгое время назывался «единственной точкой диспатча».
-Фактически это верно только для DM-пути: инлайн-запросы (`inline_media`,
-`inline_gallery`) обрабатываются в `services/inline_flow.py`, минуя `executor.py`
-и точку вызова `routers/callbacks.py:71`.
+`services/executor.py` was long described as "the single dispatch point".
+In fact that holds only for the DM path: inline requests (`inline_media`,
+`inline_gallery`) are handled in `services/inline_flow.py`, bypassing `executor.py`
+and the call site `routers/callbacks.py:71`.
 
-Из-за расхождения в документации (`AGENTS.md`) в списке типов запросов отсутствовал
-`inline_gallery` — седьмой тип из семи.
+Because of the documentation mismatch (`AGENTS.md`), the request type list was
+missing `inline_gallery` — the seventh type out of seven.
 
-## Решение
+## Decision
 
-Оставляем два входа в код. Документация приводится в соответствие с фактом:
-`executor.py` — диспатч DM-потока; `inline_flow.py` — диспатч инлайн-потока.
+We keep two entry points into the code. The documentation is brought in line with
+the facts: `executor.py` dispatches the DM flow; `inline_flow.py` dispatches the
+inline flow.
 
-Сведение инлайна на `executor.py` не выполняем.
+We do not route inline through `executor.py`.
 
-## Почему не сведение
+## Why not unify
 
-DM работает с объектом `status_message` (`aiogram.types.Message`), инлайн — со
-строкой `inline_message_id` и шимом `_InlineStatus` (`services/inline_flow.py:56`),
-который подменяет `edit_text`. Инлайн-сообщение находится в чужом чате и не
-доступен для обычного редактирования. Это разные поверхности доставки, а не
-дублирование одного и того же кода.
+The DM path works with a `status_message` object (`aiogram.types.Message`), while
+the inline path works with an `inline_message_id` string and the `_InlineStatus`
+shim (`services/inline_flow.py:56`), which substitutes `edit_text`. An inline
+message lives in someone else's chat and is not available for ordinary editing.
+These are different delivery surfaces, not duplication of the same code.
 
-## Закрытое дублирование
+## Closed duplication
 
-Разбиение на чанки по 10 и разбор `file_id` теперь находятся в
+The chunking in groups of 10 and the `file_id` parsing now live in
 `services/delivery.py:DirectDelivery`. `services/inline_flow.py:_dm_send_artifacts`
-делегирует ему отправку DM-переполнения. Отдельные DM/inline диспатчеры остаются:
-этот ADR разделяет поверхности доставки, а не дублирует отправку файлов.
+delegates overflow DM sending to it. The separate DM/inline dispatchers remain:
+this ADR separates delivery surfaces, it does not duplicate file sending.
 
-## Последствия
+## Consequences
 
-- Читатель `AGENTS.md` видит, что инлайн не проходит через `executor.py`.
-- Расхождение поведения твит-видео (DM сначала пробует Telegram Fetch,
-  инлайн всегда качает локально) остаётся и требует отдельного решения.
+- A reader of `AGENTS.md` sees that inline does not go through `executor.py`.
+- The tweet-video behaviour mismatch (DM tries Telegram Fetch first, inline always
+  downloads locally) remains and requires a separate decision.
