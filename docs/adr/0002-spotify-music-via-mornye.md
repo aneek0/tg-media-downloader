@@ -36,10 +36,11 @@ metadata 0.25–0.5 s in-process.
    Album/playlist/artist resolution works directly through `get_url_async`.
 
 3. **Default provider is `ext:deezer`.** Verified end-to-end
-   (~90 s/track, including Turnstile via headless Chromium — the browser
-   dependency remains with the owner, not in the bot). Default enrichment
-   (`enrich_providers`) without `qobuy` timeouts: the list is limited, e.g.
-   `"deezer", "apple"`. The provider list is the `MORNYE_SERVICES` env var.
+   (~90 s/track, including Turnstile via Chromium under Xvfb — the Docker
+   image supplies the browser; bare-metal installations provide their own).
+   Default enrichment (`enrich_providers`) without `qobuy` timeouts: the list
+   is limited, e.g. `"deezer", "apple"`. The provider list is the
+   `MORNYE_SERVICES` env var.
 
 4. **Output format is FLAC as-is** (`MORNYE_TRANSCODE` empty → original;
    `mp3` → MP3 320k transcode). Sending uses Send Type `audio` in all cases:
@@ -90,15 +91,16 @@ metadata 0.25–0.5 s in-process.
     DownloadOptions.
 
 12. **Turnstile verification (zarz-v2).** Downloading requires a signed-session
-    signature; if there is no session, pydoll starts Chromium — `CHROME_PATH`
-    (helium wrapper) and `HELIUM_USER_FLAGS` (--no-sandbox etc.) are required
-    in the bot process environment. Auto-solve takes ~40 s, while the
-    extension bridge call has a 60 s limit — so an authentication failure
-    caused by a missing browser sets a file backoff
-    (`signed_sessions/.*.auth-backoff.json`, 5 min × 3 per failure, up to
-    4 h): the bot fails with "verification paused" even after the browser is
-    fixed. Remedy: fix the cause, then delete the backoff file (the gateway
-    was not consulted: the failure was local) and restart.
+   signature; if there is no session, pydoll starts a Chromium-based browser.
+   Docker sets `CHROME_PATH=/usr/bin/chromium` and includes Xvfb. Bare metal
+   can use distro Chromium or point `CHROME_PATH` at a Helium wrapper; only
+   Helium reads `HELIUM_USER_FLAGS` (--no-sandbox etc.). Auto-solve takes
+   ~40 s, while the extension bridge call has a 60 s limit — so an
+   authentication failure caused by a missing browser sets a file backoff
+   (`signed_sessions/.*.auth-backoff.json`, 5 min × 3 per failure, up to
+   4 h): the bot fails with "verification paused" even after the browser is
+   fixed. Remedy: fix the cause, then delete the backoff file (the gateway
+   was not consulted: the failure was local) and restart.
 
 ## Risks and consequences
 

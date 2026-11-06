@@ -127,6 +127,7 @@ uv run python bot.py
 - `MORNYE_ENRICH_EXTENSIONS` - set `0` (recommended) to skip optional metadata fan-out to every installed JavaScript extension; built-in Deezer/Apple enrichment remains, and Tidal downloads avoid a separate Qobuz Turnstile challenge. Set `1` only if provider-specific extra tags are worth the extra browser runs
 - `MORNYE_EXT_ALLOW_PRIVATE_NETWORK` - set `1` behind a FakeIP/TUN VPN such as sing-box so catalogue search and downloads can reach provider endpoints; enable only for trusted installed extensions
 - `MORNYE_REGISTRIES` - optional comma-separated mornye extension registry JSON URLs (see `.env.example` for the default registry)
+- `CHROME_PATH` - optional Chromium executable for ZARZ Turnstile authentication. Docker sets `/usr/bin/chromium`; on bare metal, install `chromium` and `xvfb` (Mornye starts the virtual display on demand) or point this at another Chromium-based browser such as Helium
 - `MORNYE_QUALITY` - optional default audio tier: `LOSSLESS` (CD, default) or `HI_RES_LOSSLESS` (Hi-Res, with per-track fallback); users can override it in `/settings`
 - `MORNYE_TRANSCODE` - optional; empty keeps the original FLAC, `mp3` transcodes to MP3 320k through ffmpeg
 - `SPOTIFY_COLLECTION_CAP` - optional maximum tracks downloaded per Spotify album/playlist/artist collection (default 50)
@@ -134,6 +135,8 @@ uv run python bot.py
 When mornye is enabled, startup synchronizes extensions and checks/authenticates each enabled provider's
 signed session before polling. A background pass renews sessions every five minutes without user requests;
 existing sessions refresh over HTTP, while missing/expired ones may require a Chromium Turnstile challenge.
+
+For a server with roughly 600 MB of free RAM, configure 1–2 GB of swap before enabling Mornye. Turnstile starts several Chromium processes, and simultaneous downloads or provider challenges can otherwise trigger OOM kills. Keep `MORNYE_ENRICH_EXTENSIONS=0` and persist `/home/app/.mornye` so valid signed sessions avoid browser launches.
 
 ## Project Layout
 
@@ -160,6 +163,8 @@ docker compose up -d
 Persistent state lives in the `downloads` volume (`/app/DOWNLOADS`) and the `mornye` volume
 (`/home/app/.mornye`, installed extensions and signed sessions).
 
+The bot service forces `CHROME_PATH=/usr/bin/chromium` even if `.env` contains a host-specific Helium path, and sets `shm_size: "1gb"`. This is a tmpfs size limit, not an immediate 1 GB RAM allocation.
+
 The local Bot API server requires the bot to run on the same host once before files are downloadable
 by URL; the bot already handles this (local mode files are uploaded by the bot itself).
 
@@ -169,18 +174,23 @@ Build and run the container with your existing `.env` file:
 
 ```bash
 docker build -t tg-media-downloader .
-docker run --env-file .env tg-media-downloader
+docker run --env-file .env --env CHROME_PATH=/usr/bin/chromium --shm-size=1g \
+  -v tgmd-downloads:/app/DOWNLOADS -v tgmd-mornye:/home/app/.mornye \
+  tg-media-downloader
 ```
 
 Or skip the build and use the published image:
 
 ```bash
-docker run --env-file .env -v tgmd-downloads:/app/DOWNLOADS \
+docker run --env-file .env --env CHROME_PATH=/usr/bin/chromium --shm-size=1g \
+  -v tgmd-downloads:/app/DOWNLOADS \
   -v tgmd-mornye:/home/app/.mornye \
   ghcr.io/aneek0/tg-media-downloader:latest
 ```
 
-The image is multi-stage, runs as the non-root `app` user, includes Node.js for mornye extensions, and pins dependencies from `uv.lock`.
+`--env CHROME_PATH=...` must follow `--env-file` when reusing a host `.env`: it prevents a desktop-only Helium path from leaking into the container.
+
+The image is multi-stage, runs as the non-root `app` user under Tini, includes Node.js for Mornye extensions plus Chromium/Xvfb for signed-session challenges, and pins dependencies from `uv.lock`.
 
 ### systemd (bare metal)
 
@@ -193,6 +203,8 @@ sudo systemctl enable --now tg-media-downloader
 
 The unit assumes the checkout lives at `/opt/tg-media-downloader` (with `.venv` from `uv sync`) and
 runs under a dynamically provisioned user; adjust paths to your setup.
+
+Install `chromium` and `xvfb` on the host when Mornye is enabled. Set `CHROME_PATH` in the unit's environment file if the executable is outside Mornye's standard locations.
 
 ## Troubleshooting
 

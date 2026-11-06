@@ -22,6 +22,10 @@ services:
       # 2000 MB uploads via the local Bot API server above
       TELEGRAM_API_URL: http://telegram-bot-api:8081
       MAX_UPLOAD_BYTES: 1992294400
+      # Override host-specific browser paths from .env; the image includes Chromium and Xvfb.
+      CHROME_PATH: /usr/bin/chromium
+    # Chromium uses shared memory during ZARZ Turnstile authentication.
+    shm_size: "1gb"
     volumes:
       - downloads:/app/DOWNLOADS
       - mornye:/home/app/.mornye

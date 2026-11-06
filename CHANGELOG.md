@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "check your DM with @yourbot" (or "open @yourbot and send the link" when the DM cannot be delivered) instead of
   an unnamed "the bot". The handle is resolved once at startup via `get_me`; if that fails, the prompts fall back
   to the previous generic wording. Inline `/settings` alerts name the bot the same way.
+- Docker deployments now include Chromium, Xvfb, browser fonts, and Tini for ZARZ Turnstile authentication.
+  Compose forces the container browser path, allocates up to 1 GB of shared memory, preserves signed sessions,
+  and documents swap guidance for low-memory servers.
 
 ## [3.2.0] - 2026-11-06
 
