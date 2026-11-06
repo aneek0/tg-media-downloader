@@ -6,7 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-06
+
+### Added
+
+- Deezer/Spotify/Tidal catalogue search in private messages and inline mode, with scoped track/album/artist/playlist
+  queries, cached results, and per-user provider selection.
+- Inline Artist Cards: cover/listener metadata, TOP 30, ALBUMS 50, follow toggle, and one-tap track downloads.
+- Album cards with per-track buttons, GET ALL, and ZIP delivery; per-user FLAC/MP3 audio preference.
+- Per-user CD/Hi-Res toggle in `/settings`: Hi-Res requests `HI_RES_LOSSLESS`, verifies the returned file is
+  really 24-bit, re-downloads upsampled "fake hi-res" at honest lossless, and falls back per track when the
+  provider has no 24-bit master. Hi-Res cache entries are keyed separately so a CD request is never answered
+  with a 24-bit file (or the reverse).
+- Tidal track, album, and playlist URLs (`listen.tidal.com`, `tidal.com`, `www.tidal.com`) now classify as music
+  and resolve through mornye's Tidal metadata client in private chat and inline mode, including cover thumbnails
+  in inline results. Tidal artist/mix links are rejected with a clear hint.
+- Tidal catalogue search via `tidal-web`, selectable in `/settings` for private and inline queries, with track,
+  album, artist, and playlist filters. Results without explicit external URLs now stay on Tidal instead of falling
+  back to malformed Deezer links.
+- SoundCloud short, mobile, and canonical URLs now classify as music in DM and inline mode. Metadata resolves
+  through the SoundCloud extension's `handleUrl`; native AAC downloads use exact SoundCloud IDs, and unplayable
+  streams or extension/metadata failures fall back to the existing yt-dlp audio path instead of failing the link.
+- Enabled mornye providers authenticate signed sessions before polling and renew them every five minutes in
+  the background, using fresh scoped clients and honoring mornye's authentication backoff.
+- Six-hour per-user artist release checks plus `/follow`, `/follows`, `/unfollows`, and `/settings`.
+- `GLOSSARY.md`: domain vocabulary (Request, Option, Artifact, Media Cache, Preview Store,
+  Telegram Fetch, Direct Upload, …) with `_Avoid_` lists, one section per delivery flow.
+- Rich messages (Bot API `sendRichMessage`) for posts that overflow the 1024-character
+  caption limit: a photo post with long text goes out as **one** message with the image
+  and the full text (up to 32 768 characters), in DM and as an inline `Full post` result
+  (`InputRichMessageContent`). Servers or chats without rich-message support keep the
+  photo + follow-up-text fallback. Rich messages expose no re-usable `file_id`, so they
+  are not written to the media cache and a repeat re-sends them from the CDN.
+
+- Rich block conversion (`services/delivery.py:rich_blocks`): a plain caption becomes
+  real blocks — all-caps section lines → `<h3>`, `1. …` runs → `<ol>`, `- …` runs →
+  `<ul>`, paragraphs with `<br>` for single line breaks. Rich HTML drops bare newlines,
+  so without this the whole post collapsed into one paragraph.
+
 ### Changed
+- aiogram upgraded from yanked `3.29.0` to `3.31.0`, which is now the minimum supported version: this avoids its
+  severe RichBlock parsing slowdown and guarantees the Rich Message API imported by the bot.
+- The release container includes Node.js for mornye extensions; Compose persists installed extensions and signed
+  sessions in a dedicated `mornye` volume.
+- Release tags now enforce the same pylint 10/10 gate as main-branch CI.
+
+- The DM catalogue-search keyboard now uses two columns for Tracks/Albums and Artists/Playlists, with a
+  full-width Global search button at the bottom that preserves the unscoped query.
 
 - Upstream music library renamed: `spotiflac` → `mornye` (repo
   [mornyeapp/Mornye-Python](https://github.com/mornyeapp/Mornye-Python), PyPI
@@ -38,6 +84,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   upload progress edits are dropped instead of failing against a media message,
   while failures still edit the poster into an explicit error. `poster_url` and
   `video_url` moved from raw `info` keys into `InlineMediaPayload`.
+- One dependency for handlers and flows: `services/session.py:Session` (frozen
+  dataclass: `settings`, `cooldown`, `request_store`, `thumbnail_store`,
+  `media_cache`, `mornye`) built once by `build_session(...)` and injected as
+  `workflow_data["session"]`. Router handlers and the pipeline/executor/inline
+  flows now take `session` instead of five separate stores, so a new shared
+  service is a field, not another parameter on every signature.
 
 ### Removed
 
@@ -46,24 +98,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set, so the duplicate discriminator is gone. Stale request files that still contain
   `mode` are tolerated: `DownloadOption.from_dict` drops unknown keys.
 
-### Added
-
-- `GLOSSARY.md`: domain vocabulary (Request, Option, Artifact, Media Cache, Preview Store,
-  Telegram Fetch, Direct Upload, …) with `_Avoid_` lists, one section per delivery flow.
-
-- Rich messages (Bot API `sendRichMessage`) for posts that overflow the 1024-character
-  caption limit: a photo post with long text goes out as **one** message with the image
-  and the full text (up to 32 768 characters), in DM and as an inline `Full post` result
-  (`InputRichMessageContent`). Servers or chats without rich-message support keep the
-  photo + follow-up-text fallback. Rich messages expose no re-usable `file_id`, so they
-  are not written to the media cache and a repeat re-sends them from the CDN.
-
-- Rich block conversion (`services/delivery.py:rich_blocks`): a plain caption becomes
-  real blocks — all-caps section lines → `<h3>`, `1. …` runs → `<ol>`, `- …` runs →
-  `<ul>`, paragraphs with `<br>` for single line breaks. Rich HTML drops bare newlines,
-  so without this the whole post collapsed into one paragraph.
-
 ### Fixed
+
+- Catalogue inline handlers now return `UNHANDLED` for URL queries and non-artist chosen results, allowing the
+  original inline downloader to start instead of leaving the message forever at “Processing your link…”.
+- Re-tapping the active `/settings` button now answers "Already selected" without an edit, instead of raising
+  `TelegramBadRequest: message is not modified`.
+- Private-message intake now ignores the inline placeholder `Processing your link…` (including punctuation/case
+  variants) instead of treating it as a text search and answering with the catalogue-search menu. Ordinary text
+  searches remain available.
+- Catalogue provider network/unavailability failures now return a dedicated retryable inline error instead of the
+  generic search failure or exposing internal provider details.
+- TikTok photo posts keep using gallery-dl (including `imagePost` galleries), while `videos=false` makes video
+  posts fall through to yt-dlp with H.264 preferred over H.265 for Telegram-compatible playback. This avoids
+  gallery-dl's extensionless `.mp4` documents without disabling TikTok photo galleries.
+- Subprocess calls without a progress callback now drain stdout/stderr with `Process.communicate()`, so yt-dlp
+  probe JSON larger than `StreamReader`'s 64 KiB `readline()` limit no longer fails YouTube/Shorts requests with
+  `Separator is found, but chunk is longer than limit`.
+- Repeated inline catalogue, Artist TOP, and album-track selections now reuse the cached Telegram audio
+  `file_id` before invoking mornye; only singleton audio entries take this fast path.
+- Artist album buttons now map mornye's real `TrackMetadata.title` and `external_url` fields, so opening an
+  album builds its track/GET ALL/ZIP/BACK controls instead of raising `AttributeError: ... no attribute 'name'`.
+- Multi-track inline downloads now upload/edit the selected first track before DM spillover, so the private-chat
+  sequence is first track → remaining album order. If spillover fails, the inline caption switches to the
+  existing open-the-bot fallback instead of claiming that the remaining files are in DM.
+- Embedded mornye artwork uses the bot's `aiohttp` transport with bounded retries. This avoids the repeated
+  15-second `httpx.ReadTimeout` cover attempts on this host while preserving embedded FLAC artwork.
+- Documented BotFather `/setinlinefeedback` as required for tappable inline downloads and recommended
+  `ext:tidal-web,ext:qobuz-web,ext:deezer` after repeated Deezer `ECONNRESET` failures. Added
+  `MORNYE_ENRICH_EXTENSIONS=0` to the example configuration: optional JavaScript metadata fan-out otherwise
+  asks Qobuz after a Tidal download and launches a second, separately authenticated Turnstile browser.
 
 - Long posts (X/Twitter, pawchive) no longer arrive collapsed and truncated:
   `plain_caption` keeps the author's line breaks instead of flattening the text
@@ -73,6 +137,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Long captions are likewise replayed from the media cache instead of being
   truncated again. Gallery captions are HTML-escaped for the bot's parse mode,
   so posts containing `&` no longer fail to send.
+- Python distributions now include `bot.py` and declare `yt-dlp` directly, so an installed wheel contains the entry
+  module and the downloader used by the bot.
+- Album ZIP uses the persisted browse name instead of a nonexistent `StoredRequest.source_name`, so ZIP delivery no
+  longer crashes or leaks its request state.
+- Catalogue audio caches now key on the effective FLAC/MP3 output as well as the CD/Hi-Res tier; changing audio format
+  cannot replay an incompatible file.
+- Inline catalogue audio and ZIP downloads whose DM upload is refused now finish with the open-bot fallback instead
+  of leaving the inline result processing forever.
+- Tidal Artist Cards can persist follows, and Follow toggles immediately redraw the visible button state.
+- Deezer top-track transport timeouts become retryable provider errors, so follow polling skips that artist and keeps
+  checking other artists and later rounds.
+- SoundCloud collection tracks keep their own URLs for per-track yt-dlp fallback instead of re-downloading or
+  mislabeling the whole collection.
 
 ## [3.1.0] - 2026-10-05
 

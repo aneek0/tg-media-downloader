@@ -24,9 +24,11 @@ services:
       MAX_UPLOAD_BYTES: 1992294400
     volumes:
       - downloads:/app/DOWNLOADS
+      - mornye:/home/app/.mornye
     depends_on:
       - telegram-bot-api
 
 volumes:
   downloads:
+  mornye:
   telegram-bot-api-data:
