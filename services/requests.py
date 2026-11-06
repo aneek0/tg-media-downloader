@@ -12,6 +12,7 @@ from utils.models import (
     InlineGalleryPayload,
     InlineMediaPayload,
     MusicPayload,
+    CataloguePayload,
     ParsedInput,
     ProbePayload,
     RequestType,
@@ -152,6 +153,21 @@ def inline_gallery_request(
         ),
     )
 
+def catalogue_browse_request(
+    store: RequestStore,
+    parsed_input: ParsedInput,
+    payload: CataloguePayload | None = None,
+) -> StoredRequest:
+    """Persist an Artist Card or one of its album views."""
+    return _save(
+        store,
+        StoredRequest(
+            token=store.create_token(),
+            request_type=RequestType.CATALOGUE_BROWSE,
+            parsed_input=parsed_input,
+            info=(payload or CataloguePayload()).to_info(),
+        ),
+    )
 
 @contextmanager
 def lifecycle(store: RequestStore, token: str) -> Iterator[str]:

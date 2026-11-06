@@ -56,3 +56,4 @@ yarn-error.log*
 
 # agent tooling
 .omp/
+reports/

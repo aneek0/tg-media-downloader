@@ -20,10 +20,15 @@ from routers.inline import (
     inline_query_handler,
 )
 from services.gallery import GalleryProbe
-from services.inline_flow import run_inline_download
+from services.inline_flow import InlineDmBlocked, run_inline_download
 from services.progress import humanbytes
 from services.request_store import RequestStore
-from tests.conftest import make_media_cache, make_settings
+from tests.conftest import (
+    make_media_cache,
+    make_session,
+    make_settings,
+    record_cached_video,
+)
 from utils import text
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
 from utils.models import (
@@ -42,10 +47,7 @@ async def test_inline_query_cache_hit_answers_cached_results(tmp_path):
     store = RequestStore(settings.requests_dir, settings.work_dir)
     cache = make_media_cache(tmp_path)
     url = "https://example.com/file.mp4"
-    await cache.record(
-        url,
-        [CachedMedia(file_id="BAAC9", send_type="video", file_name="f.mp4", caption="c")],
-    )
+    await record_cached_video(cache, url)
 
     query = SimpleNamespace(
         query=url,
@@ -53,7 +55,7 @@ async def test_inline_query_cache_hit_answers_cached_results(tmp_path):
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     query.answer.assert_awaited_once()
     result = query.answer.await_args.args[0][0]
@@ -85,7 +87,7 @@ async def test_inline_query_cache_hit_with_photos_gets_pager(tmp_path):
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     assert len(results) == 4  # pager + 3 cached photos
@@ -120,7 +122,7 @@ async def test_inline_chosen_skips_cached_ids(tmp_path):
         bot=SimpleNamespace(edit_message_text=AsyncMock()),
     )
 
-    await inline_chosen_handler(chosen, settings, store, cache)
+    await inline_chosen_handler(chosen, make_session(settings, store, cache))
 
     chosen.bot.edit_message_text.assert_not_awaited()
 
@@ -168,13 +170,11 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     entries = cache.get(url)
@@ -212,13 +212,11 @@ async def test_run_inline_download_too_large_shows_limit_and_deletes_token(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     assert bot.edit_message_text.await_count == 2
@@ -262,13 +260,11 @@ async def test_run_inline_download_generic_failure_escapes_error_text(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     failure_edit = bot.edit_message_text.await_args_list[-1]
@@ -306,13 +302,11 @@ async def test_run_inline_download_escapes_url_in_download_start(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     start_edit = bot.edit_message_text.await_args_list[0]
@@ -354,13 +348,11 @@ async def test_run_inline_download_start_edit_failure_falls_into_error_branch(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     download_mock.assert_not_awaited()
@@ -393,7 +385,7 @@ async def test_inline_twitter_query_uses_gallery_probe_with_timeout(
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     run_command_mock.assert_awaited_once()
     assert run_command_mock.await_args.kwargs["timeout"] == settings.gallery_probe_timeout
@@ -425,7 +417,7 @@ async def test_inline_twitter_gallery_first_result_and_token_stored(
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     query.answer.assert_awaited_once()
     results = query.answer.await_args.args[0]
@@ -476,7 +468,7 @@ async def test_inline_twitter_gallery_single_photo_not_created(
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     assert not any(result.id.startswith("gallery:") for result in results)
@@ -512,7 +504,7 @@ async def test_inline_twitter_long_post_gets_rich_result(monkeypatch, tmp_path):
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     rich = [result for result in results if result.id == "rich"]
@@ -558,7 +550,7 @@ async def test_inline_twitter_small_video_is_instant_video_result(
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     assert len(results) == 1
@@ -605,7 +597,7 @@ async def test_inline_twitter_large_video_is_download_article(
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     assert len(results) == 1
@@ -661,7 +653,7 @@ async def test_inline_twitter_album_keeps_photo_cdn_and_video_article(
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     pager = results[0]
@@ -731,13 +723,11 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     media = bot.edit_message_media.await_args.kwargs["media"]
@@ -776,7 +766,8 @@ async def test_gallery_nav_callback_edits_media(tmp_path):
     )
 
     await gallery_nav_callback(
-        query, GalleryNavCallback(token="tok-g", index=1), store
+        query, GalleryNavCallback(token="tok-g", index=1),
+        make_session(settings, store),
     )
 
     edit = query.bot.edit_message_media
@@ -807,7 +798,8 @@ async def test_gallery_nav_callback_expired_token_answers_toast(tmp_path):
     )
 
     await gallery_nav_callback(
-        query, GalleryNavCallback(token="unknown", index=1), store
+        query, GalleryNavCallback(token="unknown", index=1),
+        make_session(settings, store),
     )
 
     query.bot.edit_message_media.assert_not_awaited()
@@ -856,13 +848,11 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     probe_mock.assert_awaited_once()
@@ -913,13 +903,11 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     probe_mock.assert_awaited_once()
@@ -950,7 +938,7 @@ async def test_inline_non_twitter_gallery_returns_photo_preview(monkeypatch, tmp
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     query.answer.assert_awaited_once()
     results = query.answer.await_args.args[0]
@@ -995,7 +983,7 @@ async def test_inline_non_twitter_gallery_multi_photo_pager_and_tokens(monkeypat
         answer=AsyncMock(),
     )
 
-    await inline_query_handler(query, settings, store, cache)
+    await inline_query_handler(query, make_session(settings, store, cache))
 
     results = query.answer.await_args.args[0]
     assert len(results) == 4  # pager + 3 photo results
@@ -1064,13 +1052,11 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     # The message media must be the tapped photo (b.jpg), not artifacts[0].
@@ -1146,13 +1132,11 @@ async def test_run_inline_download_poster_flow_keeps_media_and_uploads_by_file_i
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     # Poster stays on screen: no download/upload status text was edited in.
@@ -1216,16 +1200,23 @@ async def test_run_inline_download_poster_flow_still_reports_failure(
     )
 
     await run_inline_download(
+        make_session(settings, store, cache),
         bot=bot,
         user_id=99,
         inline_message_id="im1",
         stored=stored,
-        settings=settings,
-        request_store=store,
-        media_cache=cache,
     )
 
     notice = bot.edit_message_text.await_args.kwargs["text"]
     assert text.INLINE_FAILED in notice
     assert "bad webhook response" in notice
     assert store.load("tok-poster-fail") is None
+
+
+def test_inline_dm_blocked_stays_a_runtime_error_for_the_zip_flow():
+    """The album ZIP flow only catches RuntimeError, so the refused-DM
+    signal must surface there with the open-bot hint."""
+    exc = InlineDmBlocked()
+
+    assert isinstance(exc, RuntimeError)
+    assert "open the bot and send the link" in str(exc)

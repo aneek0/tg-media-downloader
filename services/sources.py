@@ -59,6 +59,12 @@ def send_type_for_extension(ext: str | None) -> str:
     return "document"
 
 
+def is_tiktok_url(url: str) -> bool:
+    """Whether a URL belongs to TikTok, including its short-link hosts."""
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname == "tiktok.com" or hostname.endswith(".tiktok.com")
+
+
 def gallery_supports_url(url: str) -> bool:
     """In-process extractor gate: URLs gallery-dl cannot handle (YouTube,
     unknown hosts) are rejected without spawning a subprocess. The first

@@ -14,6 +14,7 @@ class RequestType(StrEnum):
     DIRECT_DOWNLOAD = "direct_download"
     INLINE_MEDIA = "inline_media"
     INLINE_GALLERY = "inline_gallery"
+    CATALOGUE_BROWSE = "catalogue_browse"
 
 
 @dataclass(slots=True)
@@ -63,6 +64,26 @@ class MusicPayload:
     def to_info(self) -> dict[str, Any]:
         return {"kind": self.kind, "name": self.name, "count": self.count}
 
+@dataclass(slots=True)
+class CataloguePayload:  # pylint: disable=too-many-instance-attributes
+    """Persisted Artist Card and album browsing state."""
+
+    provider: str = ""
+    artist_id: str = ""
+    name: str = ""
+    cover_url: str = ""
+    artist_url: str = ""
+    listeners: int = 0
+    top_tracks: list[dict[str, Any]] = field(default_factory=list)
+    albums: list[dict[str, Any]] = field(default_factory=list)
+    media_message: bool = True
+    album: dict[str, Any] = field(default_factory=dict)
+    album_tracks: list[dict[str, Any]] = field(default_factory=list)
+    parent_token: str = ""
+
+    def to_info(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(slots=True)
 class ProbePayload:
@@ -94,6 +115,7 @@ RequestPayload = Union[
     InlineGalleryPayload,
     InlineMediaPayload,
     MusicPayload,
+    CataloguePayload,
     ProbePayload,
     DirectPayload,
 ]
@@ -121,6 +143,21 @@ def request_payload(request_type: RequestType, info: dict[str, Any]) -> RequestP
             kind=info.get("kind", ""),
             name=info.get("name", ""),
             count=int(info.get("count") or 0),
+        )
+    if request_type is RequestType.CATALOGUE_BROWSE:
+        return CataloguePayload(
+            provider=info.get("provider", ""),
+            artist_id=info.get("artist_id", ""),
+            name=info.get("name", ""),
+            cover_url=info.get("cover_url", ""),
+            artist_url=info.get("artist_url", ""),
+            listeners=int(info.get("listeners") or 0),
+            top_tracks=list(info.get("top_tracks") or []),
+            albums=list(info.get("albums") or []),
+            media_message=bool(info.get("media_message", True)),
+            album=dict(info.get("album") or {}),
+            album_tracks=list(info.get("album_tracks") or []),
+            parent_token=info.get("parent_token", ""),
         )
     if request_type is RequestType.DIRECT_DOWNLOAD:
         return DirectPayload(dict(info))

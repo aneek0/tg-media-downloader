@@ -32,15 +32,32 @@ thumbnail.
 - format selection for supported `yt-dlp` sources
 - **Twitter/X posts via `gallery-dl`** — photos, videos, and albums, including 18+ posts with cookies
 - **inline mode** — use it in any chat, no need to forward links to the bot first
+- **Deezer, Spotify, and Tidal catalogue search** — text queries in private chat or inline; tracks download in the
+  selected FLAC/MP3 format through mornye
+- **Tidal links** — `listen.tidal.com`/`tidal.com` tracks, albums, and playlists download in private chat and
+  inline through mornye; artist/mix links get an explicit unsupported-link message instead of an HTML-download error
+- **SoundCloud links** — short/mobile/canonical URLs resolve through the mornye SoundCloud extension; playable
+  native AAC streams use `ext:soundcloud`, while unavailable streams or extension failures retain yt-dlp fallback
+- **Artist Cards** — cover, listeners, TOP 30, up to 50 albums, per-track downloads, album GET ALL/ZIP, and follows
+- **Release follows** — `/follow`, `/follows`, and `/unfollows`; new-release checks run every six hours per follower
+- per-user `/settings` for text search, default catalogue provider, FLAC/MP3 delivery, and CD vs Hi-Res
+  (Hi-Res is only used where the provider has a 24-bit master; everything else stays lossless CD)
 - custom per-user thumbnails with `/thumb` and `/delthumb`
 
 ## Inline Mode
 
-Enable inline mode for the bot via [@BotFather](https://t.me/BotFather) (`/setinline`), then:
+Enable inline mode for the bot via [@BotFather](https://t.me/BotFather) (`/setinline`). Also run
+`/setinlinefeedback` and choose **Enabled**: Telegram sends `chosen_inline_result` only with feedback enabled,
+and downloads/Artist Cards cannot start without that update. Then:
 
 - type `@yourbot <url>` in any chat — tweet photos come back as direct Twitter CDN results (no
   download step), tweet videos and other supported links download on tap with a cancel button
-- media from an album beyond the inline result limit is sent to your private chat with the bot
+- search the catalogue with `@yourbot <query>` or scope it with `.trk`, `.a`, `.art`, `.pla`;
+  choose Deezer/Spotify/Tidal in `/settings`; artist results open an Artist Card with TOP/ALBUMS/FOLLOW controls
+- repeated track selections reuse the cached Telegram audio `file_id`; the shared inline runner skips
+  both the provider download and the DM upload
+- for multi-track downloads, the selected/first track replaces the inline message; its DM copy arrives first,
+  then the remaining tracks follow in their original order
 
 ## Bot Commands
 
@@ -49,6 +66,10 @@ Enable inline mode for the bot via [@BotFather](https://t.me/BotFather) (`/setin
 - `/about` - runtime details, repo link, and project notes
 - `/thumb` - show the currently saved custom thumbnail
 - `/delthumb` - remove the saved custom thumbnail
+- `/settings` - text-search, catalogue-provider, audio-format, and CD/Hi-Res preferences
+- `/follow <artist-url>` - follow a Deezer artist for new-release DMs
+- `/follows` - list followed artists with unfollow buttons
+- `/unfollows` - alias of `/follows`
 
 ## Quick Start
 
@@ -100,6 +121,19 @@ uv run python bot.py
 - `TELEGRAM_API_URL` - optional base URL of a self-hosted local Bot API server (e.g. `http://localhost:8081`); raises the bot upload limit from 50 MB to 2000 MB. Run the official `telegram-bot-api` binary with `--local --api-id ... --api-hash ...` (keys from my.telegram.org) next to the bot; leave empty for the cloud Bot API
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` - not read by the bot itself; used by the local Bot API server (see [Docker Compose](#docker-compose-recommended)) — the same keys from my.telegram.org
 - `TWITTER_COOKIES_FILE` / `TWITTER_COOKIES` - optional; path to a Netscape-format cookies.txt exported from a logged-in X/Twitter account, or the file content pasted into `.env` as a multiline value; enables downloads of 18+ (NSFW) posts. Export cookies with a browser extension ("Get cookies.txt LOCALLY") while logged in to x.com.
+- `SEARCH_PROVIDER` - default catalogue provider: `deezer` (default), `spotify-web`, or `tidal-web`
+- `FOLLOW_POLL_SECONDS` - release-check interval in seconds (default `21600`, six hours)
+- `MORNYE_SERVICES` - comma-separated provider extensions in download priority order; required for catalogue audio. With the extensions installed, `ext:tidal-web,ext:qobuz-web,ext:deezer` prefers the currently reliable Tidal path and keeps Deezer as fallback
+- `MORNYE_ENRICH_EXTENSIONS` - set `0` (recommended) to skip optional metadata fan-out to every installed JavaScript extension; built-in Deezer/Apple enrichment remains, and Tidal downloads avoid a separate Qobuz Turnstile challenge. Set `1` only if provider-specific extra tags are worth the extra browser runs
+- `MORNYE_EXT_ALLOW_PRIVATE_NETWORK` - set `1` behind a FakeIP/TUN VPN such as sing-box so catalogue search and downloads can reach provider endpoints; enable only for trusted installed extensions
+- `MORNYE_REGISTRIES` - optional comma-separated mornye extension registry JSON URLs (see `.env.example` for the default registry)
+- `MORNYE_QUALITY` - optional default audio tier: `LOSSLESS` (CD, default) or `HI_RES_LOSSLESS` (Hi-Res, with per-track fallback); users can override it in `/settings`
+- `MORNYE_TRANSCODE` - optional; empty keeps the original FLAC, `mp3` transcodes to MP3 320k through ffmpeg
+- `SPOTIFY_COLLECTION_CAP` - optional maximum tracks downloaded per Spotify album/playlist/artist collection (default 50)
+
+When mornye is enabled, startup synchronizes extensions and checks/authenticates each enabled provider's
+signed session before polling. A background pass renews sessions every five minutes without user requests;
+existing sessions refresh over HTTP, while missing/expired ones may require a Chromium Turnstile challenge.
 
 ## Project Layout
 
@@ -121,8 +155,10 @@ docker compose up -d
 ```
 
 `compose.yml` pulls the published image `ghcr.io/aneek0/tg-media-downloader:latest`; comment in
-`build: .` to build from the source tree instead. State (media cache, thumbnails, pending requests)
-persists in the `downloads` volume.
+`build: .` and comment out the `image:` line to build locally instead.
+
+Persistent state lives in the `downloads` volume (`/app/DOWNLOADS`) and the `mornye` volume
+(`/home/app/.mornye`, installed extensions and signed sessions).
 
 The local Bot API server requires the bot to run on the same host once before files are downloadable
 by URL; the bot already handles this (local mode files are uploaded by the bot itself).
@@ -140,10 +176,11 @@ Or skip the build and use the published image:
 
 ```bash
 docker run --env-file .env -v tgmd-downloads:/app/DOWNLOADS \
+  -v tgmd-mornye:/home/app/.mornye \
   ghcr.io/aneek0/tg-media-downloader:latest
 ```
 
-The image is multi-stage, runs as the non-root `app` user, and pins dependencies from `uv.lock`.
+The image is multi-stage, runs as the non-root `app` user, includes Node.js for mornye extensions, and pins dependencies from `uv.lock`.
 
 ### systemd (bare metal)
 
@@ -163,9 +200,9 @@ runs under a dynamically provisioned user; adjust paths to your setup.
 | --- | --- |
 | `WEBPAGE_CURL_FAILED` on tweet videos | Telegram's own fetcher refuses `video.twimg.com`. Tweet videos are download-on-tap articles — tap the result and let the bot download and upload it. Photos keep the instant CDN path. |
 | Twitter/X: "login required" or 18+ posts fail | `TWITTER_COOKIES(_FILE)` missing or the session expired. Re-export cookies.txt from a logged-in browser and update the value. |
-| Uploads fail above 50 MB | No local Bot API server: `TELEGRAM_API_URL` is unset, the server is down, or it was started without `--local` (compose sets it via `TELEGRAM_LOCAL=1`). Also set `MAX_UPLOAD_BYTES=1992280800` only if you run the local server; keep `52428800` for the cloud Bot API. |
+| Uploads fail above 50 MB | No local Bot API server: `TELEGRAM_API_URL` is unset, the server is down, or it was started without `--local` (compose sets it via `TELEGRAM_LOCAL=1`). Also set `MAX_UPLOAD_BYTES=1992294400` only if you run the local server; keep `52428800` for the cloud Bot API. |
 | Direct link arrives as a broken document / `text/html` rejected | The URL returns an HTML page, not a file. The bot rejects it on purpose — send it through the yt-dlp path instead (just paste the link; the probe routes it). |
-| `yt-dlp` or `gallery-dl` suddenly fails on a site | Extractors rot as sites change. Update the tools: `uv sync` refreshes the pinned versions; in Docker, pull a newer image. |
+| `yt-dlp` or `gallery-dl` suddenly fails on a site | Extractors rot as sites change. Update the tools: `uv lock --upgrade-package yt-dlp --upgrade-package gallery-dl && uv sync` (updates `uv.lock`; commit the refresh), then restart the bot. |
 | Bot replies "File too large to upload" | The resolved media exceeds `MAX_UPLOAD_BYTES`. Raise it only up to the 2000 MB local Bot API limit, or lower the requested quality. |
 
 ## Checks

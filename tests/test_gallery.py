@@ -15,6 +15,7 @@ from services.gallery import (
     probe_gallery,
     small_thumbnail_url,
 )
+from services.sources import gallery_supports_url
 from utils.logging_config import redact_command
 from utils.models import ParsedInput
 
@@ -205,6 +206,28 @@ def test_gallery_command_redacted():
         "-C",
         "***",
     ]
+
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.tiktok.com/@myaffq7/video/7704044130346831105",
+        "https://vt.tiktok.com/ZSpJRCB2v/",
+        "https://vm.tiktok.com/ZGdh4WUhr/",
+        "https://www.tiktok.com/@chillezy/photo/7240568259186019630",
+    ],
+)
+def test_tiktok_gallery_disables_only_videos(url, tmp_path):
+    """Photo posts stay in gallery-dl; video posts fall through to yt-dlp."""
+    settings = make_gallery_settings(tmp_path, "")
+
+    assert gallery_supports_url(url) is True
+    for command in (
+        _gallery_probe_command(ParsedInput(source_url=url), settings),
+        _gallery_download_command(ParsedInput(source_url=url), settings, tmp_path),
+    ):
+        assert ("-o", "videos=false") in zip(command, command[1:])
 
 
 @pytest.mark.asyncio

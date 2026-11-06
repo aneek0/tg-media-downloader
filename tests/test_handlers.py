@@ -8,20 +8,25 @@ from routers.callbacks import request_callback
 from routers.commands import about_command, help_command, start_command
 from routers.intake import intake_message
 from routers.thumbnails import delete_thumbnail, show_thumbnail
-from services.cooldown import CooldownManager
 from services.executor import execute_request
 from services.gallery import GalleryProbe
 from services.request_store import RequestStore
 from services.status import StatusSurface
-from services.thumbnail_store import ThumbnailStore
 from services.ytdlp import (
     _auto_video_sort,
     _is_audio_source,
     _pick_downloaded_file,
     download_best_quality,
 )
-from tests.conftest import make_media_cache, make_message, make_settings
+from tests.conftest import (
+    make_media_cache,
+    make_message,
+    make_session,
+    make_settings,
+    record_cached_video,
+)
 from utils.callbacks import RequestCallback
+from utils import text
 from utils.models import (
     CachedMedia,
     DownloadArtifact,
@@ -43,16 +48,18 @@ async def test_start_help_about_handlers():
 
 @pytest.mark.asyncio
 async def test_thumbnail_handlers(tmp_path):
-    store = ThumbnailStore(tmp_path / "thumbs")
+    settings = make_settings(tmp_path)
+    session = make_session(settings)
+    store = session.thumbnail_store
     message = make_message()
 
-    await show_thumbnail(message, store)
+    await show_thumbnail(message, session)
     assert message.answer.await_args_list[0].args[0].startswith("You do not have")
 
     thumbnail = store.path_for_user(message.from_user.id)
     thumbnail.write_bytes(b"jpg")
 
-    await delete_thumbnail(message, store)
+    await delete_thumbnail(message, session)
     assert message.answer.await_args_list[-1].args[0].startswith("Your thumbnail")
 
 
@@ -61,15 +68,13 @@ async def test_intake_message_builds_quick_youtube_keyboard(tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
 
     message = make_message()
     message.text = "https://youtu.be/example"
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message.reply.return_value = status_message
 
-    await intake_message(message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path))
+    await intake_message(message, make_session(settings, store, make_media_cache(tmp_path)))
 
     message.reply.assert_awaited_once()
     status_message.edit_text.assert_awaited_once()
@@ -80,7 +85,6 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
     stored = StoredRequest(
         token="token123",
         request_type="direct_download",
@@ -134,10 +138,7 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
     await request_callback(
         query,
         RequestCallback(token="token123", action="direct_primary"),
-        settings,
-        store,
-        thumbnails,
-        make_media_cache(tmp_path),
+        make_session(settings, store, make_media_cache(tmp_path)),
     )
 
     download_mock.assert_awaited_once()
@@ -163,8 +164,6 @@ async def test_intake_auto_best_downloads_without_keyboard(monkeypatch, tmp_path
     settings.auto_best_quality = True
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
 
     message = make_message()
     message.text = "https://youtu.be/example"
@@ -189,7 +188,7 @@ async def test_intake_auto_best_downloads_without_keyboard(monkeypatch, tmp_path
     monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
     await intake_message(
-        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+        message, make_session(settings, store, make_media_cache(tmp_path))
     )
 
     download_mock.assert_awaited_once()
@@ -204,8 +203,6 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
     settings.auto_best_quality = True
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
 
     message = make_message()
     message.text = "https://example.com/file.mp4"
@@ -236,7 +233,7 @@ async def test_intake_auto_best_falls_back_to_direct_download(monkeypatch, tmp_p
     monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
     await intake_message(
-        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+        message, make_session(settings, store, make_media_cache(tmp_path))
     )
 
     upload_mock.assert_awaited_once()
@@ -277,6 +274,31 @@ async def test_download_best_quality_video_command(monkeypatch, tmp_path):
     assert "--embed-subs" in command
     assert artifact.send_type == "video"
 
+
+@pytest.mark.asyncio
+async def test_tiktok_auto_download_prefers_telegram_compatible_h264(
+    monkeypatch, tmp_path
+):
+    """TikTok H.265 must not win over the H.264 formats Telegram can play."""
+    parsed = ParsedInput(
+        source_url="https://www.tiktok.com/@myaffq7/video/7704044130346831105"
+    )
+    media = tmp_path / "work" / "Title [id].mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"x")
+    run_mock = AsyncMock(return_value=("", ""))
+    monkeypatch.setattr("services.ytdlp._run_command", run_mock)
+
+    await download_best_quality(
+        parsed_input=parsed,
+        settings=make_settings(tmp_path),
+        work_dir=tmp_path / "work",
+        info={"formats": [{"vcodec": "h265", "acodec": "aac"}]},
+    )
+
+    command = run_mock.await_args.args[0]
+    assert command[command.index("-S") + 1] == "vcodec:h264,res:1080,ext:mp4:m4a"
+
 @pytest.mark.asyncio
 async def test_download_best_quality_audio_command(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
@@ -307,7 +329,6 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
     stored = StoredRequest(
         token="tok-g",
         request_type="gallery_media",
@@ -342,16 +363,13 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
     source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
     cache = make_media_cache(tmp_path)
     await execute_request(
-        stored=stored,
-        option=stored.options[0],
+        make_session(settings, store, cache),
+        stored,
+        stored.options[0],
         bot=None,
         status=StatusSurface(status_message.edit_text),
         source_message=source_message,
         user_id=99,
-        settings=settings,
-        request_store=store,
-        thumbnail_store=thumbnails,
-        media_cache=cache,
     )
 
     download_mock.assert_awaited_once()
@@ -365,8 +383,6 @@ async def test_intake_twitter_routes_to_gallery(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
 
     monkeypatch.setattr(
         "services.pipeline.probe_gallery",
@@ -393,11 +409,11 @@ async def test_intake_twitter_routes_to_gallery(monkeypatch, tmp_path):
     monkeypatch.setattr("routers.intake.execute_request", execute_mock)
 
     await intake_message(
-        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+        message, make_session(settings, store, make_media_cache(tmp_path))
     )
 
     execute_mock.assert_awaited_once()
-    stored = execute_mock.await_args.kwargs["stored"]
+    stored = execute_mock.await_args.args[1]
     assert stored.request_type == "gallery_media"
 
 
@@ -406,13 +422,8 @@ async def test_intake_cache_hit_sends_file_id_without_download(monkeypatch, tmp_
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
     cache = make_media_cache(tmp_path)
-    await cache.record(
-        "https://example.com/file.mp4",
-        [CachedMedia(file_id="BAAC9", send_type="video", file_name="f.mp4", caption="c")],
-    )
+    await record_cached_video(cache, "https://example.com/file.mp4")
 
     message = make_message()
     message.text = "https://example.com/file.mp4"
@@ -420,7 +431,7 @@ async def test_intake_cache_hit_sends_file_id_without_download(monkeypatch, tmp_
     probe_mock = AsyncMock()
     monkeypatch.setattr("services.pipeline.probe_url", probe_mock)
 
-    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+    await intake_message(message, make_session(settings, store, cache))
 
     probe_mock.assert_not_awaited()
     message.bot.send_video.assert_awaited_once()
@@ -434,14 +445,9 @@ async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path
     settings.auto_best_quality = True
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
     cache = make_media_cache(tmp_path)
     url = "https://example.com/file.mp4"
-    await cache.record(
-        url,
-        [CachedMedia(file_id="BAAC9", send_type="video", file_name="f.mp4", caption="c")],
-    )
+    await record_cached_video(cache, url)
 
     message = make_message()
     message.text = url
@@ -472,7 +478,7 @@ async def test_intake_cache_hit_invalid_file_id_falls_back(monkeypatch, tmp_path
     monkeypatch.setattr("services.pipeline.download_direct_file", direct_mock)
     monkeypatch.setattr("services.executor.ChatDelivery.deliver", upload_mock)
 
-    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+    await intake_message(message, make_session(settings, store, cache))
 
     upload_mock.assert_awaited_once()
     assert [entry.file_id for entry in cache.get(url)] == ["F1"]
@@ -483,8 +489,6 @@ async def test_intake_gallery_probe_hit_routes_to_gallery(monkeypatch, tmp_path)
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
 
     file_dicts = [
         {"_url": "https://cdn.pawchive/x.jpg", "extension": "jpg", "filename": "x"},
@@ -503,11 +507,11 @@ async def test_intake_gallery_probe_hit_routes_to_gallery(monkeypatch, tmp_path)
     message.reply.return_value = status_message
 
     await intake_message(
-        message, settings, cooldown, store, thumbnails, make_media_cache(tmp_path)
+        message, make_session(settings, store, make_media_cache(tmp_path))
     )
 
     execute_mock.assert_awaited_once()
-    stored = execute_mock.await_args.kwargs["stored"]
+    stored = execute_mock.await_args.args[1]
     assert stored.request_type == "gallery_media"
     assert stored.info["url_media"][0]["url"] == "https://cdn.pawchive/x.jpg"
 
@@ -517,8 +521,6 @@ async def test_intake_direct_image_fast_path_cdn(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
     cache = make_media_cache(tmp_path)
     url = "https://img.pawchive.pw/thumbnail/data/x.jpeg"
 
@@ -534,7 +536,7 @@ async def test_intake_direct_image_fast_path_cdn(monkeypatch, tmp_path):
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message.reply.return_value = status_message
 
-    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+    await intake_message(message, make_session(settings, store, cache))
 
     message.bot.send_photo.assert_awaited_once()
     assert message.bot.send_photo.await_args.kwargs["photo"] == url
@@ -548,8 +550,6 @@ async def test_intake_direct_image_fast_path_falls_back_on_error(monkeypatch, tm
     settings.auto_best_quality = True
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
-    cooldown = CooldownManager(timeout_seconds=60)
     cache = make_media_cache(tmp_path)
     url = "https://example.com/a.jpg"
 
@@ -579,7 +579,7 @@ async def test_intake_direct_image_fast_path_falls_back_on_error(monkeypatch, tm
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message.reply.return_value = status_message
 
-    await intake_message(message, settings, cooldown, store, thumbnails, cache)
+    await intake_message(message, make_session(settings, store, cache))
 
     probe_mock.assert_awaited_once()
     direct_mock.assert_awaited_once()
@@ -591,7 +591,6 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
     stored = StoredRequest(
         token="tok-url",
         request_type="gallery_media",
@@ -620,16 +619,13 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
     status_message = SimpleNamespace(edit_text=AsyncMock())
     source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
     await execute_request(
-        stored=stored,
-        option=stored.options[0],
+        make_session(settings, store, cache),
+        stored,
+        stored.options[0],
         bot=SimpleNamespace(),
         status=StatusSurface(status_message.edit_text),
         source_message=source_message,
         user_id=99,
-        settings=settings,
-        request_store=store,
-        thumbnail_store=thumbnails,
-        media_cache=cache,
     )
 
     download_mock.assert_not_awaited()
@@ -643,7 +639,6 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
-    thumbnails = ThumbnailStore(settings.thumbnails_dir)
     stored = StoredRequest(
         token="tok-fb",
         request_type="gallery_media",
@@ -672,16 +667,53 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
     status_message = SimpleNamespace(edit_text=AsyncMock())
     source_message = SimpleNamespace(chat=SimpleNamespace(id=500))
     await execute_request(
-        stored=stored,
-        option=stored.options[0],
+        make_session(settings, store, make_media_cache(tmp_path)),
+        stored,
+        stored.options[0],
         bot=SimpleNamespace(),
         status=StatusSurface(status_message.edit_text),
         source_message=source_message,
         user_id=99,
-        settings=settings,
-        request_store=store,
-        thumbnail_store=thumbnails,
-        media_cache=make_media_cache(tmp_path),
     )
 
     download_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_text",
+    ["Processing your link...", "Processing your link…", "processing your link"],
+)
+async def test_intake_ignores_inline_processing_placeholder(raw_text, tmp_path):
+    """Inline status text must never open the DM catalogue-search menu."""
+    message = make_message()
+    message.text = raw_text
+
+    await intake_message(message, make_session(make_settings(tmp_path)))
+
+    message.answer.assert_not_awaited()
+    message.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_text_search_menu_has_two_columns_and_global_search(tmp_path):
+    """The DM search menu keeps Global full-width below its two-column filters."""
+    message = make_message()
+    message.text = "Radiohead"
+
+    await intake_message(message, make_session(make_settings(tmp_path)))
+
+    keyboard = message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [[button.text for button in row] for row in keyboard] == [
+        [text.SEARCH_TRACKS, text.SEARCH_ALBUMS],
+        [text.SEARCH_ARTISTS, text.SEARCH_PLAYLISTS],
+        [text.SEARCH_GLOBAL],
+    ]
+    assert [
+        [button.switch_inline_query_current_chat for button in row]
+        for row in keyboard
+    ] == [
+        [".trk Radiohead", ".a Radiohead"],
+        [".art Radiohead", ".pla Radiohead"],
+        ["Radiohead"],
+    ]

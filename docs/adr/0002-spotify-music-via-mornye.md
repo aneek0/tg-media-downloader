@@ -26,7 +26,7 @@
    `~/.mornye` владельца (MORNYE_REGISTRIES env, как у CLI).
 
 2. **Метаданные одиночного трека — через album-endpoint, не `get_track_async`.**
-   В mornye v5.0.5 путь `getTrack` GraphQL возвращает вырожденный
+   В исследованной версии mornye путь `getTrack` GraphQL возвращает вырожденный
    `Unknown`-запись для **всех** track-id (stale persisted-query hash) — silent
    fallback в `TRACK_NOT_FOUND`-фильтре. Рабочий обход (проверен, ~0.9s):
    HTTP GET страницы `open.spotify.com/track/<id>` → `og:title` + `/album/<id>`
@@ -47,7 +47,7 @@
    (DownloadArtifact.audio_title/audio_performer), duration — из
    `DownloadArtifact.duration`, иначе hachoir
    (`services/media.py:audio_duration`). Обложка — embedded cover FLAC/MP3
-   через mutagen (`services/telegram_uploads.py:_extract_cover`,
+   через mutagen (`services/delivery.py:_extract_cover`,
    временный JPEG, удаляется после отправки); без embedded-обложки
    используется per-user thumbnail владельца.
 

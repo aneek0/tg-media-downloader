@@ -7,15 +7,13 @@ from pathlib import Path
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, Message
-from config import Settings
-from services.media_cache import CachedMedia, MediaCache
-from services.mornye import MornyeService
+from services.media_cache import CachedMedia
 from services.pipeline import download_artifacts
+from services.mornye import audio_cache_key
 from services.progress import humanbytes
+from services.session import Session
 from services.status import StatusSurface, elapsed_seconds
-from services.request_store import RequestStore
 from services.delivery import ChatDelivery, send_url_media
-from services.thumbnail_store import ThumbnailStore
 from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import (
@@ -29,23 +27,20 @@ from utils.models import (
 logger = logging.getLogger(__name__)
 
 
-async def execute_request(  # pylint: disable=too-complex,too-many-arguments
-    *,
+async def execute_request(  # pylint: disable=too-complex
+    session: Session,
     stored: StoredRequest,
     option: DownloadOption,
+    *,
     bot: Bot,
     status: StatusSurface,
     source_message: Message,
     user_id: int,
-    settings: Settings,
-    request_store: RequestStore,
-    thumbnail_store: ThumbnailStore,
-    media_cache: MediaCache,
-    mornye: "MornyeService" | None = None,
 ) -> None:
-    mornye = mornye or MornyeService(settings)
+    settings = session.settings
+    request_store = session.request_store
+    media_cache = session.media_cache
     started_at = datetime.now()
-    work_dir = request_store.work_directory(stored.token)
 
     file_name = stored.parsed_input.custom_file_name or "downloaded-file"
     safe_name = text.esc(file_name)
@@ -59,7 +54,7 @@ async def execute_request(  # pylint: disable=too-complex,too-many-arguments
         safe_url_label(stored.parsed_input.source_url),
     )
     delivery = ChatDelivery(
-        bot, source_message, thumbnail_store.get(user_id)
+        bot, source_message, session.thumbnail_store.get(user_id)
     )
     try:
         await status.start_download(safe_name)
@@ -99,11 +94,7 @@ async def execute_request(  # pylint: disable=too-complex,too-many-arguments
                     )
                     return
             artifacts = await download_artifacts(
-                stored,
-                option,
-                settings=settings,
-                status=status,
-                work_dir=work_dir,
+                session, stored, option, status=status
             )
             uploaded = await delivery.deliver(
                 artifacts=artifacts, status=status, started_at=started_at
@@ -118,38 +109,29 @@ async def execute_request(  # pylint: disable=too-complex,too-many-arguments
             )
             return
         if stored.request_type == RequestType.MORNYE:
-            await run_mornye_request(
-                stored=stored,
-                mornye=mornye,
+            await _run_mornye_request(
+                session,
+                stored,
                 delivery=delivery,
                 status=status,
                 source_message=source_message,
                 user_id=user_id,
-                work_dir=work_dir,
                 started_at=started_at,
-                media_cache=media_cache,
             )
             return
         artifacts = await download_artifacts(
-            stored,
-            option,
-            settings=settings,
-            status=status,
-            work_dir=work_dir,
+            session, stored, option, status=status
         )
-        artifact = artifacts[0]
-
         sent = await delivery.deliver(
-            artifacts=[artifact], status=status, started_at=started_at
+            artifacts=artifacts, status=status, started_at=started_at
         )
         if sent:
             await media_cache.record(stored.parsed_input.source_url, sent)
         logger.info(
-            "Completed request action | user=%s token=%s file=%s send_type=%s",
+            "Completed request action | user=%s token=%s files=%s",
             user_id,
             stored.token,
-            artifact.file_name,
-            artifact.send_type,
+            len(artifacts),
         )
     except FileTooLargeError as exc:
         logger.warning(
@@ -218,25 +200,24 @@ async def _send_cover_photo(
     cover_path.unlink(missing_ok=True)
 
 
-async def run_mornye_request(
-    *,
+async def _run_mornye_request(
+    session: Session,
     stored: StoredRequest,
-    mornye: MornyeService,
+    *,
     status: StatusSurface,
     source_message: Message,
     user_id: int,
-    work_dir: Path,
     started_at: datetime,
     delivery: ChatDelivery,
-    media_cache: MediaCache,
 ) -> None:
     """mornye flow: resolve → download → per-file uploads.
 
     Failed-tolerance: whatever downloaded gets sent; failures are listed in
     one summary edit. Only single tracks go to MediaCache.
     """
+    work_dir = session.request_store.work_directory(stored.token)
     await status.edit(text.MUSIC_RESOLVING)
-    target = await mornye.resolve_url(stored.parsed_input.source_url)
+    target = await session.mornye.resolve_url(stored.parsed_input.source_url)
     total = len(target.tracks)
     kind_label = target.kind if target.kind == "track" else "collection"
     await status.edit(
@@ -244,9 +225,15 @@ async def run_mornye_request(
             name=text.esc(target.name), kind=kind_label, count=total
         )
     )
-    artifacts, cover_path = await mornye.download_target(target, work_dir)
+    preferences = session.preferences(user_id)
+    artifacts, cover_path = await session.mornye.download_target(
+        target,
+        work_dir,
+        audio_format=preferences.audio_format,
+        audio_quality=preferences.audio_quality,
+    )
     logger.info(
-        "Spotify download finished | user=%s token=%s files=%s/%s",
+        "Music download finished | user=%s token=%s files=%s/%s",
         user_id,
         stored.token,
         len(artifacts),
@@ -284,7 +271,14 @@ async def run_mornye_request(
         artifact.path.unlink(missing_ok=True)
 
     if target.kind == "track" and sent_cache:
-        await media_cache.record(stored.parsed_input.source_url, sent_cache)
+        await session.media_cache.record(
+            audio_cache_key(
+                stored.parsed_input.source_url,
+                preferences.audio_quality,
+                preferences.audio_format,
+            ),
+            sent_cache,
+        )
     logger.info(
         "Spotify upload finished | user=%s token=%s sent=%s failed=%s seconds=%s",
         user_id,

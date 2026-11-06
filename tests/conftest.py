@@ -1,9 +1,20 @@
+from __future__ import annotations
+
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from config import Settings
+from services.cooldown import CooldownManager
+from services.catalogue_search import CatalogueSearch
+from services.follow_store import FollowStore
 from services.media_cache import MediaCache
+from services.mornye import MornyeService
+from services.request_store import RequestStore
+from services.session import Session
+from services.thumbnail_store import ThumbnailStore
+from services.user_settings import UserSettingsStore
+from utils.models import CachedMedia
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -29,6 +40,18 @@ def make_media_cache(tmp_path: Path) -> MediaCache:
     return MediaCache(tmp_path / "media_cache.json")
 
 
+async def record_cached_video(cache: MediaCache, url: str) -> None:
+    """Seed the media cache with one uploaded video, as a CDN hit would."""
+    await cache.record(
+        url,
+        [
+            CachedMedia(
+                file_id="BAAC9", send_type="video", file_name="f.mp4", caption="c"
+            )
+        ],
+    )
+
+
 def make_message():
     user = SimpleNamespace(id=99, first_name="Kalan")
     chat = SimpleNamespace(id=500, type="private")
@@ -45,3 +68,25 @@ def make_message():
     )
 
 
+def make_session(
+    settings: Settings,
+    request_store: RequestStore | None = None,
+    media_cache: MediaCache | None = None,
+    mornye: MornyeService | None = None,
+) -> Session:
+    """Session over test doubles; stores default to real ones under the
+    Settings paths so tmp_path isolation holds."""
+    return Session(
+        settings=settings,
+        cooldown=CooldownManager(
+            timeout_seconds=settings.request_cooldown_seconds
+        ),
+        request_store=request_store
+        or RequestStore(settings.requests_dir, settings.work_dir),
+        thumbnail_store=ThumbnailStore(settings.thumbnails_dir),
+        media_cache=media_cache or MediaCache(settings.media_cache_file),
+        mornye=mornye or MornyeService(settings),
+        catalogue_search=CatalogueSearch(provider=settings.search_provider),
+        user_settings=UserSettingsStore(settings.user_settings_file),
+        follows=FollowStore(settings.follows_file),
+    )

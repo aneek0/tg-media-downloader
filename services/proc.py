@@ -67,6 +67,10 @@ async def run_command(
     stderr_chunks: list[bytes] = []
 
     async def _communicate() -> tuple[bytes, bytes]:
+        if on_output is None:
+            # yt-dlp --dump-single-json can emit megabytes on one line.
+            # communicate() drains chunks without readline's 64 KiB limit.
+            return await process.communicate()
         await asyncio.gather(
             _read_stream(process.stdout, stdout_chunks, on_output),
             _read_stream(process.stderr, stderr_chunks, on_output),

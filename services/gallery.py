@@ -10,7 +10,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from config import Settings
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
-from services.sources import VIDEO_EXTENSIONS, gallery_supports_url, send_type_for_extension
+from services.sources import (
+    VIDEO_EXTENSIONS,
+    gallery_supports_url,
+    is_tiktok_url,
+    send_type_for_extension,
+)
 from services.ytdlp import _prepare_cookies_file
 from utils import text
 from utils.logging_config import safe_url_label
@@ -32,7 +37,7 @@ def split_tweet_media(file_dicts: list[dict]) -> tuple[list[dict], list[dict]]:
     return photos[:MAX_GALLERY_PHOTOS], videos
 
 
-def _gallery_flags(settings: Settings) -> list[str]:
+def _gallery_flags(settings: Settings, source_url: str) -> list[str]:
     flags: list[str] = []
     if settings.http_proxy:
         flags.extend(["--proxy", settings.http_proxy])
@@ -40,11 +45,19 @@ def _gallery_flags(settings: Settings) -> list[str]:
     if cookies_file:
         flags.extend(["-C", str(cookies_file)])
         flags.extend(["-o", "extractor.twitter.cookies-update=false"])
+    if is_tiktok_url(source_url):
+        # Keep imagePost photos/audio here; videos use yt-dlp's H.264 path.
+        flags.extend(["-o", "videos=false"])
     return flags
 
 
 def _gallery_probe_command(parsed_input: ParsedInput, settings: Settings) -> list[str]:
-    return ["gallery-dl", "-j", *_gallery_flags(settings), parsed_input.source_url]
+    return [
+        "gallery-dl",
+        "-j",
+        *_gallery_flags(settings, parsed_input.source_url),
+        parsed_input.source_url,
+    ]
 
 
 def _gallery_download_command(
@@ -63,7 +76,7 @@ def _gallery_download_command(
         filename_format,
         "--no-part",
         "--no-mtime",
-        *_gallery_flags(settings),
+        *_gallery_flags(settings, parsed_input.source_url),
         parsed_input.source_url,
     ]
 

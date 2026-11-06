@@ -168,6 +168,18 @@ def inline_status(
 
     return StatusSurface(edit, name=name, muted=media_message)
 
+def inline_caption_status(
+    bot: Bot, inline_message_id: str, *, name: str = ""
+) -> StatusSurface:
+    """Status surface for an Artist Card already containing a photo."""
+
+    async def edit(message_text: str, **kwargs: Any) -> None:
+        await bot.edit_message_caption(
+            inline_message_id=inline_message_id, caption=message_text, **kwargs
+        )
+
+    return StatusSurface(edit, name=name)
+
 
 def elapsed_seconds(started_at: datetime) -> int:
     return int((datetime.now() - started_at).total_seconds())

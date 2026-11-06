@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 
 from config import Settings
 from services.direct_downloads import download_direct_file
@@ -12,7 +11,6 @@ from services.gallery import (
     gallery_url_items,
     probe_gallery,
 )
-from services.mornye import MornyeService
 from services.parsing import is_probable_youtube_url
 from services.requests import (
     direct_request,
@@ -20,7 +18,7 @@ from services.requests import (
     music_request,
     probe_request,
 )
-from services.request_store import RequestStore
+from services.session import Session
 from services.sources import (
     SourceKind,
     SourceUrl,
@@ -97,20 +95,16 @@ async def _probe_ytdlp(
         return None
 
 
-async def prepare_request(
-    store: RequestStore,
-    parsed: ParsedInput,
-    settings: Settings,
-    *,
-    mornye: MornyeService | None = None,
-) -> PreparedRequest:
+async def prepare_request(session: Session, parsed: ParsedInput) -> PreparedRequest:
     """Run the source ladder once: music, gallery, YouTube, yt-dlp, direct.
 
     Constructs and persists the matching request; raises only when the music
     service cannot resolve a track."""
+    store = session.request_store
+    settings = session.settings
     source = classify(parsed)
-    if mornye and mornye.enabled and source.kind is SourceKind.MUSIC:
-        target = await mornye.resolve_url(parsed.source_url)
+    if session.mornye.enabled and source.kind is SourceKind.MUSIC:
+        target = await session.mornye.resolve_url(parsed.source_url)
         stored = music_request(
             store,
             parsed,
@@ -175,14 +169,15 @@ async def prepare_request(
 
 
 async def download_artifacts(
+    session: Session,
     stored: StoredRequest,
     option: DownloadOption,
     *,
-    settings: Settings,
     status: StatusSurface,
-    work_dir: Path,
 ) -> list[DownloadArtifact]:
     """Download one prepared request; the caller owns delivery."""
+    settings = session.settings
+    work_dir = session.request_store.work_directory(stored.token)
     request_type = stored.request_type
     payload = stored.payload
     if request_type == RequestType.GALLERY_MEDIA:
@@ -238,15 +233,18 @@ async def download_artifacts(
 
 
 async def download_inline(
+    session: Session,
     stored: StoredRequest,
     *,
-    settings: Settings,
     status: StatusSurface,
-    work_dir: Path,
-    mornye: MornyeService | None = None,
+    audio_format: str | None = None,
+    audio_quality: str | None = None,
 ) -> list[DownloadArtifact]:
-    """Inline taps carry no options: re-run the probe ladder and download
-    the best artifact set for the URL."""
+    """Inline path: run the same dispatch table on one stored URL request.
+    No PreparedRequest is needed here; the StoredRequest was saved by the
+    inline handler and already carries its ParsedInput and kind."""
+    settings = session.settings
+    work_dir = session.request_store.work_directory(stored.token)
     parsed = stored.parsed_input
     gallery = await probe_gallery(parsed, settings)
     if gallery.file_dicts:
@@ -260,11 +258,13 @@ async def download_inline(
 
     source = classify(parsed)
     if source.kind is SourceKind.MUSIC:
-        service = mornye or MornyeService(settings)
-        if mornye is None:
-            await service.warm_up()
-        target = await service.resolve_url(parsed.source_url)
-        artifacts, _ = await service.download_target(target, work_dir)
+        target = await session.mornye.resolve_url(parsed.source_url)
+        artifacts, _ = await session.mornye.download_target(
+            target,
+            work_dir,
+            audio_format=audio_format,
+            audio_quality=audio_quality,
+        )
         return artifacts
 
     info = await _probe_ytdlp(parsed, settings)

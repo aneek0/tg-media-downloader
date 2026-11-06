@@ -76,6 +76,8 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     mornye_quality: str = "LOSSLESS"
     mornye_transcode: str = ""
     spotify_collection_cap: int = 50
+    search_provider: str = "deezer"
+    follow_poll_seconds: int = 6 * 3600
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -144,6 +146,12 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             spotify_collection_cap=_parse_positive_int(
                 os.environ.get("SPOTIFY_COLLECTION_CAP"), default=50
             ),
+            search_provider=(
+                os.environ.get("SEARCH_PROVIDER", "deezer").strip().lower() or "deezer"
+            ),
+            follow_poll_seconds=_parse_positive_int(
+                os.environ.get("FOLLOW_POLL_SECONDS"), default=6 * 3600
+            ),
         )
 
     @property
@@ -157,6 +165,14 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     @property
     def media_cache_file(self) -> Path:
         return self.download_location / "media_cache.json"
+
+    @property
+    def user_settings_file(self) -> Path:
+        return self.download_location / "user_settings.json"
+
+    @property
+    def follows_file(self) -> Path:
+        return self.download_location / "follows.json"
 
     @property
     def work_dir(self) -> Path:

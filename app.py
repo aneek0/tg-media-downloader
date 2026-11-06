@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
@@ -8,38 +10,32 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import PRODUCTION, TelegramAPIServer
 from aiogram.enums import ParseMode
 
-from config import Settings
 from utils.logging_config import setup_logging
 from routers.callbacks import router as callbacks_router
+from routers.catalogue import router as catalogue_router
 from routers.commands import router as commands_router
+from routers.follows import router as follows_router
 from routers.intake import router as intake_router
 from routers.inline import router as inline_router
+from routers.settings import router as settings_router
 from routers.thumbnails import router as thumbnails_router
-from services.cooldown import CooldownManager
-from services.media_cache import MediaCache
-from services.request_store import RequestStore
-from services.thumbnail_store import ThumbnailStore
+from config import Settings
 from services.mornye import MornyeService
+from services.session import Session, build_session
+from services.follows import FollowPoller
 
 
-def create_dispatcher(
-    settings: Settings,
-    mornye: MornyeService | None = None,
-) -> Dispatcher:
+def create_dispatcher(session: Session) -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(commands_router)
     dispatcher.include_router(thumbnails_router)
+    dispatcher.include_router(settings_router)
+    dispatcher.include_router(follows_router)
+    dispatcher.include_router(catalogue_router)
     dispatcher.include_router(inline_router)
     dispatcher.include_router(intake_router)
     dispatcher.include_router(callbacks_router)
-    dispatcher.workflow_data.update(
-        settings=settings,
-        cooldown=CooldownManager(timeout_seconds=settings.request_cooldown_seconds),
-        request_store=RequestStore(settings.requests_dir, settings.work_dir),
-        thumbnail_store=ThumbnailStore(settings.thumbnails_dir),
-        media_cache=MediaCache(settings.media_cache_file),
-        mornye=mornye or MornyeService(settings),
-    )
+    dispatcher.workflow_data.update(session=session)
     return dispatcher
 
 
@@ -56,9 +52,9 @@ async def run() -> None:
             "Using local Bot API server | url=%s", settings.telegram_api_url
         )
 
-    session: AiohttpSession | None = None
+    telegram_session: AiohttpSession | None = None
     if settings.telegram_proxy and not api_server:
-        session = AiohttpSession(
+        telegram_session = AiohttpSession(
             proxy=settings.telegram_proxy,
             api=PRODUCTION,
             timeout=600,
@@ -72,21 +68,24 @@ async def run() -> None:
         # (localhost/tailnet); the proxy would only break that route.
         # 600 s: media-group uploads of multi-hundred-MB FLACs over LAN
         # need well over aiogram's 60 s default.
-        session = AiohttpSession(api=api_server, timeout=600)
-
+        telegram_session = AiohttpSession(api=api_server, timeout=600)
 
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        session=session,
+        session=telegram_session,
     )
 
-    request_store = RequestStore(settings.requests_dir, settings.work_dir)
-    request_store.sweep_stale()
-    mornye = MornyeService(settings)
-    if mornye.enabled:
-        await mornye.warm_up()
-    dispatcher = create_dispatcher(settings, mornye)
+    session = build_session(settings, MornyeService(settings))
+    session.request_store.sweep_stale()
+    maintenance_task = None
+    if session.mornye.enabled:
+        await session.mornye.warm_up()
+        maintenance_task = asyncio.create_task(
+            session.mornye.run_signed_session_maintenance(),
+            name="mornye-session-maintenance",
+        )
+    dispatcher = create_dispatcher(session)
 
     logging.getLogger(__name__).info(
         "Bot is starting | download_dir=%s requests_dir=%s proxy=%s cooldown=%ss",
@@ -95,4 +94,13 @@ async def run() -> None:
         "enabled" if settings.http_proxy else "disabled",
         settings.request_cooldown_seconds,
     )
-    await dispatcher.start_polling(bot)
+    follow_task = asyncio.create_task(FollowPoller(session, bot).run())
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        for task in (follow_task, maintenance_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await session.mornye.close()

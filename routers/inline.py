@@ -32,11 +32,11 @@ from services.gallery import (
     split_tweet_media,
 )
 from services.inline_flow import InlineTaskRegistry, run_inline_download
-from services.media_cache import MediaCache, cached_inline_results
+from services.media_cache import cached_inline_results
+from services.mornye import audio_cache_key
 from services.parsing import is_twitter_status_url, parse_user_input
 from services.requests import inline_gallery_request, inline_media_request
-from services.request_store import RequestStore
-from services.mornye import MornyeService
+from services.session import Session
 from services.sources import VIDEO_EXTENSIONS, SourceKind, classify
 from services.ytdlp import probe_url
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
@@ -185,8 +185,7 @@ async def _inline_video_results(
     file_dicts: list[dict],
     *,
     parsed: ParsedInput,
-    settings: Settings,
-    request_store: RequestStore,
+    session: Session,
     description: str,
     caption: str | None,
 ) -> list:
@@ -232,9 +231,9 @@ async def _inline_video_results(
         extension = (media.get("extension") or "mp4").lower()
         if tweet_id and num and extension:
             preferred_name = f"{tweet_id}_{num}.{extension}"
-        poster = await _video_poster_url(parsed, settings)
+        poster = await _video_poster_url(parsed, session.settings)
         stored = inline_media_request(
-            request_store,
+            session.request_store,
             parsed,
             preferred_name=preferred_name,
             poster_url=poster,
@@ -314,11 +313,12 @@ async def _error_article(message: str) -> InlineQueryResultArticle:
 async def _answer_gallery_media(
     query: InlineQuery,
     parsed: ParsedInput,
-    settings: Settings,
-    request_store: RequestStore,
+    session: Session,
 ) -> bool:
     """Answer with gallery-dl CDN results. Returns False when the caller
     should fall through to the generic token-article path."""
+    settings = session.settings
+    request_store = session.request_store
     probe = await probe_gallery(parsed, settings)
     logger.info(
         "Inline gallery probe | user=%s source=%s files=%s error=%s",
@@ -361,8 +361,7 @@ async def _answer_gallery_media(
             await _inline_video_results(
                 probe.file_dicts,
                 parsed=parsed,
-                settings=settings,
-                request_store=request_store,
+                session=session,
                 description=body or _description_for(),
                 caption=caption,
             )
@@ -420,11 +419,11 @@ async def _answer_gallery_media(
 @router.inline_query()
 async def inline_query_handler(  # pylint: disable=too-complex
     query: InlineQuery,
-    settings: Settings,
-    request_store: RequestStore,
-    media_cache: MediaCache,
-    mornye: MornyeService | None = None,
+    session: Session,
 ) -> None:
+    request_store = session.request_store
+    media_cache = session.media_cache
+    mornye = session.mornye
     raw = (query.query or "").strip()
     if not raw:
         await query.answer(
@@ -460,7 +459,11 @@ async def inline_query_handler(  # pylint: disable=too-complex
         return
     source = classify(parsed)
 
-    cached = media_cache.get(parsed.source_url)
+    preferences = session.preferences(query.from_user.id)
+    cache_key = audio_cache_key(
+        parsed.source_url, preferences.audio_quality, preferences.audio_format
+    )
+    cached = media_cache.get(cache_key)
     if cached:
         results = cached_inline_results(cached)
         if results:
@@ -524,9 +527,9 @@ async def inline_query_handler(  # pylint: disable=too-complex
             return
         title = target.name
         description = (
-            "Spotify track — tap to download"
+            "Music track — tap to download"
             if target.kind == "track"
-            else f"Spotify {target.kind} — {len(target.tracks)} track(s), tap to download"
+            else f"Music {target.kind} — {len(target.tracks)} track(s), tap to download"
         )
         stored = inline_media_request(request_store, parsed)
         token = stored.token
@@ -548,7 +551,7 @@ async def inline_query_handler(  # pylint: disable=too-complex
         )
         return
 
-    if await _answer_gallery_media(query, parsed, settings, request_store):
+    if await _answer_gallery_media(query, parsed, session):
         return
 
     # result_id doubles as the request token: ChosenInlineResult carries it back
@@ -593,17 +596,14 @@ def _result_needs_no_download(token: str, inline_message_id: str | None) -> bool
 @router.chosen_inline_result()
 async def inline_chosen_handler(
     chosen: ChosenInlineResult,
-    settings: Settings,
-    request_store: RequestStore,
-    media_cache: MediaCache,
-    mornye: MornyeService | None = None,
+    session: Session,
 ) -> None:
     token = chosen.result_id
     inline_message_id = chosen.inline_message_id
     if _result_needs_no_download(token, inline_message_id):
         return
 
-    stored = request_store.load(token)
+    stored = session.request_store.load(token)
     if not stored:
         logger.warning(
             "Expired inline request | user=%s token=%s", chosen.from_user.id, token
@@ -619,14 +619,11 @@ async def inline_chosen_handler(
 
     task = asyncio.create_task(
         run_inline_download(
+            session,
             bot=chosen.bot,
             user_id=chosen.from_user.id,
             inline_message_id=inline_message_id,
             stored=stored,
-            settings=settings,
-            request_store=request_store,
-            media_cache=media_cache,
-            mornye=mornye,
         )
     )
     _inline_tasks.start(token, task)
@@ -636,8 +633,9 @@ async def inline_chosen_handler(
 async def inline_cancel_callback(
     query: CallbackQuery,
     callback_data: InlineCancelCallback,
-    request_store: RequestStore,
+    session: Session,
 ) -> None:
+    request_store = session.request_store
     token = callback_data.token
     task = _inline_tasks.cancel(token)
     if task:
@@ -662,8 +660,9 @@ async def inline_cancel_callback(
 async def gallery_nav_callback(
     query: CallbackQuery,
     callback_data: GalleryNavCallback,
-    request_store: RequestStore,
+    session: Session,
 ) -> None:
+    request_store = session.request_store
     stored = request_store.load(callback_data.token)
     payload = stored.payload if stored else None
     photos = payload.photos if isinstance(payload, InlineGalleryPayload) else []

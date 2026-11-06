@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 import pytest
 
@@ -27,6 +28,18 @@ async def test_run_command_without_callback_unchanged():
 
 
 @pytest.mark.asyncio
+async def test_run_command_reads_json_line_larger_than_stream_limit():
+    """yt-dlp probe JSON may exceed StreamReader's 64 KiB readline limit."""
+    payload = "x" * 131072
+
+    stdout, _ = await run_command(
+        [sys.executable, "-c", "print('x' * 131072)"]
+    )
+
+    assert stdout == payload
+
+
+@pytest.mark.asyncio
 async def test_run_command_callback_error_does_not_fail_command():
     async def bad_callback(_line: str) -> None:
         raise ValueError("boom")
@@ -41,4 +54,3 @@ async def test_run_command_still_times_out_with_streaming():
         await asyncio.wait_for(
             run_command(["sleep", "5"], timeout=0.3, on_output=None), timeout=2
         )
-

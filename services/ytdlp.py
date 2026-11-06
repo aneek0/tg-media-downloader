@@ -10,7 +10,7 @@ from config import Settings
 from services.proc import run_command
 from services.progress import humanbytes
 from services.status import StatusSurface
-from services.sources import send_type_for_extension
+from services.sources import is_tiktok_url, send_type_for_extension
 from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, DownloadOption, ParsedInput
 
@@ -330,12 +330,15 @@ async def download_best_quality(
             ]
         )
     else:
+        video_sort = _auto_video_sort(settings.max_video_height)
+        if is_tiktok_url(parsed_input.source_url):
+            video_sort = f"vcodec:h264,{video_sort}"
         command.extend(
             [
                 "-f",
                 "bv*+ba/b",
                 "-S",
-                _auto_video_sort(settings.max_video_height),
+                video_sort,
                 "--embed-subs",
                 "--no-playlist",
                 "-o",

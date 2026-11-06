@@ -5,14 +5,15 @@ from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
 from utils import text
-from services.thumbnail_store import ThumbnailStore
+from services.session import Session
 
 router = Router(name="thumbnails")
 logger = logging.getLogger(__name__)
 
 
 @router.message(F.chat.type == "private", F.photo)
-async def save_thumbnail(message: Message, thumbnail_store: ThumbnailStore) -> None:
+async def save_thumbnail(message: Message, session: Session) -> None:
+    thumbnail_store = session.thumbnail_store
     if not message.from_user:
         return
     largest_photo = message.photo[-1]
@@ -23,7 +24,8 @@ async def save_thumbnail(message: Message, thumbnail_store: ThumbnailStore) -> N
 
 
 @router.message(Command("thumb"), F.chat.type == "private")
-async def show_thumbnail(message: Message, thumbnail_store: ThumbnailStore) -> None:
+async def show_thumbnail(message: Message, session: Session) -> None:
+    thumbnail_store = session.thumbnail_store
     if not message.from_user:
         return
     thumbnail = thumbnail_store.get(message.from_user.id)
@@ -36,7 +38,8 @@ async def show_thumbnail(message: Message, thumbnail_store: ThumbnailStore) -> N
 
 
 @router.message(Command("delthumb"), F.chat.type == "private")
-async def delete_thumbnail(message: Message, thumbnail_store: ThumbnailStore) -> None:
+async def delete_thumbnail(message: Message, session: Session) -> None:
+    thumbnail_store = session.thumbnail_store
     if not message.from_user:
         return
     if thumbnail_store.delete(message.from_user.id):

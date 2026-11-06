@@ -17,3 +17,16 @@ class InlineCancelCallback(CallbackData, prefix="icxl"):
 class GalleryNavCallback(CallbackData, prefix="gnav"):
     token: str
     index: int
+
+class CatalogueCallback(CallbackData, prefix="cat"):
+    action: str
+    token: str
+
+class SettingsCallback(CallbackData, prefix="set"):
+    action: str
+    value: str = ""
+
+class FollowCallback(CallbackData, prefix="fol"):
+    action: str
+    provider: str
+    artist_id: str

@@ -3,22 +3,28 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import FSInputFile, InputMediaVideo
+from aiogram.types import (
+    FSInputFile,
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaVideo,
+)
 
-from config import Settings
-
-from services.media_cache import MediaCache, cached_media_from
+from services.media_cache import cached_media_from
 from services.media import video_metadata
 from services.progress import humanbytes
-from services.status import StatusSurface, inline_status
-from services.request_store import RequestStore
-from services.mornye import MornyeService
+from services.status import StatusSurface, inline_caption_status, inline_status
+from services.session import Session
+from services.user_settings import UserPreferences
 from services.requests import lifecycle
 from services.delivery import DirectDelivery, media_item
 from services.pipeline import download_inline
+from services.sources import SourceKind, classify
+from services.mornye import audio_cache_key
 from utils import text
 from utils.models import (
     CachedMedia,
@@ -29,6 +35,19 @@ from utils.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Where the user must go when a result cannot be delivered inline.
+_OPEN_BOT_HINT = "open the bot and send the link"
+
+
+class InlineDmBlocked(RuntimeError):
+    """Telegram refused the DM copy an inline result needs (the user never
+    started the bot), so the file cannot be placed into the message."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"This result can only be delivered from the bot chat — {_OPEN_BOT_HINT}."
+        )
 
 
 class InlineTaskRegistry:
@@ -67,12 +86,12 @@ async def _dm_send_artifacts(
 
 
 async def _download_artifacts(
+    session: Session,
     *,
     status: StatusSurface,
     stored: StoredRequest,
-    settings: Settings,
-    request_store: RequestStore,
-    mornye: MornyeService | None = None,
+    audio_format: str | None = None,
+    audio_quality: str | None = None,
 ) -> list[DownloadArtifact]:
     """Edit the inline message into the downloading state, then fetch the
     media through the shared probe ladder."""
@@ -80,11 +99,11 @@ async def _download_artifacts(
         text.DOWNLOAD_START.format(name=text.esc(stored.parsed_input.source_url))
     )
     return await download_inline(
+        session,
         stored,
-        settings=settings,
         status=status,
-        work_dir=request_store.work_directory(stored.token),
-        mornye=mornye,
+        audio_format=audio_format,
+        audio_quality=audio_quality,
     )
 
 
@@ -94,21 +113,40 @@ async def _fail_inline_message(status: StatusSurface, message: str) -> None:
     await status.fail(message)
 
 
+def _spillover_note(count: int, *, delivered: bool) -> str:
+    if not count:
+        return ""
+    detail = "check your DM with the bot" if delivered else _OPEN_BOT_HINT
+    return f"\n(+{count} more files — {detail})"
+
+
 async def _spillover_dm(
-    bot: Bot, user_id: int, rest: list[DownloadArtifact]
+    bot: Bot,
+    user_id: int,
+    rest: list[DownloadArtifact],
+    *,
+    inline_message_id: str,
+    base_caption: str,
 ) -> tuple[str, list[CachedMedia]]:
-    """Send artifacts beyond the first to the user's private chat; return
-    the spillover note for the inline caption and the captured entries."""
+    """Send the remainder after the inline track and correct its caption on failure."""
     if not rest:
         return "", []
     try:
-        dm_entries = await _dm_send_artifacts(bot, user_id, rest)
-        return f"\n(+{len(rest)} more in your private chat)", dm_entries
-    except TelegramAPIError as exc:
-        logger.info(
-            "Inline DM delivery failed | user=%s error=%s", user_id, exc
-        )
-        return f"\n(+{len(rest)} more files — open the bot and send the link)", []
+        entries = await _dm_send_artifacts(bot, user_id, rest)
+        note = _spillover_note(len(rest), delivered=True)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.info("Inline DM delivery failed | user=%s error=%s", user_id, exc)
+        entries = []
+        note = _spillover_note(len(rest), delivered=False)
+    if note != _spillover_note(len(rest), delivered=True):
+        try:
+            await bot.edit_message_caption(
+                inline_message_id=inline_message_id,
+                caption=base_caption + note,
+            )
+        except TelegramAPIError as exc:
+            logger.info("Inline spillover caption update failed | error=%s", exc)
+    return note, entries
 
 
 def _selected_artifact(
@@ -134,29 +172,64 @@ def _selected_artifact(
 
 
 async def run_inline_download(
+    session: Session,
     *,
     bot: Bot,
     user_id: int,
     inline_message_id: str,
     stored: StoredRequest,
-    settings: Settings,
-    request_store: RequestStore,
-    media_cache: MediaCache,
-    mornye: MornyeService | None = None,
+    caption_status: bool = False,
 ) -> None:
     """Own the inline request lifecycle: every terminal path deletes the
     token and its work directory."""
-    with lifecycle(request_store, stored.token):
+    with lifecycle(session.request_store, stored.token):
         await _run_inline_download(
+            session,
             bot=bot,
             user_id=user_id,
             inline_message_id=inline_message_id,
             stored=stored,
-            settings=settings,
-            request_store=request_store,
-            media_cache=media_cache,
-            mornye=mornye,
+            caption_status=caption_status,
         )
+
+
+def _needs_dm_file_id(stored: StoredRequest, first: DownloadArtifact) -> bool:
+    """Catalogue music and album ZIPs need a DM-uploaded file_id; ordinary
+    direct documents still edit inline from their source URL."""
+    return (
+        classify(stored.parsed_input).kind is SourceKind.MUSIC
+        and first.send_type in {"audio", "document"}
+    )
+
+
+async def _music_dm_media(
+    bot: Bot, user_id: int, first: DownloadArtifact, caption: str
+) -> tuple[Any, CachedMedia]:
+    """DM-upload catalogue audio/ZIP and return its inline media plus cache
+    entry. Inline edits cannot upload files, so the file_id must come from
+    the DM copy; a refused DM is surfaced as InlineDmBlocked."""
+    try:
+        uploaded = await DirectDelivery(bot, user_id).deliver(
+            [first], started_at=datetime.now()
+        )
+    except TelegramAPIError as exc:
+        logger.info("Inline DM upload refused | user=%s error=%s", user_id, exc)
+        raise InlineDmBlocked() from exc
+    if not uploaded:
+        raise RuntimeError("Telegram did not return an uploaded file id")
+    dm_entry = uploaded[0]
+    if first.send_type == "audio":
+        return (
+            InputMediaAudio(
+                media=dm_entry.file_id,
+                caption=caption,
+                duration=first.duration,
+                title=first.audio_title or first.file_name,
+                performer=first.audio_performer,
+            ),
+            dm_entry,
+        )
+    return InputMediaDocument(media=dm_entry.file_id, caption=caption), dm_entry
 
 
 async def _deliver_first(
@@ -170,6 +243,7 @@ async def _deliver_first(
     caption: str,
     dm_entries: list[CachedMedia],
     dm_upload: bool,
+    dm_audio: bool = False,
 ) -> tuple[object, list[CachedMedia]]:
     """Swap the inline message into the tapped artifact and return the
     edited message plus the DM entries to cache (the poster flow prepends
@@ -180,11 +254,17 @@ async def _deliver_first(
     fetcher also fails (>20MB), so the video is uploaded to the user's DM
     first (sendVideo accepts uploads) and its file_id edits the inline
     message. The DM copy doubles as the delivery when the inline edit is
-    impossible.
+    impossible. Audio and documents need that same file_id; when Telegram
+    refuses the DM (the user never started the bot) :class:`InlineDmBlocked`
+    tells the caller to finish with the open-bot note instead of hanging.
     """
+    item: Any
     item, cover = media_item(first, caption)
     edited: object = None
     try:
+        if dm_audio and first.send_type in {"audio", "document"}:
+            item, dm_entry = await _music_dm_media(bot, user_id, first, caption)
+            dm_entries = [dm_entry, *dm_entries]
         if dm_upload and first.send_type == "video":
             try:
                 width, height, duration = await _video_dimensions(first)
@@ -255,39 +335,44 @@ async def _video_dimensions(first: DownloadArtifact) -> tuple[int, int, int]:
 
 
 
-async def _run_inline_download(
+async def _obtain_artifacts(
+    session: Session,
     *,
     bot: Bot,
     user_id: int,
+    token: str,
     inline_message_id: str,
     stored: StoredRequest,
-    settings: Settings,
-    request_store: RequestStore,
-    media_cache: MediaCache,
-    mornye: MornyeService | None = None,
-) -> None:
-    token = stored.token
-    media_payload = (
-        stored.payload
-        if isinstance(stored.payload, InlineMediaPayload)
-        else InlineMediaPayload()
-    )
-    # A poster-photo result is already a media message: text edits are
-    # impossible there, so progress stays silent until the final media edit.
-    status = inline_status(
-        bot,
-        inline_message_id,
-        name=text.esc(stored.parsed_input.source_url),
-        media_message=bool(media_payload.poster_url),
-    )
-
+    status: StatusSurface,
+    preferences: UserPreferences,
+) -> list[DownloadArtifact] | None:
+    """Cached audio fast path + download with the inline error boundary.
+    None means the flow already finished (cache hit or reported failure)."""
     try:
-        artifacts = await _download_artifacts(
+        cached = session.media_cache.get(
+            audio_cache_key(
+                stored.parsed_input.source_url,
+                preferences.audio_quality,
+                preferences.audio_format,
+            )
+        )
+        if cached and len(cached) == 1 and cached[0].send_type == "audio":
+            entry = cached[0]
+            await bot.edit_message_media(
+                inline_message_id=inline_message_id,
+                media=InputMediaAudio(
+                    media=entry.file_id,
+                    caption=(entry.caption or entry.file_name)[:1000] or None,
+                ),
+            )
+            logger.info("Inline audio cache hit | user=%s token=%s", user_id, token)
+            return None
+        return await _download_artifacts(
+            session,
             status=status,
             stored=stored,
-            settings=settings,
-            request_store=request_store,
-            mornye=mornye,
+            audio_format=preferences.audio_format,
+            audio_quality=preferences.audio_quality,
         )
     except asyncio.CancelledError:
         # user hit Cancel: the cancel callback already edited the message
@@ -302,9 +387,11 @@ async def _run_inline_download(
         )
         await _fail_inline_message(
             status,
-            text.TOO_LARGE.format(size=humanbytes(settings.max_upload_bytes)),
+            text.TOO_LARGE.format(
+                size=humanbytes(session.settings.max_upload_bytes)
+            ),
         )
-        return
+        return None
     except Exception as exc:  # pylint: disable=broad-exception-caught  # pragma: no cover - user-facing safety boundary
         logger.exception(
             "Inline request failed | user=%s token=%s", user_id, token
@@ -313,6 +400,50 @@ async def _run_inline_download(
             status,
             f"{text.INLINE_FAILED}\n<code>{text.esc(str(exc))}</code>",
         )
+        return None
+
+
+async def _run_inline_download(
+    session: Session,
+    *,
+    bot: Bot,
+    user_id: int,
+    inline_message_id: str,
+    stored: StoredRequest,
+    caption_status: bool = False,
+) -> None:
+    token = stored.token
+    media_payload = (
+        stored.payload
+        if isinstance(stored.payload, InlineMediaPayload)
+        else InlineMediaPayload()
+    )
+    # A poster-photo result is already a media message: text edits are
+    # impossible there, so progress stays silent until the final media edit.
+    if caption_status:
+        status = inline_caption_status(
+            bot, inline_message_id, name=text.esc(stored.parsed_input.source_url)
+        )
+    else:
+        status = inline_status(
+            bot,
+            inline_message_id,
+            name=text.esc(stored.parsed_input.source_url),
+            media_message=bool(media_payload.poster_url),
+        )
+
+    preferences = session.preferences(user_id)
+    artifacts = await _obtain_artifacts(
+        session,
+        bot=bot,
+        user_id=user_id,
+        token=token,
+        inline_message_id=inline_message_id,
+        stored=stored,
+        status=status,
+        preferences=preferences,
+    )
+    if artifacts is None:
         return
 
     # The tapped item goes into the message; the rest keep their original
@@ -324,21 +455,39 @@ async def _run_inline_download(
         artifacts = [artifacts[selected]] + artifacts[:selected] + artifacts[selected + 1 :]
 
     rest = artifacts[1:]
-    dm_note, dm_entries = await _spillover_dm(bot, user_id, rest)
-
     first = artifacts[0]
-    caption = (first.caption or first.file_name)[:1000] + dm_note
-    edited, dm_entries = await _deliver_first(
-        bot=bot,
-        user_id=user_id,
-        token=token,
+    base_caption = (first.caption or first.file_name)[:1000]
+    expected_dm_note = _spillover_note(len(rest), delivered=True)
+    caption = base_caption + expected_dm_note
+    try:
+        edited, dm_entries = await _deliver_first(
+            bot=bot,
+            user_id=user_id,
+            token=token,
+            inline_message_id=inline_message_id,
+            status=status,
+            first=first,
+            caption=caption,
+            dm_entries=[],
+            dm_upload=bool(media_payload.video_url),
+            dm_audio=_needs_dm_file_id(stored, first),
+        )
+    except InlineDmBlocked as exc:
+        # No DM is possible, so neither the tapped file nor the remainder
+        # can be delivered: say where to get it and stop claiming a DM.
+        logger.info(
+            "Inline delivery needs the bot chat | user=%s token=%s", user_id, token
+        )
+        await _fail_inline_message(status, text.esc(str(exc)))
+        return
+    _, rest_entries = await _spillover_dm(
+        bot,
+        user_id,
+        rest,
         inline_message_id=inline_message_id,
-        status=status,
-        first=first,
-        caption=caption,
-        dm_entries=dm_entries,
-        dm_upload=bool(media_payload.video_url),
+        base_caption=base_caption,
     )
+    dm_entries.extend(rest_entries)
     logger.info(
         "Inline request complete | user=%s token=%s files=%s dm_rest=%s",
         user_id,
@@ -354,4 +503,11 @@ async def _run_inline_download(
     )
     entries = ([first_entry] if first_entry else []) + dm_entries
     if entries:
-        await media_cache.record(stored.parsed_input.source_url, entries)
+        await session.media_cache.record(
+            audio_cache_key(
+                stored.parsed_input.source_url,
+                preferences.audio_quality,
+                preferences.audio_format,
+            ),
+            entries,
+        )

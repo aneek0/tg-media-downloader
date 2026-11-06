@@ -59,6 +59,12 @@ _Avoid_: кэш файлов, storage, box
 отправкам. У каждого пользователя своя; срок жизни задаёт сам пользователь.
 _Avoid_: thumbnail store, cache, аватар
 
+**Session**:
+Всё, чем владеет один запуск бота: Settings, Cooldown, Media Cache, Preview
+Store, Token-хранилище Requests и музыкальный Provider. Обработчики и
+конвейеры получают его одним аргументом, а не списком зависимостей.
+_Avoid_: контекст, зависимости, bot state
+
 ## Доставка в личных сообщениях
 
 **Intake**:
@@ -100,7 +106,7 @@ Telegram сам. Единственный способ доставить то, 
 _Avoid_: аплоад, отправка файла, загрузка
 
 **Overflow DM**:
-Лишние медиа из альбомы, которые не поместились в Inline Result и отправлены
+Лишние медиа из альбома, которые не поместились в Inline Result и отправлены
 пользователю в личные сообщения.
 _Avoid_: хвост, добавка, остаток
 
@@ -109,15 +115,14 @@ _Avoid_: хвост, добавка, остаток
 **Source Domain**:
 Происхождение Source URL: общий сайт, tweet-пост или музыкальный сервис.
 Домен решает, каким конвейером Request превратится в Artifact. Текущие:
-guess (общий), twitter, spotify.
+guess (общий), twitter, spotify, deezer, tidal, soundcloud.
 _Avoid_: платформа, тип ссылки, провайдер
 
-**Spotify Request**:
-Request по Source URL с доменом spotify: track, album, playlist или
-artist-discography. Метаданные резолвятся до клавиатуры, скачивание
-выполняет mornye через расширения-провайдеры. Коллекция обрезается
-до 50 треков.
-_Avoid_: музыкальный запрос, mornye request, трек
+**Music Request**:
+Request по Source URL с музыкальным Source Domain (spotify, deezer, tidal,
+soundcloud): track, album или playlist. Метаданные резолвятся до клавиатуры,
+скачивание выполняет mornye через Provider'ы. Track Collection обрезается до капа.
+_Avoid_: Spotify Request, музыкальный запрос, mornye request, трек
 
 **Provider**:
 Расширение mornye, из которого качается FLAC (ext:deezer, ext:tidal-web,
@@ -130,3 +135,34 @@ _Avoid_: сервис, источник, расширение
 discography. Скачивается целиком (до капа), отправляется документами
 по одному с обложкой.
 _Avoid_: альбом, плейлист, набор
+
+**Search Query**:
+Текст, который пользователь ищет в музыкальном каталоге, плюс необязательный
+Search Filter. Не является Source URL до выбора результата.
+_Avoid_: запрос, текст, сообщение
+
+**Search Filter**:
+Ограничение Search Query одним видом результата: track, album, artist или
+playlist. Без фильтра выполняется global search по всем четырём видам.
+_Avoid_: вкладка, режим, тип поиска
+
+**Catalogue Search**:
+Поиск по одному выбранному каталогу (deezer, spotify-web или tidal-web). Не скачивает
+файлы и не расходует Request Cooldown; выбранный результат создаёт Music
+Request по его Source URL.
+_Avoid_: глобальный поиск, дизер, спотифай
+
+**Artist Card**:
+Inline Result с фотографией артиста, числом альбомов и слушателей и кнопками
+TOP 30, ALBUMS и Follow. Кнопки редактируют то же сообщение.
+_Avoid_: карточка, профиль, артист-результат
+
+**Follow**:
+Локальная подписка Telegram-пользователя на новые релизы артиста в каталоге.
+Первый Follow сохраняет baseline существующих релизов и ничего не присылает.
+_Avoid_: подписка Deezer, избранное, слежение
+
+**Release Notification**:
+Одно личное сообщение о новых релизах артиста после опроса Follow: обложка,
+до пяти названий и кнопка отписки.
+_Avoid_: рассылка, новость, алерт

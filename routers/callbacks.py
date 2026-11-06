@@ -5,14 +5,10 @@ import logging
 from aiogram import Router
 from aiogram.types import CallbackQuery
 
-from config import Settings
 from routers.commands import handle_ui_callback
 from services.executor import execute_request
-from services.media_cache import MediaCache
-from services.request_store import RequestStore
+from services.session import Session
 from services.status import chat_status
-from services.mornye import MornyeService
-from services.thumbnail_store import ThumbnailStore
 from utils import text
 from utils.callbacks import RequestCallback, UiCallback
 from utils.models import DownloadOption, StoredRequest
@@ -34,20 +30,16 @@ async def ui_callback(query: CallbackQuery, callback_data: UiCallback) -> None:
 
 
 @router.callback_query(RequestCallback.filter())
-async def request_callback(  # pylint: disable=too-many-positional-arguments
+async def request_callback(
     query: CallbackQuery,
     callback_data: RequestCallback,
-    settings: Settings,
-    request_store: RequestStore,
-    thumbnail_store: ThumbnailStore,
-    media_cache: MediaCache,
-    mornye: MornyeService | None = None,
+    session: Session,
 ) -> None:
     if not query.message:
         await query.answer()
         return
 
-    stored = request_store.load(callback_data.token)
+    stored = session.request_store.load(callback_data.token)
     if not stored:
         logger.warning(
             "Expired request callback | user=%s token=%s action=%s",
@@ -72,16 +64,12 @@ async def request_callback(  # pylint: disable=too-many-positional-arguments
         return
 
     await execute_request(
-        stored=stored,
-        option=option,
+        session,
+        stored,
+        option,
         bot=query.bot,
         status=chat_status(query.message),
         source_message=query.message.reply_to_message or query.message,
         user_id=query.from_user.id,
-        settings=settings,
-        request_store=request_store,
-        thumbnail_store=thumbnail_store,
-        media_cache=media_cache,
-        mornye=mornye,
     )
     await query.answer()

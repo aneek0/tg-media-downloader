@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import zipfile
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from mornye.core.models import TrackMetadata
+
+from services.catalogue_flow import album_card, artist_card, download_album_zip, run_album_zip
+from services.catalogue_search import ArtistCatalogue, SearchItem
+from services.requests import catalogue_browse_request, music_request
+from tests.conftest import make_session, make_settings
+from utils.models import CataloguePayload, DownloadArtifact, ParsedInput
+from utils.callbacks import CatalogueCallback
+
+def _item(kind: str, index: int, **kwargs) -> SearchItem:
+    values = {
+        "provider": "deezer",
+        "kind": kind,
+        "item_id": f"deezer:{index}",
+        "title": f"{kind} {index}",
+        "artists": "Artist",
+        "external_url": f"https://www.deezer.com/{kind}/{index}",
+        **kwargs,
+    }
+    return SearchItem(**values)
+
+
+@pytest.mark.asyncio
+async def test_artist_card_limits_top_and_albums(monkeypatch, tmp_path):
+    """Artist Card keeps the approved TOP-30 and 50-album bounds."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    catalogue = ArtistCatalogue(
+        artist=_item("artist", 1, title="Artist", listeners=123),
+        top_tracks=[_item("track", index, duration_ms=181000) for index in range(35)],
+        albums=[_item("album", index) for index in range(55)],
+    )
+    monkeypatch.setattr(
+        session.catalogue_search, "artist", AsyncMock(return_value=catalogue)
+    )
+    card = await artist_card(
+        session, provider="deezer", artist_id="deezer:1"
+    )
+    assert len(card.stored.payload.top_tracks) == 30
+    assert len(card.stored.payload.albums) == 50
+    assert len(card.keyboard.inline_keyboard) == 32
+    assert "Listeners: 123" in card.caption
+    first_callback = CatalogueCallback.unpack(
+        card.keyboard.inline_keyboard[0][0].callback_data
+    )
+    assert first_callback.action == "dl"
+    assert first_callback.token.startswith(f"{card.stored.token}.")
+
+
+@pytest.mark.asyncio
+async def test_album_card_has_track_get_all_zip_and_back(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    catalogue = ArtistCatalogue(
+        artist=_item("artist", 1, title="Artist"),
+        top_tracks=[],
+        albums=[_item("album", 2, title="Album", release_date="2026-11-04")],
+    )
+    monkeypatch.setattr(
+        session.catalogue_search, "artist", AsyncMock(return_value=catalogue)
+    )
+    parent = (
+        await artist_card(session, provider="deezer", artist_id="deezer:1")
+    ).stored
+    target = SimpleNamespace(
+        tracks=[
+            TrackMetadata(
+                id="3",
+                title="Song",
+                artists="Artist",
+                album="Album",
+                album_artist="Artist",
+                external_url="https://www.deezer.com/track/3",
+                duration_ms=181000,
+            )
+        ]
+    )
+    monkeypatch.setattr(session.mornye, "resolve_url", AsyncMock(return_value=target))
+    card = await album_card(session, parent, 0)
+    assert "💽 Album: Album" in card.caption
+    assert "📅 Date: 2026-11-04" in card.caption
+    assert [
+        (track["title"], track["external_url"])
+        for track in card.stored.payload.album_tracks
+    ] == [("Song", "https://www.deezer.com/track/3")]
+    actions = [
+        CatalogueCallback.unpack(row[0].callback_data).action
+        for row in card.keyboard.inline_keyboard
+    ]
+    assert actions == ["dl", "dl", "albums"]
+    zip_callback = CatalogueCallback.unpack(
+        card.keyboard.inline_keyboard[-2][1].callback_data
+    )
+    assert zip_callback.action == "zip"
+
+
+@pytest.mark.asyncio
+async def test_album_zip_contains_downloaded_tracks(monkeypatch, tmp_path):
+    """ZIP downloads and archives real audio files rather than URL shortcuts."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    stored = session.request_store
+
+    request = music_request(
+        stored,
+        ParsedInput(source_url="https://www.deezer.com/album/2"),
+        kind="album",
+        name="Album",
+        count=1,
+    )
+    target = SimpleNamespace(name="Album")
+    audio = tmp_path / "song.flac"
+    audio.write_bytes(b"fLaC-audio")
+    artifact = DownloadArtifact(
+        path=audio, file_name=audio.name, send_type="audio", caption="Song"
+    )
+    monkeypatch.setattr(session.mornye, "resolve_url", AsyncMock(return_value=target))
+    monkeypatch.setattr(
+        session.mornye,
+        "download_target",
+        AsyncMock(return_value=([artifact], None)),
+    )
+    zipped = await download_album_zip(session, request, 99)
+    with zipfile.ZipFile(zipped.path) as bundle:
+        assert bundle.namelist() == ["song.flac"]
+        assert bundle.read("song.flac") == b"fLaC-audio"
+    assert zipped.send_type == "document"
+
+
+@pytest.mark.asyncio
+async def test_run_album_zip_uses_browse_name_and_cleans_request(monkeypatch, tmp_path):
+    """ZIP delivery must not crash on StoredRequest.source_name or leak its request."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    stored = catalogue_browse_request(
+        session.request_store,
+        ParsedInput(source_url="https://www.deezer.com/album/1"),
+        CataloguePayload(provider="deezer", artist_id="deezer:1", name="Album"),
+    )
+    artifact = DownloadArtifact(
+        path=tmp_path / "Album.zip",
+        file_name="Album.zip",
+        send_type="document",
+        caption="Album",
+    )
+    status = SimpleNamespace(fail=AsyncMock())
+    status_names = []
+
+    def make_status(_bot, _inline_message_id, *, name):
+        status_names.append(name)
+        return status
+
+    download = AsyncMock(return_value=artifact)
+    deliver = AsyncMock()
+    monkeypatch.setattr("services.catalogue_flow.inline_status", make_status)
+    monkeypatch.setattr("services.catalogue_flow.download_album_zip", download)
+    monkeypatch.setattr("services.catalogue_flow._deliver_first", deliver)
+
+    await run_album_zip(
+        session,
+        bot=SimpleNamespace(),
+        user_id=99,
+        inline_message_id="inline-id",
+        stored=stored,
+        caption_status=False,
+    )
+
+    assert status_names == ["Album"]
+    deliver.assert_awaited_once()
+    assert session.request_store.load(stored.token) is None

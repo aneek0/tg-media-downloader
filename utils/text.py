@@ -133,6 +133,7 @@ def split_message(value: str, limit: int = TEXT_LIMIT) -> list[str]:
                 current = ""
             chunks.append(line[:limit])
             line = line[limit:]
+
         candidate = f"{current}\n{line}" if current else line
         if len(candidate) > limit:
             chunks.append(current)
@@ -142,3 +143,38 @@ def split_message(value: str, limit: int = TEXT_LIMIT) -> list[str]:
     if current:
         chunks.append(current)
     return [chunk for chunk in chunks if chunk]
+SEARCH_PROMPT = "🔎 Search this text in the music catalogue:"
+SEARCH_TRACKS = "🎵 Tracks"
+SEARCH_ALBUMS = "💽 Albums"
+SEARCH_ARTISTS = "🎤 Artists"
+SEARCH_PLAYLISTS = "🎶 Playlists"
+SEARCH_GLOBAL = "🌐 Global search"
+SEARCH_FAILED = "Catalogue search failed"
+SEARCH_NETWORK_ERROR = "Network error: catalogue provider is unreachable. Please try again."
+SEARCH_RATE_LIMIT = "Wait a moment before searching again"
+ARTIST_CARD = "Artist Card"
+ARTIST_TOP = "TOP 🔝"
+ARTIST_ALBUMS = "ALBUMS 💽"
+ARTIST_TOP_BACK = "TOP 🔙"
+ARTIST_FOLLOW = "FOLLOW ➕"
+ARTIST_FOLLOWING = "FOLLOWING ✓"
+ARTIST_CAPTION = "🎤 Artist: {name}\n👥 Listeners: {listeners}\n💽 Albums: {albums}"
+ALBUM_CAPTION = "💽 Album: {album}\n👤 Artist: {artist}\n📅 Date: {date}\n🎧 Total tracks: {tracks}"
+ALBUM_GET_ALL = "GET ALL ⬇️"
+ALBUM_ZIP = "Download ZIP 🗃️"
+ALBUM_BACK = "BACK 🔙"
+FOLLOW_ADDED = "Following {name}"
+FOLLOW_REMOVED = "Unfollowed {name}"
+FOLLOW_ALREADY = "Already following {name}"
+FOLLOW_USAGE = "Usage: /follow <artist-url>"
+FOLLOW_LIST_EMPTY = "You are not following any artists."
+FOLLOW_LIST_TITLE = "🎤 Followed artists:"
+FOLLOW_REMOVE = "Unfollow"
+FOLLOW_REMOVE_NAME = "Unfollow {name}"
+FOLLOW_REMOVED_CONFIRMATION = "Unfollowed"
+FOLLOW_ALREADY_REMOVED = "Already unfollowed"
+NEW_RELEASE_CAPTION = "🎤 {artist} released:"
+SETTINGS_TITLE = "⚙️ <b>Settings</b>"
+SETTINGS_SAVED = "Saved"
+SETTINGS_OPEN_DM = "Open /settings in the bot chat"
+SETTINGS_UNCHANGED = "Already selected"
