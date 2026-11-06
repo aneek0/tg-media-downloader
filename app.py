@@ -9,6 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import PRODUCTION, TelegramAPIServer
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 
 from utils.logging_config import setup_logging
 from routers.callbacks import router as callbacks_router
@@ -77,6 +78,15 @@ async def run() -> None:
     )
 
     session = build_session(settings, MornyeService(settings))
+    try:
+        me = await bot.get_me()
+        if me.username:
+            session.identity.mention = f"@{me.username}"
+    except TelegramAPIError as exc:
+        logging.getLogger(__name__).warning(
+            "Bot identity unavailable | error=%s", exc
+        )
+
     session.request_store.sweep_stale()
     maintenance_task = None
     if session.mornye.enabled:

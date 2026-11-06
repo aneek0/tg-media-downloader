@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Inline results delivered in someone else's chat now name the bot by handle: the album spillover caption reads
+  "check your DM with @yourbot" (or "open @yourbot and send the link" when the DM cannot be delivered) instead of
+  an unnamed "the bot". The handle is resolved once at startup via `get_me`; if that fails, the prompts fall back
+  to the previous generic wording. Inline `/settings` alerts name the bot the same way.
+
 ## [3.2.0] - 2026-11-06
 
 ### Added

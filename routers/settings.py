@@ -128,7 +128,12 @@ async def settings_callback(
     query: CallbackQuery, callback_data: SettingsCallback, session: Session
 ) -> None:
     if not isinstance(query.message, Message):
-        await query.answer(strings.SETTINGS_OPEN_DM, show_alert=True)
+        await query.answer(
+            strings.SETTINGS_OPEN_DM.format(
+                bot=session.identity.mention or strings.GENERIC_BOT
+            ),
+            show_alert=True,
+        )
         return
     values: dict[str, object]
     if callback_data.action == "text":

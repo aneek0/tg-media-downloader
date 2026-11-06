@@ -97,3 +97,24 @@ async def test_repeated_quality_tap_never_edits_an_identical_message(
 
     assert edit_text.await_count == 1
     assert session.preferences(7).audio_quality == "lossless"
+
+
+@pytest.mark.asyncio
+async def test_inline_settings_tap_names_the_bot(tmp_path):
+    """A settings button in a foreign chat must point at this bot by handle,
+    not at an unnamed 'the bot chat'."""
+    session = make_session(make_settings(tmp_path))
+    session.identity.mention = "@my_media_bot"
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=7),
+        message=None,
+        answer=AsyncMock(),
+    )
+
+    await settings_callback(
+        query, SettingsCallback(action="quality", value="hires"), session
+    )
+
+    call = query.answer.await_args
+    assert call.kwargs["show_alert"] is True
+    assert "@my_media_bot" in call.args[0]

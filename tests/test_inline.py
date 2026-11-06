@@ -1220,3 +1220,66 @@ def test_inline_dm_blocked_stays_a_runtime_error_for_the_zip_flow():
 
     assert isinstance(exc, RuntimeError)
     assert "open the bot and send the link" in str(exc)
+
+
+@pytest.mark.asyncio
+async def test_inline_spillover_note_names_the_bot(monkeypatch, tmp_path):
+    """Album spillover in someone else's chat must name the bot: users cannot
+    guess which bot the caption means."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+    stored = StoredRequest(
+        token="tok-album",
+        request_type="inline_media",
+        parsed_input=ParsedInput(source_url="https://example.com/album.zip"),
+        options=[],
+    )
+    store.save(stored)
+    files = []
+    for index in range(2):
+        path = tmp_path / f"track{index}.flac"
+        path.write_bytes(b"fLaC" + b"\0" * 32)
+        files.append(
+            DownloadArtifact(
+                path=path,
+                file_name=f"track{index}.flac",
+                send_type="audio",
+                caption=f"Track {index}",
+            )
+        )
+    monkeypatch.setattr(
+        "services.inline_flow.download_inline", AsyncMock(return_value=files)
+    )
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_media=AsyncMock(
+            return_value=SimpleNamespace(audio=SimpleNamespace(file_id="A1"))
+        ),
+        edit_message_caption=AsyncMock(),
+        send_audio=AsyncMock(
+            side_effect=RuntimeError("bot can't initiate conversation")
+        ),
+    )
+    session = make_session(settings, store, cache)
+    session.identity.mention = "@my_media_bot"
+
+    await run_inline_download(
+        session,
+        bot=bot,
+        user_id=99,
+        inline_message_id="im1",
+        stored=stored,
+    )
+
+    caption = bot.edit_message_caption.await_args.kwargs["caption"]
+    assert "@my_media_bot" in caption
+    assert "Track 0" in caption
+
+
+def test_inline_dm_blocked_names_the_bot():
+    """The refused-DM fallback carries the bot handle, not just 'the bot'."""
+    exc = InlineDmBlocked("@my_media_bot")
+
+    assert "@my_media_bot" in str(exc)

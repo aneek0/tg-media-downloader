@@ -5,7 +5,7 @@ stores plus an optional downloader; flows read what they need off it.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from config import Settings
 from services.cooldown import CooldownManager
@@ -17,11 +17,20 @@ from services.user_settings import UserPreferences, UserSettingsStore
 from services.request_store import RequestStore
 from services.thumbnail_store import ThumbnailStore
 
+
+@dataclass
+class BotIdentity:
+    """The bot's own Telegram identity, filled in from ``get_me`` at startup.
+    Mutable so the async value can land after ``build_session``."""
+
+    mention: str = ""  # e.g. "@my_media_bot"; empty until get_me resolves
+
+
 @dataclass(frozen=True, slots=True)
 class Session:
-    """What one bot run owns: Settings, the three stores, Cooldown and the
-    mornye client. Everything a Request needs to become an Artifact and then
-    a message."""
+    """What one bot run owns: Settings, the stores, Cooldown, the mornye
+    client and the bot's own identity. Everything a Request needs to become
+    an Artifact and then a message."""
 
     settings: Settings
     cooldown: CooldownManager
@@ -32,6 +41,7 @@ class Session:
     catalogue_search: CatalogueSearch
     user_settings: UserSettingsStore
     follows: FollowStore
+    identity: BotIdentity = field(default_factory=BotIdentity)
 
     def _preference_defaults(self) -> dict[str, str]:
         return {

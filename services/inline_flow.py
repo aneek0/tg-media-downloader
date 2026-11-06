@@ -36,17 +36,18 @@ from utils.models import (
 
 logger = logging.getLogger(__name__)
 
-#: Where the user must go when a result cannot be delivered inline.
-_OPEN_BOT_HINT = "open the bot and send the link"
+
+def _open_bot_hint(mention: str = "") -> str:
+    return f"open {mention or text.GENERIC_BOT} and send the link"
 
 
 class InlineDmBlocked(RuntimeError):
     """Telegram refused the DM copy an inline result needs (the user never
     started the bot), so the file cannot be placed into the message."""
 
-    def __init__(self) -> None:
+    def __init__(self, mention: str = "") -> None:
         super().__init__(
-            f"This result can only be delivered from the bot chat — {_OPEN_BOT_HINT}."
+            f"This result can only be delivered from the bot chat — {_open_bot_hint(mention)}."
         )
 
 
@@ -113,10 +114,14 @@ async def _fail_inline_message(status: StatusSurface, message: str) -> None:
     await status.fail(message)
 
 
-def _spillover_note(count: int, *, delivered: bool) -> str:
+def _spillover_note(count: int, *, delivered: bool, mention: str = "") -> str:
     if not count:
         return ""
-    detail = "check your DM with the bot" if delivered else _OPEN_BOT_HINT
+    detail = (
+        f"check your DM with {mention or text.GENERIC_BOT}"
+        if delivered
+        else _open_bot_hint(mention)
+    )
     return f"\n(+{count} more files — {detail})"
 
 
@@ -127,18 +132,19 @@ async def _spillover_dm(
     *,
     inline_message_id: str,
     base_caption: str,
+    mention: str = "",
 ) -> tuple[str, list[CachedMedia]]:
     """Send the remainder after the inline track and correct its caption on failure."""
     if not rest:
         return "", []
     try:
         entries = await _dm_send_artifacts(bot, user_id, rest)
-        note = _spillover_note(len(rest), delivered=True)
+        note = _spillover_note(len(rest), delivered=True, mention=mention)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.info("Inline DM delivery failed | user=%s error=%s", user_id, exc)
         entries = []
-        note = _spillover_note(len(rest), delivered=False)
-    if note != _spillover_note(len(rest), delivered=True):
+        note = _spillover_note(len(rest), delivered=False, mention=mention)
+    if note != _spillover_note(len(rest), delivered=True, mention=mention):
         try:
             await bot.edit_message_caption(
                 inline_message_id=inline_message_id,
@@ -203,7 +209,7 @@ def _needs_dm_file_id(stored: StoredRequest, first: DownloadArtifact) -> bool:
 
 
 async def _music_dm_media(
-    bot: Bot, user_id: int, first: DownloadArtifact, caption: str
+    bot: Bot, user_id: int, first: DownloadArtifact, caption: str, mention: str
 ) -> tuple[Any, CachedMedia]:
     """DM-upload catalogue audio/ZIP and return its inline media plus cache
     entry. Inline edits cannot upload files, so the file_id must come from
@@ -214,7 +220,7 @@ async def _music_dm_media(
         )
     except TelegramAPIError as exc:
         logger.info("Inline DM upload refused | user=%s error=%s", user_id, exc)
-        raise InlineDmBlocked() from exc
+        raise InlineDmBlocked(mention) from exc
     if not uploaded:
         raise RuntimeError("Telegram did not return an uploaded file id")
     dm_entry = uploaded[0]
@@ -241,9 +247,9 @@ async def _deliver_first(
     status: StatusSurface,
     first: DownloadArtifact,
     caption: str,
-    dm_entries: list[CachedMedia],
     dm_upload: bool,
     dm_audio: bool = False,
+    mention: str = "",
 ) -> tuple[object, list[CachedMedia]]:
     """Swap the inline message into the tapped artifact and return the
     edited message plus the DM entries to cache (the poster flow prepends
@@ -261,9 +267,10 @@ async def _deliver_first(
     item: Any
     item, cover = media_item(first, caption)
     edited: object = None
+    dm_entries: list[CachedMedia] = []
     try:
         if dm_audio and first.send_type in {"audio", "document"}:
-            item, dm_entry = await _music_dm_media(bot, user_id, first, caption)
+            item, dm_entry = await _music_dm_media(bot, user_id, first, caption, mention)
             dm_entries = [dm_entry, *dm_entries]
         if dm_upload and first.send_type == "video":
             try:
@@ -457,7 +464,8 @@ async def _run_inline_download(
     rest = artifacts[1:]
     first = artifacts[0]
     base_caption = (first.caption or first.file_name)[:1000]
-    expected_dm_note = _spillover_note(len(rest), delivered=True)
+    mention = session.identity.mention
+    expected_dm_note = _spillover_note(len(rest), delivered=True, mention=mention)
     caption = base_caption + expected_dm_note
     try:
         edited, dm_entries = await _deliver_first(
@@ -468,9 +476,9 @@ async def _run_inline_download(
             status=status,
             first=first,
             caption=caption,
-            dm_entries=[],
             dm_upload=bool(media_payload.video_url),
             dm_audio=_needs_dm_file_id(stored, first),
+            mention=mention,
         )
     except InlineDmBlocked as exc:
         # No DM is possible, so neither the tapped file nor the remainder
@@ -486,6 +494,7 @@ async def _run_inline_download(
         rest,
         inline_message_id=inline_message_id,
         base_caption=base_caption,
+        mention=mention,
     )
     dm_entries.extend(rest_entries)
     logger.info(
