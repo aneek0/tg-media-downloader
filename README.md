@@ -19,8 +19,7 @@ Built with `aiogram`, `yt-dlp`, `gallery-dl`, and `uv`.
 </div>
 
 The bot accepts a direct file URL or a supported media link, downloads it with the right tool for the
-job, and sends the result back to Telegram with the correct media type, metadata, and optional custom
-thumbnail.
+job, and sends the result back to Telegram with the correct media type and metadata.
 
 ## What It Handles
 
@@ -39,10 +38,9 @@ thumbnail.
 - **SoundCloud links** — short/mobile/canonical URLs resolve through the mornye SoundCloud extension; playable
   native AAC streams use `ext:soundcloud`, while unavailable streams or extension failures retain yt-dlp fallback
 - **Artist Cards** — cover, listeners, TOP 30, up to 50 albums, per-track downloads, album GET ALL/ZIP, and follows
-- **Release follows** — `/follow`, `/follows`, and `/unfollows`; new-release checks run every six hours per follower
+- **Release follows** — `/follow`, `/follows`, and `/unfollow`; new-release checks run every six hours per follower
 - per-user `/settings` for text search, default catalogue provider, FLAC/MP3 delivery, and CD vs Hi-Res
   (Hi-Res is only used where the provider has a 24-bit master; everything else stays lossless CD)
-- custom per-user thumbnails with `/thumb` and `/delthumb`
 
 ## Inline Mode
 
@@ -61,15 +59,15 @@ and downloads/Artist Cards cannot start without that update. Then:
 
 ## Bot Commands
 
+The bot registers this command menu automatically on startup; no manual BotFather `/setcommands` step is needed.
+
 - `/start` - welcome message, shortcuts, and usage guidance
 - `/help` - supported link formats and flow overview
 - `/about` - runtime details, repo link, and project notes
-- `/thumb` - show the currently saved custom thumbnail
-- `/delthumb` - remove the saved custom thumbnail
 - `/settings` - text-search, catalogue-provider, audio-format, and CD/Hi-Res preferences
 - `/follow <artist-url>` - follow a Deezer artist for new-release DMs
 - `/follows` - list followed artists with unfollow buttons
-- `/unfollows` - alias of `/follows`
+- `/unfollow` - open the followed-artists list and remove follows
 
 ## Quick Start
 
@@ -113,7 +111,7 @@ uv run python bot.py
 - `AUTO_BEST_QUALITY` - optional; when `true` (default) yt-dlp links skip the format-selection keyboard and download at the best quality within `MAX_HEIGHT`
 - `MAX_HEIGHT` - optional; maximum video height for auto downloads (default 1080)
 - `GALLERY_PROBE_TIMEOUT` - optional; gallery-dl probe timeout for Twitter/X posts in seconds (default 15)
-- `REQUEST_COOLDOWN_SECONDS` - optional per-user cooldown window in seconds (default 3600); `AUTH_USERS` bypass it
+- `REQUEST_COOLDOWN_SECONDS` - optional per-user cooldown window in seconds (default 3); `OWNER_ID` and `AUTH_USERS` bypass it
 - `MAX_UPLOAD_BYTES` - optional; downloads larger than this are skipped with a friendly message (default 1992294400 ≈ 1.9 GB, the local Bot API server limit; set 52428800 for the cloud Bot API)
 - `VERIFY_SSL` - optional; set false only for broken TLS interception (default true)
 - `HTTP_PROXY` - optional proxy URL used for direct downloads, yt-dlp, and gallery-dl

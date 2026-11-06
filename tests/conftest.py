@@ -12,7 +12,6 @@ from services.media_cache import MediaCache
 from services.mornye import MornyeService
 from services.request_store import RequestStore
 from services.session import Session
-from services.thumbnail_store import ThumbnailStore
 from services.user_settings import UserSettingsStore
 from utils.models import CachedMedia
 
@@ -83,7 +82,6 @@ def make_session(
         ),
         request_store=request_store
         or RequestStore(settings.requests_dir, settings.work_dir),
-        thumbnail_store=ThumbnailStore(settings.thumbnails_dir),
         media_cache=media_cache or MediaCache(settings.media_cache_file),
         mornye=mornye or MornyeService(settings),
         catalogue_search=CatalogueSearch(provider=settings.search_provider),

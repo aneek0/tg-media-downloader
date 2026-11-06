@@ -32,8 +32,6 @@ Send a message containing any of these formats:
    <code>https://example.com/file.mp4 * renamed.mp4</code>
 
 <b>Extra commands</b>
-- <code>/thumb</code> shows your saved thumbnail
-- <code>/delthumb</code> removes your saved thumbnail
 
 By default I download the best available quality automatically. If format selection is enabled, I will show a menu before uploading."""
 
@@ -49,13 +47,8 @@ Built with <a href="https://docs.aiogram.dev/">aiogram 3</a>, <a href="https://g
 - downloads Twitter/X posts via `gallery-dl`
 - uploads video, audio, and documents back to Telegram
 - works in inline mode in any chat
-- supports custom per-user thumbnails
 
 Send a supported link whenever you are ready."""
-
-THUMB_SAVED = "Your custom thumbnail is saved."
-THUMB_MISSING = "You do not have a thumbnail yet. Send a JPG image to save one."
-THUMB_REMOVED = "Your thumbnail was removed successfully."
 
 PROCESSING = "Processing your link..."
 FORMAT_SELECTION = "Choose the format you want."

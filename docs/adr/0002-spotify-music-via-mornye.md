@@ -50,8 +50,8 @@ metadata 0.25–0.5 s in-process.
    `DownloadArtifact.duration`, otherwise hachoir
    (`services/media.py:audio_duration`). Cover art is the embedded FLAC/MP3
    cover via mutagen (`services/delivery.py:_extract_cover`, a temporary JPEG
-   deleted after sending); without an embedded cover, the owner's per-user
-   thumbnail is used.
+   deleted after sending); audio without an embedded cover is sent without a
+   thumbnail.
 
 5. **Collection delivery — cover + audio media groups.** Before the track
    group, a cover photo is sent (as in deezload2bot): the album is sent with

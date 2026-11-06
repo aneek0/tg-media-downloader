@@ -53,9 +53,7 @@ async def execute_request(  # pylint: disable=too-complex
         option.send_type,
         safe_url_label(stored.parsed_input.source_url),
     )
-    delivery = ChatDelivery(
-        bot, source_message, session.thumbnail_store.get(user_id)
-    )
+    delivery = ChatDelivery(bot, source_message)
     try:
         await status.start_download(safe_name)
         payload = stored.payload

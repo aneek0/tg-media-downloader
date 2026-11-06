@@ -580,9 +580,10 @@ async def test_upload_artifact_audio_sends_reply_audio(tmp_path, monkeypatch):
         upload_photo = staticmethod(_ctx)
 
     monkeypatch.setattr("services.delivery.ChatActionSender", _NoAction)
-    monkeypatch.setattr(
-        "services.delivery.audio_duration", lambda path: 33
-    )
+    monkeypatch.setattr("services.delivery.audio_duration", lambda path: 33)
+    cover = tmp_path / "embedded-cover.jpg"
+    cover.write_bytes(b"cover")
+    monkeypatch.setattr("services.delivery._extract_cover", lambda path: cover)
 
     path = tmp_path / "song.flac"
     path.write_bytes(b"fLaC")
@@ -611,6 +612,8 @@ async def test_upload_artifact_audio_sends_reply_audio(tmp_path, monkeypatch):
     kwargs = message.reply_audio.await_args.kwargs
     assert kwargs["duration"] == 181
     assert kwargs["title"] == "song.flac"
+    assert Path(kwargs["thumbnail"].path) == cover
+    assert not cover.exists()
 
 
 @pytest.mark.asyncio

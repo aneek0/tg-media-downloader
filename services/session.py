@@ -15,7 +15,6 @@ from services.catalogue_search import CatalogueSearch
 from services.follow_store import FollowStore
 from services.user_settings import UserPreferences, UserSettingsStore
 from services.request_store import RequestStore
-from services.thumbnail_store import ThumbnailStore
 
 
 @dataclass
@@ -35,7 +34,6 @@ class Session:
     settings: Settings
     cooldown: CooldownManager
     request_store: RequestStore
-    thumbnail_store: ThumbnailStore
     media_cache: MediaCache
     mornye: MornyeService
     catalogue_search: CatalogueSearch
@@ -78,7 +76,6 @@ def build_session(
             timeout_seconds=settings.request_cooldown_seconds
         ),
         request_store=RequestStore(settings.requests_dir, settings.work_dir),
-        thumbnail_store=ThumbnailStore(settings.thumbnails_dir),
         media_cache=MediaCache(settings.media_cache_file),
         mornye=mornye or MornyeService(settings),
         catalogue_search=CatalogueSearch(provider=settings.search_provider),

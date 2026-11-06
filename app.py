@@ -10,6 +10,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import PRODUCTION, TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
+from aiogram.types import BotCommand
 
 from utils.logging_config import setup_logging
 from routers.callbacks import router as callbacks_router
@@ -19,17 +20,35 @@ from routers.follows import router as follows_router
 from routers.intake import router as intake_router
 from routers.inline import router as inline_router
 from routers.settings import router as settings_router
-from routers.thumbnails import router as thumbnails_router
 from config import Settings
 from services.mornye import MornyeService
 from services.session import Session, build_session
 from services.follows import FollowPoller
 
+BOT_COMMANDS = [
+    BotCommand(command="start", description="Start the bot"),
+    BotCommand(command="help", description="Supported links and usage"),
+    BotCommand(command="about", description="About this bot"),
+    BotCommand(command="settings", description="Search and download preferences"),
+    BotCommand(command="follow", description="Follow an artist by URL"),
+    BotCommand(command="follows", description="Manage followed artists"),
+    BotCommand(command="unfollow", description="Unfollow artists"),
+]
+
+
+async def register_bot_commands(bot: Bot) -> None:
+    """Install the command menu without making it a polling prerequisite."""
+    try:
+        await bot.set_my_commands(BOT_COMMANDS)
+    except TelegramAPIError as exc:
+        logging.getLogger(__name__).warning(
+            "Bot command registration failed | error=%s", exc
+        )
+
 
 def create_dispatcher(session: Session) -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(commands_router)
-    dispatcher.include_router(thumbnails_router)
     dispatcher.include_router(settings_router)
     dispatcher.include_router(follows_router)
     dispatcher.include_router(catalogue_router)
@@ -76,6 +95,7 @@ async def run() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=telegram_session,
     )
+    await register_bot_commands(bot)
 
     session = build_session(settings, MornyeService(settings))
     try:

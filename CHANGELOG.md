@@ -12,9 +12,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "check your DM with @yourbot" (or "open @yourbot and send the link" when the DM cannot be delivered) instead of
   an unnamed "the bot". The handle is resolved once at startup via `get_me`; if that fails, the prompts fall back
   to the previous generic wording. Inline `/settings` alerts name the bot the same way.
+- Telegram's command menu is registered automatically at startup for all commands handled by the bot.
 - Docker deployments now include Chromium, Xvfb, browser fonts, and Tini for ZARZ Turnstile authentication.
   Compose forces the container browser path, allocates up to 1 GB of shared memory, preserves signed sessions,
   and documents swap guidance for low-memory servers.
+
+### Removed
+
+- Custom per-user thumbnails, including `/thumb`, `/delthumb`, implicit photo capture, and thumbnail overrides
+  during delivery. Embedded FLAC/MP3 cover art is still extracted and attached to audio.
+
+### Changed
+
+- Reduced the stock per-user cooldown between links in private chat from one hour to three seconds;
+  `REQUEST_COOLDOWN_SECONDS` still overrides it, and the owner plus `AUTH_USERS` remain exempt.
+- Reduced the per-user inline catalogue search interval from 1.5 seconds to 0.5 seconds.
 
 ## [3.2.0] - 2026-11-06
 

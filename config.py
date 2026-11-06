@@ -65,7 +65,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     auto_best_quality: bool
     max_video_height: int
     gallery_probe_timeout: int = 15
-    request_cooldown_seconds: int = 3600
+    request_cooldown_seconds: int = 3
     max_upload_bytes: int = 1900 * 1024 * 1024
     verify_ssl: bool = True
     twitter_cookies: str = ""
@@ -121,7 +121,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                 os.environ.get("GALLERY_PROBE_TIMEOUT"), default=15
             ),
             request_cooldown_seconds=_parse_positive_int(
-                os.environ.get("REQUEST_COOLDOWN_SECONDS"), default=3600
+                os.environ.get("REQUEST_COOLDOWN_SECONDS"), default=3
             ),
             max_upload_bytes=_parse_positive_int(
                 os.environ.get("MAX_UPLOAD_BYTES"), default=1900 * 1024 * 1024
@@ -155,10 +155,6 @@ class Settings:  # pylint: disable=too-many-instance-attributes
         )
 
     @property
-    def thumbnails_dir(self) -> Path:
-        return self.download_location / "thumbnails"
-
-    @property
     def requests_dir(self) -> Path:
         return self.download_location / "requests"
 
@@ -181,7 +177,6 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     def ensure_directories(self) -> None:
         for path in (
             self.download_location,
-            self.thumbnails_dir,
             self.requests_dir,
             self.work_dir,
         ):

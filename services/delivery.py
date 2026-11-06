@@ -4,7 +4,6 @@ import asyncio
 import html
 import itertools
 import logging
-import os
 import re
 import tempfile
 from collections.abc import Iterator, Sequence
@@ -265,12 +264,6 @@ def _extract_cover(path: Path) -> Path | None:
         return None
 
 
-def _thumb_file(path: str | None) -> FSInputFile | None:
-    if path and os.path.isfile(path) and os.path.getsize(path) > 0:
-        return FSInputFile(path)
-    return None
-
-
 def media_item(
     artifact: DownloadArtifact, caption: str | None
 ) -> tuple[object, Path | None]:
@@ -358,20 +351,17 @@ async def _send_single(  # pylint: disable=too-complex
     artifact: DownloadArtifact,
     *,
     reply: Message | None,
-    thumbnail_path: str | None,
 ) -> CachedMedia | None:
     """Send one artifact (reply in a chat, plain send in DM) and return its
     cache entry. Metadata the download did not provide is read from the
     file itself."""
-    thumb = _thumb_file(thumbnail_path)
     file_input = FSInputFile(artifact.path)
     logger.info(
-        "Upload starting | chat=%s file=%s send_type=%s size=%s thumbnail=%s",
+        "Upload starting | chat=%s file=%s send_type=%s size=%s",
         chat_id,
         artifact.file_name,
         artifact.send_type,
         artifact.path.stat().st_size if artifact.path.exists() else 0,
-        "yes" if thumb else "no",
     )
 
     async def send(method: str, **kwargs: object) -> Message:
@@ -402,16 +392,12 @@ async def _send_single(  # pylint: disable=too-complex
                 width=width,
                 height=height,
                 supports_streaming=True,
-                thumbnail=thumb,
             )
     elif send_type == "audio":
         duration = artifact.duration
         if duration is None:
             duration = await asyncio.to_thread(audio_duration, artifact.path)
-        if thumb is None:
-            extracted_cover = await asyncio.to_thread(_extract_cover, artifact.path)
-            if extracted_cover is not None:
-                thumb = FSInputFile(extracted_cover)
+        extracted_cover = await asyncio.to_thread(_extract_cover, artifact.path)
         try:
             async with _action(reply, ChatActionSender.upload_document, bot, chat_id):
                 sent = await send(
@@ -419,7 +405,9 @@ async def _send_single(  # pylint: disable=too-complex
                     audio=file_input,
                     caption=caption,
                     duration=duration,
-                    thumbnail=thumb,
+                    thumbnail=(
+                        FSInputFile(extracted_cover) if extracted_cover is not None else None
+                    ),
                     title=artifact.audio_title or artifact.file_name,
                     performer=artifact.audio_performer,
                 )
@@ -447,12 +435,7 @@ async def _send_single(  # pylint: disable=too-complex
             sent = await send("photo", photo=file_input, caption=caption)
     else:
         async with _action(reply, ChatActionSender.upload_document, bot, chat_id):
-            sent = await send(
-                "document",
-                document=file_input,
-                thumbnail=thumb,
-                caption=caption,
-            )
+            sent = await send("document", document=file_input, caption=caption)
     await _send_overflow(bot, chat_id, reply, overflow)
     return cached_media_from(
         sent, send_type=send_type, file_name=artifact.file_name, caption=artifact.caption
@@ -537,7 +520,6 @@ async def _deliver(
     chat_id: int,
     artifacts: Sequence[DownloadArtifact],
     reply: Message | None,
-    thumbnail_path: str | None,
     status: StatusSurface | None,
     started_at: datetime,
     album_caption: bool,
@@ -555,7 +537,6 @@ async def _deliver(
                 chat_id,
                 chunk[0],
                 reply=reply,
-                thumbnail_path=thumbnail_path,
             )
             if entry is not None:
                 cached.append(entry)
@@ -581,18 +562,11 @@ async def _deliver(
 
 class ChatDelivery:
     """Deliver artifacts into the chat where the request was made: replies
-    to the source message, applies the user's thumbnail, and keeps the
-    status message in sync."""
+    to the source message and keeps the status message in sync."""
 
-    def __init__(
-        self,
-        bot: Bot,
-        source_message: Message,
-        thumbnail_path: str | None = None,
-    ) -> None:
+    def __init__(self, bot: Bot, source_message: Message) -> None:
         self._bot = bot
         self._source_message = source_message
-        self._thumbnail_path = thumbnail_path
 
     async def deliver(
         self,
@@ -606,7 +580,6 @@ class ChatDelivery:
             chat_id=self._source_message.chat.id,
             artifacts=artifacts,
             reply=self._source_message,
-            thumbnail_path=self._thumbnail_path,
             status=status,
             started_at=started_at,
             album_caption=False,
@@ -629,7 +602,6 @@ class DirectDelivery:
             chat_id=self._chat_id,
             artifacts=artifacts,
             reply=None,
-            thumbnail_path=None,
             status=None,
             started_at=started_at,
             album_caption=True,

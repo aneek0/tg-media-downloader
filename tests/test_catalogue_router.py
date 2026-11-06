@@ -69,12 +69,14 @@ async def test_filtered_search_uses_eight_and_memory_cache(monkeypatch, tmp_path
 
 @pytest.mark.asyncio
 async def test_global_search_uses_four_and_rate_limits_new_query(monkeypatch, tmp_path):
-    """A different query inside 1.5 seconds never reaches the provider."""
+    """A different query inside 0.5 seconds never reaches the provider."""
     _SEARCH_CACHE.clear()
     _LAST_SEARCH.clear()
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
+    times = iter((100.0, 100.49, 100.5))
+    monkeypatch.setattr("routers.catalogue.monotonic", lambda: next(times))
     search = AsyncMock(return_value=_found())
     monkeypatch.setattr(session.catalogue_search, "search", search)
     await catalogue_query(_query("Song"), session)
@@ -85,6 +87,8 @@ async def test_global_search_uses_four_and_rate_limits_new_query(monkeypatch, tm
     assert search.await_count == 1
     result = limited.answer.await_args.args[0][0]
     assert result.id == "catalogue-rate-limit"
+    await catalogue_query(_query("Boundary"), session)
+    assert search.await_count == 2
 
 
 @pytest.mark.asyncio

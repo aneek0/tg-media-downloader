@@ -7,7 +7,6 @@ from aiogram.exceptions import TelegramBadRequest
 from routers.callbacks import request_callback
 from routers.commands import about_command, help_command, start_command
 from routers.intake import intake_message
-from routers.thumbnails import delete_thumbnail, show_thumbnail
 from services.executor import execute_request
 from services.gallery import GalleryProbe
 from services.request_store import RequestStore
@@ -44,23 +43,6 @@ async def test_start_help_about_handlers():
     await about_command(message)
 
     assert message.answer.await_count == 3
-
-
-@pytest.mark.asyncio
-async def test_thumbnail_handlers(tmp_path):
-    settings = make_settings(tmp_path)
-    session = make_session(settings)
-    store = session.thumbnail_store
-    message = make_message()
-
-    await show_thumbnail(message, session)
-    assert message.answer.await_args_list[0].args[0].startswith("You do not have")
-
-    thumbnail = store.path_for_user(message.from_user.id)
-    thumbnail.write_bytes(b"jpg")
-
-    await delete_thumbnail(message, session)
-    assert message.answer.await_args_list[-1].args[0].startswith("Your thumbnail")
 
 
 @pytest.mark.asyncio

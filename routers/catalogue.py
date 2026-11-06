@@ -81,7 +81,7 @@ async def catalogue_query(query: InlineQuery, session: Session) -> object | None
         if cached and cached[1] == cache_key and now - cached[0] < 60:
             found = cached[2]
         else:
-            if now - _LAST_SEARCH.get(user_id, 0) < 1.5:
+            if now - _LAST_SEARCH.get(user_id, 0) < 0.5:
                 await query.answer(
                     [
                         InlineQueryResultArticle(
