@@ -118,8 +118,22 @@ async def test_artist_albums_separate_singles_and_eps(monkeypatch, tmp_path):
     assert single_callback.action == "open"
     assert single_callback.token == f"{card.stored.token}.0"
 
+@pytest.mark.parametrize(
+    ("track_count", "expected_actions", "expected_controls"),
+    [
+        (1, ["dl", "zip", "albums"], [("Download ZIP 🗃️", "zip")]),
+        (
+            2,
+            ["dl", "dl", "dl", "albums"],
+            [("GET ALL ⬇️", "dl"), ("Download ZIP 🗃️", "zip")],
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_album_card_has_track_get_all_zip_and_back(monkeypatch, tmp_path):
+async def test_album_card_get_all_requires_multiple_tracks(
+    monkeypatch, tmp_path, track_count, expected_actions, expected_controls
+):
+    """GET ALL is omitted for one track but remains beside ZIP for collections."""
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
@@ -137,14 +151,15 @@ async def test_album_card_has_track_get_all_zip_and_back(monkeypatch, tmp_path):
     target = SimpleNamespace(
         tracks=[
             TrackMetadata(
-                id="3",
-                title="Song",
+                id=str(index + 3),
+                title=f"Song {index}",
                 artists="Artist",
                 album="Album",
                 album_artist="Artist",
-                external_url="https://www.deezer.com/track/3",
+                external_url=f"https://www.deezer.com/track/{index + 3}",
                 duration_ms=181000,
             )
+            for index in range(track_count)
         ]
     )
     monkeypatch.setattr(session.mornye, "resolve_url", AsyncMock(return_value=target))
@@ -154,16 +169,19 @@ async def test_album_card_has_track_get_all_zip_and_back(monkeypatch, tmp_path):
     assert [
         (track["title"], track["external_url"])
         for track in card.stored.payload.album_tracks
-    ] == [("Song", "https://www.deezer.com/track/3")]
+    ] == [
+        (f"Song {index}", f"https://www.deezer.com/track/{index + 3}")
+        for index in range(track_count)
+    ]
     actions = [
         CatalogueCallback.unpack(row[0].callback_data).action
         for row in card.keyboard.inline_keyboard
     ]
-    assert actions == ["dl", "dl", "albums"]
-    zip_callback = CatalogueCallback.unpack(
-        card.keyboard.inline_keyboard[-2][1].callback_data
-    )
-    assert zip_callback.action == "zip"
+    assert actions == expected_actions
+    assert [
+        (button.text, CatalogueCallback.unpack(button.callback_data).action)
+        for button in card.keyboard.inline_keyboard[-2]
+    ] == expected_controls
 
 
 @pytest.mark.asyncio

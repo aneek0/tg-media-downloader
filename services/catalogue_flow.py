@@ -259,18 +259,21 @@ def render_album_card(session: Session, stored: StoredRequest) -> CatalogueCard:
         f"🎧 Total tracks: {album.total_tracks or len(payload.album_tracks)}"
     )
     rows = _track_rows(session, payload.album_tracks, stored.token)
-    rows.append(
-        [
+    controls = []
+    if len(payload.album_tracks) > 1:
+        controls.append(
             InlineKeyboardButton(
                 text=text.ALBUM_GET_ALL,
                 callback_data=CatalogueCallback(action="dl", token=stored.token).pack(),
-            ),
-            InlineKeyboardButton(
-                text=text.ALBUM_ZIP,
-                callback_data=CatalogueCallback(action="zip", token=stored.token).pack(),
-            ),
-        ]
+            )
+        )
+    controls.append(
+        InlineKeyboardButton(
+            text=text.ALBUM_ZIP,
+            callback_data=CatalogueCallback(action="zip", token=stored.token).pack(),
+        )
     )
+    rows.append(controls)
     rows.append(
         [
             InlineKeyboardButton(

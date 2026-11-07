@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   track downloads appear only after opening TOP 30.
 - Artist discographies now separate full albums from singles/EPs with a section divider; release buttons use plain
   titles with explicit 🅴 markers instead of repeated disc icons.
+- Single-track release cards no longer show a redundant GET ALL button; the individual track download and ZIP
+  controls remain available.
 
 ### Fixed
 - Single gallery media now uses the same direct HTTP downloader as albums before falling back to `gallery-dl`,
