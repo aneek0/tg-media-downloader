@@ -185,8 +185,8 @@ async def test_album_card_get_all_requires_multiple_tracks(
 
 
 @pytest.mark.asyncio
-async def test_album_zip_contains_downloaded_tracks(monkeypatch, tmp_path):
-    """ZIP downloads and archives real audio files rather than URL shortcuts."""
+async def test_album_zip_uses_artist_release_name_and_contains_tracks(monkeypatch, tmp_path):
+    """ZIP exposes artist/release metadata and archives real audio files."""
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
@@ -199,7 +199,10 @@ async def test_album_zip_contains_downloaded_tracks(monkeypatch, tmp_path):
         name="Album",
         count=1,
     )
-    target = SimpleNamespace(name="Album")
+    target = SimpleNamespace(
+        name="Album",
+        tracks=[SimpleNamespace(album_artist="Artist", artists="Artist")],
+    )
     audio = tmp_path / "song.flac"
     audio.write_bytes(b"fLaC-audio")
     artifact = DownloadArtifact(
@@ -216,6 +219,8 @@ async def test_album_zip_contains_downloaded_tracks(monkeypatch, tmp_path):
         assert bundle.namelist() == ["song.flac"]
         assert bundle.read("song.flac") == b"fLaC-audio"
     assert zipped.send_type == "document"
+    assert zipped.file_name == "Artist — Album.zip"
+    assert zipped.caption == "Artist — Album"
 
 
 @pytest.mark.asyncio

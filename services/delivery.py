@@ -270,7 +270,7 @@ def media_item(
     """Build one InputMedia entry for an artifact; the second element is a
     temp cover file the caller must unlink after the request (aiogram reads
     InputFile bodies lazily at send time)."""
-    file_input = FSInputFile(artifact.path)
+    file_input = FSInputFile(artifact.path, filename=artifact.file_name)
     if artifact.send_type == "photo":
         return InputMediaPhoto(media=file_input, caption=caption), None
     if artifact.send_type == "video":
@@ -355,7 +355,7 @@ async def _send_single(  # pylint: disable=too-complex
     """Send one artifact (reply in a chat, plain send in DM) and return its
     cache entry. Metadata the download did not provide is read from the
     file itself."""
-    file_input = FSInputFile(artifact.path)
+    file_input = FSInputFile(artifact.path, filename=artifact.file_name)
     logger.info(
         "Upload starting | chat=%s file=%s send_type=%s size=%s",
         chat_id,

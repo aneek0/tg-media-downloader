@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   controls remain available.
 
 ### Fixed
+- Inline release ZIP uploads now use the artist and release title in their Telegram filename instead of `album.zip`.
 - Single gallery media now uses the same direct HTTP downloader as albums before falling back to `gallery-dl`,
   fixing `403 Forbidden` failures on Pawchive CDN video links.
 

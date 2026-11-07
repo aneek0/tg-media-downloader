@@ -314,6 +314,11 @@ async def download_album_zip(
         audio_format=preferences.audio_format,
         audio_quality=preferences.audio_quality,
     )
+    artist = ""
+    if target.tracks:
+        track = target.tracks[0]
+        artist = track.album_artist or track.artists
+    release_name = " — ".join(part for part in (artist, target.name) if part)
     archive = work_dir / "album.zip"
     await asyncio.to_thread(_write_zip, archive, artifacts)
     size = archive.stat().st_size
@@ -321,9 +326,9 @@ async def download_album_zip(
         raise FileTooLargeError("ZIP exceeds the configured Telegram upload limit")
     return DownloadArtifact(
         path=archive,
-        file_name=f"{target.name}.zip",
+        file_name=f"{release_name}.zip",
         send_type="document",
-        caption=target.name,
+        caption=release_name,
     )
 
 

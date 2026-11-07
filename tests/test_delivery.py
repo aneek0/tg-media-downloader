@@ -12,6 +12,7 @@ from aiogram.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo
 
 from services.delivery import (
     ChatDelivery,
+    DirectDelivery,
     media_item,
     rich_blocks,
     send_url_media,
@@ -70,17 +71,37 @@ class _NoAction:
     upload_audio = staticmethod(_no_action)
 
 
-def test_media_item_uses_artifact_send_type(tmp_path):
+def test_media_item_uses_artifact_send_type_and_file_name(tmp_path):
     photo = make_artifact(write_media(tmp_path / "a.jpg", "jpg"), "photo")
     video = make_artifact(write_media(tmp_path / "a.mp4", "mp4"), "video")
     document = make_artifact(write_media(tmp_path / "a.zip", "zip"), "document")
+    document.file_name = "Artist — Album.zip"
 
+    document_item = media_item(document, None)[0]
     assert isinstance(media_item(photo, None)[0], InputMediaPhoto)
     assert isinstance(media_item(video, None)[0], InputMediaVideo)
-    assert isinstance(media_item(document, None)[0], InputMediaDocument)
+    assert isinstance(document_item, InputMediaDocument)
+    assert document_item.media.filename == "Artist — Album.zip"
 
     assert media_item(photo, None)[0].caption is None
     assert media_item(photo, "cap")[0].caption == "cap"
+
+
+@pytest.mark.asyncio
+async def test_direct_delivery_uses_artifact_file_name(tmp_path):
+    """Telegram receives the artifact name rather than its internal disk name."""
+    artifact = make_artifact(write_media(tmp_path / "album.zip", "zip"), "document")
+    artifact.file_name = "Artist — Album.zip"
+    bot = SimpleNamespace(
+        send_document=AsyncMock(
+            return_value=SimpleNamespace(document=SimpleNamespace(file_id="D1"))
+        )
+    )
+
+    await DirectDelivery(bot, 99).deliver([artifact], started_at=datetime.now())
+
+    upload = bot.send_document.await_args.kwargs["document"]
+    assert upload.filename == "Artist — Album.zip"
 
 
 @pytest.mark.asyncio
