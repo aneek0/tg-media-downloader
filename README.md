@@ -40,7 +40,8 @@ job, and sends the result back to Telegram with the correct media type and metad
   inline through mornye; artist/mix links get an explicit unsupported-link message instead of an HTML-download error
 - **SoundCloud links** — short/mobile/canonical URLs resolve through the mornye SoundCloud extension; playable
   native AAC streams use `ext:soundcloud`, while unavailable streams or extension failures retain yt-dlp fallback
-- **Artist Cards** — cover, listeners, TOP 30, up to 50 albums, per-track downloads, album GET ALL/ZIP, and follows
+- **Artist Cards** — cover, fan metadata, a separate TOP 30 view, up to 50 albums, per-track downloads,
+  album GET ALL/ZIP, and follows
 - **Release follows** — `/follow`, `/follows`, and `/unfollow`; new-release checks run every six hours per follower
 - per-user `/settings` for text search, default catalogue provider, FLAC/MP3 delivery, and CD vs Hi-Res
   (Hi-Res is only used where the provider has a 24-bit master; everything else stays lossless CD)
@@ -54,7 +55,7 @@ and downloads/Artist Cards cannot start without that update. Then:
 - type `@yourbot <url>` in any chat — tweet photos come back as direct Twitter CDN results (no
   download step), tweet videos and other supported links download on tap with a cancel button
 - search the catalogue with `@yourbot <query>` or scope it with `.trk`, `.a`, `.art`, `.pla`;
-  choose Deezer/Spotify/Tidal in `/settings`; artist results open an Artist Card with TOP/ALBUMS/FOLLOW controls
+  choose Deezer/Spotify/Tidal in `/settings`; artist results open an Artist Card with TOP 30/ALBUMS/FOLLOW controls
 - repeated track selections reuse the cached Telegram audio `file_id`; the shared inline runner skips
   both the provider download and the DM upload
 - for multi-track downloads, the selected/first track replaces the inline message; its DM copy arrives first,
