@@ -30,6 +30,9 @@ job, and sends the result back to Telegram with the correct media type and metad
 - YouTube quick audio and quick video downloads
 - format selection for supported `yt-dlp` sources
 - **Twitter/X posts via `gallery-dl`** — photos, videos, and albums, including 18+ posts with cookies
+- **Gallery post links** — direct-message gallery deliveries use the post text (or filename) as a link to the original post
+- **Parallel gallery albums** — local multi-file downloads overlap up to 3 files per album and 6 across the bot,
+  preserve album order and source headers, and fall back to gallery-dl if direct CDN retrieval fails
 - **inline mode** — use it in any chat, no need to forward links to the bot first
 - **Deezer, Spotify, and Tidal catalogue search** — text queries in private chat or inline; tracks download in the
   selected FLAC/MP3 format through mornye

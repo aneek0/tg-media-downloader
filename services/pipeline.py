@@ -185,6 +185,8 @@ async def download_artifacts(
             parsed_input=stored.parsed_input,
             settings=settings,
             work_dir=work_dir,
+            status=status,
+            download_limiter=session.gallery_download_limiter,
         )
     if request_type == RequestType.DIRECT_DOWNLOAD:
         artifact = await download_direct_file(
@@ -254,6 +256,8 @@ async def download_inline(
             work_dir=work_dir,
             file_dicts=gallery.file_dicts,
             content=gallery.content,
+            status=status,
+            download_limiter=session.gallery_download_limiter,
         )
 
     source = classify(parsed)

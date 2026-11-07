@@ -388,11 +388,12 @@ async def _download_parallel(
     return destination, file_name
 
 
-async def _download_single(
+async def _download_single(  # pylint: disable=too-many-arguments
     *,
     session: aiohttp.ClientSession,
     url: str,
     proxy: str | None,
+    headers: dict[str, str] | None,
     work_dir: Path,
     file_name: str,
     option: DownloadOption,
@@ -401,7 +402,7 @@ async def _download_single(
     settings: Settings,
     started: float,
 ) -> tuple[Path, str]:
-    async with session.get(url, proxy=proxy) as response:
+    async with session.get(url, proxy=proxy, headers=headers) as response:
         response.raise_for_status()
         total = int(response.headers.get("Content-Length", "0") or "0")
         if total > settings.max_upload_bytes:
@@ -451,6 +452,41 @@ async def _download_single(
                     )
                     last_update = now
     return destination, file_name
+
+
+async def download_http_file(
+    *,
+    session: aiohttp.ClientSession,
+    url: str,
+    headers: dict[str, str] | None,
+    proxy: str | None,
+    work_dir: Path,
+    file_name: str,
+    file_ext: str | None,
+    send_type: str,
+    status: StatusSurface,
+    settings: Settings,
+) -> Path:
+    """Download one resolved media URL through a caller-managed HTTP client."""
+    destination, _ = await _download_single(
+        session=session,
+        url=url,
+        proxy=proxy,
+        headers=headers,
+        work_dir=work_dir,
+        file_name=file_name,
+        option=DownloadOption(
+            option_id="gallery",
+            label="Gallery",
+            send_type=send_type,
+            file_ext=file_ext,
+        ),
+        suggested_ext=None,
+        status=status,
+        settings=settings,
+        started=time.time(),
+    )
+    return destination
 
 
 async def download_direct_file(
@@ -515,6 +551,7 @@ async def download_direct_file(
                 file_name=file_name,
                 option=option,
                 suggested_ext=suggested_ext,
+                headers=None,
                 status=status,
                 settings=settings,
                 started=started,

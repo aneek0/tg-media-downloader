@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -16,9 +17,14 @@ from services.gallery import (
     small_thumbnail_url,
 )
 from services.sources import gallery_supports_url
+from services.status import StatusSurface
 from utils.logging_config import redact_command
 from utils.models import ParsedInput
 
+
+
+def make_status() -> StatusSurface:
+    return StatusSurface(AsyncMock(), muted=True)
 
 def make_gallery_settings(
     tmp_path: Path, twitter_cookies: str, http_proxy: str = "http://proxy:1"
@@ -129,36 +135,49 @@ async def test_download_gallery_media_builds_artifacts(monkeypatch, tmp_path):
             [
                 3,
                 "https://pbs.twimg.com/media/a",
-                {"content": "kitty cage", "type": "photo", "extension": "jpg"},
+                {
+                    "content": "kitty cage",
+                    "type": "photo",
+                    "extension": "jpg",
+                    "tweet_id": "2103014006747439474",
+                    "num": 1,
+                },
             ],
             [
                 3,
                 "https://pbs.twimg.com/media/b",
-                {"content": "kitty cage", "type": "video", "extension": "mp4"},
+                {
+                    "content": "kitty cage",
+                    "type": "video",
+                    "extension": "mp4",
+                    "tweet_id": "2103014006747439474",
+                    "num": 2,
+                },
             ],
         ]
     )
 
-    async def fake_run(command, cwd=None, timeout=None):  # pylint: disable=unused-argument
-        if "-j" in command:
-            return (probe_json, "")
-        (Path(cwd) / "2103014006747439474_1.jpg").write_bytes(b"\xff\xd8\xff\xe0jpg")
-        (Path(cwd) / "2103014006747439474_2.mp4").write_bytes(b"\x00\x00\x00\x18mp4")
-        return ("", "")
+    async def fake_download(*, work_dir, file_name, **_kwargs):
+        path = Path(work_dir) / file_name
+        path.write_bytes(b"media")
+        return path
 
-    monkeypatch.setattr("services.gallery.run_command", fake_run)
+    monkeypatch.setattr("services.gallery.run_command", AsyncMock(return_value=(probe_json, "")))
+    monkeypatch.setattr("services.gallery.download_http_file", fake_download)
 
     artifacts = await download_gallery_media(
         parsed_input=ParsedInput(source_url="https://x.com/AlterKyon/status/2103014006747439474"),
         settings=settings,
         work_dir=work_dir,
+        status=make_status(),
+        download_limiter=asyncio.Semaphore(6),
     )
 
     assert len(artifacts) == 2
     assert [artifact.send_type for artifact in artifacts] == ["photo", "video"]
     assert all(
         artifact.caption
-        == "https://x.com/AlterKyon/status/2103014006747439474\nkitty cage"
+        == '<b><a href="https://x.com/AlterKyon/status/2103014006747439474">kitty cage</a></b>'
         for artifact in artifacts
     )
     assert [artifact.file_name for artifact in artifacts] == [
@@ -166,6 +185,156 @@ async def test_download_gallery_media_builds_artifacts(monkeypatch, tmp_path):
         "2103014006747439474_2.mp4",
     ]
 
+
+@pytest.mark.asyncio
+async def test_single_gallery_file_uses_http_before_gallery_dl(monkeypatch, tmp_path):
+    """Single Pawchive CDN files must not use gallery-dl, which fails with 403."""
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    run_mock = AsyncMock()
+    monkeypatch.setattr("services.gallery.run_command", run_mock)
+
+    async def fake_download(*, work_dir, file_name, **_kwargs):
+        path = Path(work_dir) / file_name
+        path.write_bytes(b"video")
+        return path
+
+    monkeypatch.setattr("services.gallery.download_http_file", fake_download)
+    source_url = "https://file.pawchive.pw/data/video.mp4"
+
+    artifacts = await download_gallery_media(
+        parsed_input=ParsedInput(source_url=source_url),
+        settings=settings,
+        work_dir=tmp_path / "work",
+        status=make_status(),
+        download_limiter=asyncio.Semaphore(6),
+        file_dicts=[{"_url": source_url, "filename": "first recording", "extension": "mp4"}],
+    )
+
+    run_mock.assert_not_awaited()
+    assert len(artifacts) == 1
+    assert artifacts[0].send_type == "video"
+    assert artifacts[0].file_name == "first recording.mp4"
+    assert artifacts[0].caption == f'<b><a href="{source_url}">first recording</a></b>'
+
+@pytest.mark.asyncio
+async def test_download_gallery_media_downloads_three_files_concurrently(monkeypatch, tmp_path):
+    """Album downloads overlap without losing order or duplicate-named files."""
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    file_dicts = [
+        {
+            "_url": f"https://file.pawchive.pw/{index}",
+            "_http_headers": {"Referer": "https://pawchive.pw/post"},
+            "filename": "same",
+            "extension": "jpg",
+        }
+        for index in range(1, 5)
+    ]
+    active = 0
+    max_active = 0
+
+    async def fake_download(*, url, headers, work_dir, file_name, file_ext, **_kwargs):
+        nonlocal active, max_active
+        assert file_ext == "jpg"
+        assert headers == {"Referer": "https://pawchive.pw/post"}
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            path = Path(work_dir) / file_name
+            path.write_bytes(url.rsplit("/", 1)[-1].encode())
+            return path
+        finally:
+            active -= 1
+
+    monkeypatch.setattr("services.gallery.download_http_file", fake_download)
+
+    artifacts = await download_gallery_media(
+        parsed_input=ParsedInput(source_url="https://pawchive.pw/fantia/user/1/post/2"),
+        settings=settings,
+        work_dir=tmp_path / "work",
+        status=make_status(),
+        download_limiter=asyncio.Semaphore(6),
+        file_dicts=file_dicts,
+        content="album",
+    )
+
+    assert max_active == 3
+    assert [artifact.path.read_bytes() for artifact in artifacts] == [b"1", b"2", b"3", b"4"]
+    assert len({artifact.file_name for artifact in artifacts}) == 4
+
+
+@pytest.mark.asyncio
+async def test_download_gallery_media_uses_shared_limit(monkeypatch, tmp_path):
+    """The process-wide limiter applies on top of the per-album limit."""
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    file_dicts = [
+        {"_url": f"https://cdn.example/{index}", "filename": str(index), "extension": "jpg"}
+        for index in range(2)
+    ]
+    active = 0
+    max_active = 0
+
+    async def fake_download(*, work_dir, file_name, **_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            path = Path(work_dir) / file_name
+            path.write_bytes(b"media")
+            return path
+        finally:
+            active -= 1
+
+    monkeypatch.setattr("services.gallery.download_http_file", fake_download)
+
+    await download_gallery_media(
+        parsed_input=ParsedInput(source_url="https://pawchive.pw/fantia/user/1/post/2"),
+        settings=settings,
+        work_dir=tmp_path / "work",
+        status=make_status(),
+        download_limiter=asyncio.Semaphore(1),
+        file_dicts=file_dicts,
+    )
+
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_download_gallery_media_fallback_discards_partial_files(monkeypatch, tmp_path):
+    """A failed parallel attempt cannot leak partial files into gallery-dl results."""
+    settings = make_gallery_settings(tmp_path, "", http_proxy="")
+    file_dicts = [
+        {"_url": f"https://cdn.example/{index}", "filename": str(index), "extension": "jpg"}
+        for index in range(2)
+    ]
+
+    async def failed_download(*, work_dir, file_name, **_kwargs):
+        path = Path(work_dir) / file_name
+        path.write_bytes(b"partial")
+        raise RuntimeError("expired CDN URL")
+
+    async def fallback(command, cwd=None, timeout=None):  # pylint: disable=unused-argument
+        (Path(cwd) / "one.jpg").write_bytes(b"one")
+        (Path(cwd) / "two.jpg").write_bytes(b"two")
+        return "", ""
+
+    monkeypatch.setattr("services.gallery.download_http_file", failed_download)
+    fallback_mock = AsyncMock(side_effect=fallback)
+    monkeypatch.setattr("services.gallery.run_command", fallback_mock)
+
+    artifacts = await download_gallery_media(
+        parsed_input=ParsedInput(source_url="https://pawchive.pw/fantia/user/1/post/2"),
+        settings=settings,
+        work_dir=tmp_path / "work",
+        status=make_status(),
+        download_limiter=asyncio.Semaphore(6),
+        file_dicts=file_dicts,
+    )
+
+    assert fallback_mock.await_count == 1
+    assert [artifact.file_name for artifact in artifacts] == ["one.jpg", "two.jpg"]
+    assert all(artifact.path.read_bytes() != b"partial" for artifact in artifacts)
 
 @pytest.mark.asyncio
 async def test_download_gallery_media_auth_error(monkeypatch, tmp_path):
@@ -180,6 +349,8 @@ async def test_download_gallery_media_auth_error(monkeypatch, tmp_path):
             parsed_input=ParsedInput(source_url="https://x.com/a/status/1"),
             settings=settings,
             work_dir=tmp_path / "work",
+            status=make_status(),
+            download_limiter=asyncio.Semaphore(6),
         )
 
     assert "login cookies required" in str(exc_info.value)
@@ -197,6 +368,8 @@ async def test_download_gallery_media_no_media(monkeypatch, tmp_path):
             parsed_input=ParsedInput(source_url="https://x.com/a/status/1"),
             settings=settings,
             work_dir=tmp_path / "work",
+            status=make_status(),
+            download_limiter=asyncio.Semaphore(6),
         )
 
 
@@ -328,8 +501,8 @@ def test_gallery_url_items_keeps_long_caption():
         body,
         ParsedInput(source_url="https://s/1"),
     )
-    assert items[0]["caption"] == body
-    assert items[0]["caption"].endswith("https://example.com/79")
+    assert items[0]["caption"] == f'<b><a href="https://s/1">{body}</a></b>'
+    assert items[0]["caption"].endswith("https://example.com/79</a></b>")
 
 
 def test_gallery_url_items_escapes_markup():
@@ -338,7 +511,7 @@ def test_gallery_url_items_escapes_markup():
         "AT&T <b>leak</b>",
         ParsedInput(source_url="https://s/1"),
     )
-    assert items[0]["caption"] == "AT&amp;T leak"
+    assert items[0]["caption"] == '<b><a href="https://s/1">AT&amp;T leak</a></b>'
 
 
 def test_gallery_url_items_caption_and_types():
@@ -350,7 +523,7 @@ def test_gallery_url_items_caption_and_types():
         "<p>hello</p>",
         ParsedInput(source_url="https://s/1"),
     )
-    assert items[0]["caption"] == "hello"
+    assert items[0]["caption"] == '<b><a href="https://s/1">hello</a></b>'
     assert items[1]["caption"] is None
     assert items[0]["send_type"] == "photo"
     assert items[1]["send_type"] == "video"
@@ -364,6 +537,18 @@ def test_gallery_download_command_generic_filename_format(tmp_path):
     )
     idx = command.index("-f")
     assert command[idx + 1] == "{filename}.{extension}"
+
+
+def test_gallery_url_items_uses_escaped_filename_link_when_post_has_no_text():
+    items = gallery_url_items(
+        [{"_url": "https://cdn/1.jpg", "filename": "post <1>", "extension": "jpg"}],
+        None,
+        ParsedInput(source_url="https://example.com/post?a=1&b=2"),
+    )
+
+    assert items[0]["caption"] == (
+        '<b><a href="https://example.com/post?a=1&amp;b=2">post &lt;1&gt;</a></b>'
+    )
 
 
 def test_gallery_download_command_twitter_filename_format(tmp_path):

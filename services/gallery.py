@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import html
 import json
 import logging
 import re
@@ -7,9 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+import aiohttp
+
 from config import Settings
+from services.direct_downloads import download_http_file
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
+from services.status import StatusSurface
 from services.sources import (
     VIDEO_EXTENSIONS,
     gallery_supports_url,
@@ -20,6 +26,7 @@ from services.ytdlp import _prepare_cookies_file
 from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, ParsedInput
+from utils.models import FileTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +34,9 @@ GALLERY_FILENAME_FORMAT = "{tweet_id}_{num}.{extension}"
 GENERIC_GALLERY_FILENAME_FORMAT = "{filename}.{extension}"
 
 MAX_GALLERY_PHOTOS = 50  # local ceiling; twitter itself never exceeds ~4 per status
+
+GALLERY_DOWNLOADS_PER_REQUEST = 3
+GALLERY_DOWNLOADS_PER_BOT = 6
 
 
 def split_tweet_media(file_dicts: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -168,6 +178,11 @@ def plain_caption(content: str | None) -> str | None:
     return cleaned or None
 
 
+def _linked_caption(body: str, source_url: str) -> str:
+    """Render a post name as a single minimalist link to its source."""
+    return f'<b><a href="{html.escape(source_url, quote=True)}">{text.esc(body)}</a></b>'
+
+
 def _gallery_friendly_error(error: str, cookies_configured: bool) -> str:
     if "unavailable" in error.lower():
         if cookies_configured:
@@ -189,8 +204,11 @@ def gallery_url_items(
 ) -> list[dict]:
     """URL-send items for the Telegram-CDN path (stored.info['url_media']):
     Telegram fetches each raw CDN URL itself."""
-    body = parsed_input.custom_file_name or plain_caption(content)
-    caption = text.esc(body) if body else None
+    fallback_name = next(
+        (str(media["filename"]).strip() for media in file_dicts if media.get("filename")), ""
+    )
+    body = parsed_input.custom_file_name or plain_caption(content) or fallback_name or parsed_input.source_url
+    caption = _linked_caption(body, parsed_input.source_url)
     items: list[dict] = []
     for media in file_dicts:
         url = media.get("_url")
@@ -211,11 +229,124 @@ def gallery_url_items(
     return items
 
 
+def _gallery_local_name(media: dict, index: int, is_twitter: bool) -> tuple[str, str | None]:
+    extension = str(media.get("extension") or "").lower().lstrip(".")
+    if is_twitter:
+        identifier = media.get("tweet_id") or media.get("id") or "media"
+        number = media.get("num") or index
+        name = f"{identifier}_{number}"
+    else:
+        name = str(media.get("filename") or media.get("id") or f"media_{index}")
+    name = Path(name).name
+    if name in {"", ".", ".."}:
+        name = f"media_{index}"
+    if extension and not name.lower().endswith(f".{extension}"):
+        name = f"{name}.{extension}"
+    return name, extension or None
+
+
+async def _download_gallery_files(
+    *,
+    parsed_input: ParsedInput,
+    settings: Settings,
+    work_dir: Path,
+    file_dicts: list[dict],
+    status: StatusSurface,
+    download_limiter: asyncio.Semaphore,
+) -> list[Path]:
+    """Download an album concurrently, retaining its probe order."""
+    targets = []
+    used_names = set()
+    is_twitter = is_twitter_status_url(parsed_input.source_url)
+    for index, media in enumerate(file_dicts, 1):
+        url = media.get("_url")
+        if not isinstance(url, str) or urlparse(url).scheme not in {"http", "https"}:
+            raise RuntimeError("Gallery item has no directly downloadable URL")
+        name, extension = _gallery_local_name(media, index, is_twitter)
+        if name in used_names:
+            path = Path(name)
+            name = f"{path.stem}_{index}{path.suffix}"
+        used_names.add(name)
+        raw_headers = media.get("_http_headers")
+        headers = (
+            {str(key): str(value) for key, value in raw_headers.items()}
+            if isinstance(raw_headers, dict)
+            else None
+        )
+        targets.append((url, headers, name, extension))
+
+    request_limiter = asyncio.Semaphore(GALLERY_DOWNLOADS_PER_REQUEST)
+    timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
+    connector = aiohttp.TCPConnector(ssl=None if settings.verify_ssl else False)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as client:
+
+        async def download(target) -> Path:
+            url, headers, name, extension = target
+            async with request_limiter:
+                async with download_limiter:
+                    return await download_http_file(
+                        session=client,
+                        url=url,
+                        headers=headers,
+                        proxy=settings.http_proxy or None,
+                        work_dir=work_dir,
+                        file_name=name,
+                        file_ext=extension,
+                        send_type=send_type_for_extension(extension),
+                        status=status,
+                        settings=settings,
+                    )
+
+        tasks = [asyncio.create_task(download(target)) for target in targets]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+
+async def _download_gallery_album(
+    *,
+    parsed_input: ParsedInput,
+    settings: Settings,
+    work_dir: Path,
+    file_dicts: list[dict],
+    status: StatusSurface,
+    download_limiter: asyncio.Semaphore,
+) -> list[Path]:
+    """Try the parallel CDN path; return an empty list for gallery-dl fallback."""
+    try:
+        return await _download_gallery_files(
+            parsed_input=parsed_input,
+            settings=settings,
+            work_dir=work_dir,
+            file_dicts=file_dicts,
+            status=status,
+            download_limiter=download_limiter,
+        )
+    except FileTooLargeError:
+        raise
+    except (aiohttp.ClientError, OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "Parallel gallery download failed; using gallery-dl | source=%s error=%s",
+            safe_url_label(parsed_input.source_url),
+            exc,
+        )
+        for path in work_dir.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+        return []
+
+
 async def download_gallery_media(
     *,
     parsed_input: ParsedInput,
     settings: Settings,
     work_dir: Path,
+    status: StatusSurface,
+    download_limiter: asyncio.Semaphore,
     file_dicts: list[dict] | None = None,
     content: str | None = None,
 ) -> list[DownloadArtifact]:
@@ -238,21 +369,29 @@ async def download_gallery_media(
             raise RuntimeError("No media found in this tweet")
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    command = _gallery_download_command(parsed_input, settings, work_dir)
     logger.info(
         "Gallery download starting | source=%s files=%s work_dir=%s",
         safe_url_label(parsed_input.source_url),
         len(file_dicts),
         work_dir,
     )
-    await run_command(command, cwd=work_dir, timeout=settings.process_max_timeout)
-
-    files = sorted(path for path in work_dir.iterdir() if path.is_file())
+    files = await _download_gallery_album(
+        parsed_input=parsed_input,
+        settings=settings,
+        work_dir=work_dir,
+        file_dicts=file_dicts,
+        status=status,
+        download_limiter=download_limiter,
+    )
     if not files:
-        raise RuntimeError("gallery-dl downloaded no files")
+        command = _gallery_download_command(parsed_input, settings, work_dir)
+        await run_command(command, cwd=work_dir, timeout=settings.process_max_timeout)
+        files = sorted(path for path in work_dir.iterdir() if path.is_file())
+        if not files:
+            raise RuntimeError("gallery-dl downloaded no files")
 
     body = parsed_input.custom_file_name or plain_caption(content) or files[0].stem
-    caption = f"{text.esc(parsed_input.source_url)}\n{text.esc(body)}"
+    caption = _linked_caption(body, parsed_input.source_url)
     artifacts = [
         DownloadArtifact(
             path=path,

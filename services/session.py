@@ -5,11 +5,13 @@ stores plus an optional downloader; flows read what they need off it.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 from config import Settings
 from services.cooldown import CooldownManager
 from services.media_cache import MediaCache
+from services.gallery import GALLERY_DOWNLOADS_PER_BOT
 from services.mornye import MornyeService
 from services.catalogue_search import CatalogueSearch
 from services.follow_store import FollowStore
@@ -39,6 +41,7 @@ class Session:
     catalogue_search: CatalogueSearch
     user_settings: UserSettingsStore
     follows: FollowStore
+    gallery_download_limiter: asyncio.Semaphore
     identity: BotIdentity = field(default_factory=BotIdentity)
 
     def _preference_defaults(self) -> dict[str, str]:
@@ -78,6 +81,7 @@ def build_session(
         request_store=RequestStore(settings.requests_dir, settings.work_dir),
         media_cache=MediaCache(settings.media_cache_file),
         mornye=mornye or MornyeService(settings),
+        gallery_download_limiter=asyncio.Semaphore(GALLERY_DOWNLOADS_PER_BOT),
         catalogue_search=CatalogueSearch(provider=settings.search_provider),
         user_settings=UserSettingsStore(settings.user_settings_file),
         follows=FollowStore(settings.follows_file),

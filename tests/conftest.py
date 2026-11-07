@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -87,4 +89,5 @@ def make_session(
         catalogue_search=CatalogueSearch(provider=settings.search_provider),
         user_settings=UserSettingsStore(settings.user_settings_file),
         follows=FollowStore(settings.follows_file),
+        gallery_download_limiter=asyncio.Semaphore(6),
     )

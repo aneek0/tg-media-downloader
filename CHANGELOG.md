@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Direct-message gallery deliveries now use the post text or filename as a bold link to the original post.
 - Inline results delivered in someone else's chat now name the bot by handle: the album spillover caption reads
   "check your DM with @yourbot" (or "open @yourbot and send the link" when the DM cannot be delivered) instead of
   an unnamed "the bot". The handle is resolved once at startup via `get_me`; if that fails, the prompts fall back
@@ -27,10 +28,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reduced the stock per-user cooldown between links in private chat from one hour to three seconds;
   `REQUEST_COOLDOWN_SECONDS` still overrides it, and the owner plus `AUTH_USERS` remain exempt.
 - Reduced the per-user inline catalogue search interval from 1.5 seconds to 0.5 seconds.
+- Multi-file gallery downloads now retrieve up to 3 files concurrently per album, capped at 6 across the bot;
+  source request headers and album order are preserved, with the sequential gallery-dl path as fallback.
 - Artist Cards now open on a compact TOP 30 / ALBUMS menu; Deezer fan metadata is the final caption line, and
   track downloads appear only after opening TOP 30.
 - Artist discographies now separate full albums from singles/EPs with a section divider; release buttons use plain
   titles with explicit 🅴 markers instead of repeated disc icons.
+
+### Fixed
+- Single gallery media now uses the same direct HTTP downloader as albums before falling back to `gallery-dl`,
+  fixing `403 Forbidden` failures on Pawchive CDN video links.
 
 ## [3.2.0] - 2026-11-06
 
