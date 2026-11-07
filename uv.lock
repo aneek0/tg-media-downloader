@@ -111,6 +111,7 @@ dependencies = [
     { name = "hachoir" },
     { name = "mornye" },
     { name = "mutagen" },
+    { name = "pydoll-python" },
     { name = "python-dotenv" },
     { name = "yt-dlp" },
 ]
@@ -131,6 +132,7 @@ requires-dist = [
     { name = "hachoir", specifier = ">=3.3.0,<4" },
     { name = "mornye", specifier = ">=1,<2" },
     { name = "mutagen", specifier = ">=1.47,<2" },
+    { name = "pydoll-python", specifier = "==2.27.0" },
     { name = "python-dotenv", specifier = ">=1.0.1,<2" },
     { name = "yt-dlp", specifier = ">=2026.7.4" },
 ]
@@ -912,7 +914,7 @@ wheels = [
 
 [[package]]
 name = "pydoll-python"
-version = "3.0.0"
+version = "2.27.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -921,9 +923,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/a7/5c437c0654d1cc78e875a240145ff75a6bb25920deb35aa1bf61867da0e6/pydoll_python-3.0.0.tar.gz", hash = "sha256:a763ce74fd6092532157a2c4acc65a045a1f8a1dc8dbfc836688c28d25ca4be3", size = 442259, upload-time = "2026-09-29T14:02:12.083Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/64/67/2d50f535cd66ca3f00327c11785ed45ac7fb6e5f14850a2d691a649ce47a/pydoll_python-2.27.0.tar.gz", hash = "sha256:e29f3d631a11701c00aed17d4761afaf8c3b38d05fb9ed6861b0b98b475277a6", size = 300306, upload-time = "2026-09-16T18:31:22.978Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/f2/91fe6616a9a68c82b0c4fe0a630dd843015ca8c442935ca5ccd472bae75b/pydoll_python-3.0.0-py3-none-any.whl", hash = "sha256:9a78c597cdb5de2db17c6646253c97d74a705d5571231a3cc529b1d5fcc85435", size = 496934, upload-time = "2026-09-29T14:02:13.442Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/60/bf032d2e16c8cc2ba95816eda6fbcce69da89b006be096058ad39ebb03f4/pydoll_python-2.27.0-py3-none-any.whl", hash = "sha256:a85017657f3117eb0872589acd687de80e0184aed7e3d34c2f64c3e13c6b938b", size = 340514, upload-time = "2026-09-16T18:31:24.375Z" },
 ]
 
 [[package]]

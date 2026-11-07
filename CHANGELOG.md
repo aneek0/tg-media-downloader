@@ -43,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inline message with the returned `file_id`. Telegram rejects new-file uploads on inline message edits,
   which previously made downloaded TikTok/gallery videos fail with "invalid message content".
 
+- Pinned pydoll to 2.27.0: pydoll 3.0.0 loaded the ZARZ challenge but never clicked the Turnstile checkbox,
+  leaving signed-session warm-up to time out. Verified with Chromium/Xvfb on the headless Debian server.
+
 ## [3.2.0] - 2026-11-06
 
 ### Added
