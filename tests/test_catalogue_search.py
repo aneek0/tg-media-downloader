@@ -147,6 +147,7 @@ async def test_search_normalizes_provider_items(monkeypatch):
             "artists": [{"name": "One"}, {"name": "Two"}],
             "external_urls": {"spotify": "https://open.spotify.com/album/album1"},
             "album_type": "album",
+            "explicit": True,
             "total_tracks": "11",
             "release_date": "2019-05-04",
         },
@@ -175,6 +176,7 @@ async def test_search_normalizes_provider_items(monkeypatch):
     assert album.artists == "One, Two"
     assert album.external_url == "https://open.spotify.com/album/album1"
     assert album.total_tracks == 11
+    assert album.explicit is True
     assert [item.item_id for item in results.by_kind("album")] == ["album1"]
 
 
@@ -410,6 +412,7 @@ def test_search_item_roundtrip():
         release_date="2020-01-01",
         album_type="single",
         total_tracks=1,
+        explicit=True,
         listeners=0,
     )
 

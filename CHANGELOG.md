@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reduced the stock per-user cooldown between links in private chat from one hour to three seconds;
   `REQUEST_COOLDOWN_SECONDS` still overrides it, and the owner plus `AUTH_USERS` remain exempt.
 - Reduced the per-user inline catalogue search interval from 1.5 seconds to 0.5 seconds.
+- Artist Cards now open on a compact TOP 30 / ALBUMS menu; Deezer fan metadata is the final caption line, and
+  track downloads appear only after opening TOP 30.
+- Artist discographies now separate full albums from singles/EPs with a section divider; release buttons use plain
+  titles with explicit 🅴 markers instead of repeated disc icons.
 
 ## [3.2.0] - 2026-11-06
 

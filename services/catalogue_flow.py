@@ -46,8 +46,9 @@ def _artist_caption(payload: CataloguePayload) -> str:
     name = text.esc(payload.name)
     if payload.artist_url:
         name = f'<a href="{text.esc(payload.artist_url)}">{name}</a>'
+    fans = "Fans on Deezer" if payload.provider == "deezer" else "Listeners"
     return text.ARTIST_CAPTION.format(
-        name=name, listeners=payload.listeners, albums=len(payload.albums)
+        name=name, listeners=payload.listeners, albums=len(payload.albums), fans=fans
     )
 
 
@@ -116,47 +117,84 @@ async def artist_card(
 
 
 def render_artist_card(
-    session: Session, stored: StoredRequest, *, following: bool = False, albums: bool = False
+    session: Session,
+    stored: StoredRequest,
+    *,
+    following: bool = False,
+    albums: bool = False,
+    top: bool = False,
 ) -> CatalogueCard:
     """Render persisted artist state without another provider request."""
     payload = stored.payload
     if not isinstance(payload, CataloguePayload):
         raise ValueError("not an Artist Card token")
-    if albums:
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=_short(f"💽 {SearchItem.from_dict(raw).title}"),
-                    callback_data=CatalogueCallback(
-                        action="open", token=f"{stored.token}.{index}"
-                    ).pack(),
+    if albums or top:
+        if albums:
+            rows = []
+            single_rows = []
+            for index, raw in enumerate(payload.albums):
+                album = SearchItem.from_dict(raw)
+                title = album.title + (" 🅴" if album.explicit else "")
+                row = [
+                    InlineKeyboardButton(
+                        text=_short(title),
+                        callback_data=CatalogueCallback(
+                            action="open", token=f"{stored.token}.{index}"
+                        ).pack(),
+                    )
+                ]
+                if album.album_type.lower() in {"single", "ep"}:
+                    single_rows.append(row)
+                else:
+                    rows.append(row)
+            if single_rows:
+                section_callback = CatalogueCallback(
+                    action="noop", token=stored.token
+                ).pack()
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=text.ARTIST_SECTION_LINE, callback_data=section_callback
+                        ),
+                        InlineKeyboardButton(
+                            text=text.ARTIST_SINGLES_EPS, callback_data=section_callback
+                        ),
+                        InlineKeyboardButton(
+                            text=text.ARTIST_SECTION_LINE, callback_data=section_callback
+                        ),
+                    ]
                 )
-            ]
-            for index, raw in enumerate(payload.albums)
-        ]
+                rows.extend(single_rows)
+        else:
+            rows = _track_rows(session, payload.top_tracks, stored.token)
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=text.ARTIST_TOP_BACK,
+                    text=text.ARTIST_BACK,
                     callback_data=CatalogueCallback(
-                        action="top", token=stored.token
+                        action="menu", token=stored.token
                     ).pack(),
                 )
             ]
         )
     else:
-        rows = _track_rows(session, payload.top_tracks, stored.token)
-        rows.append(
+        rows = [
             [
+                InlineKeyboardButton(
+                    text=text.ARTIST_TOP,
+                    callback_data=CatalogueCallback(
+                        action="top", token=stored.token
+                    ).pack(),
+                ),
                 InlineKeyboardButton(
                     text=text.ARTIST_ALBUMS,
                     callback_data=CatalogueCallback(
                         action="albums", token=stored.token
                     ).pack(),
-                )
-            ]
-        )
-    rows.append([_follow_button(stored.token, following)])
+                ),
+            ],
+            [_follow_button(stored.token, following)],
+        ]
     return CatalogueCard(
         stored=stored,
         caption=_artist_caption(payload),

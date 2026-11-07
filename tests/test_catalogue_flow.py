@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock
 import pytest
 from mornye.core.models import TrackMetadata
 
-from services.catalogue_flow import album_card, artist_card, download_album_zip, run_album_zip
+from services.catalogue_flow import (
+    album_card,
+    artist_card,
+    download_album_zip,
+    render_artist_card,
+    run_album_zip,
+)
 from services.catalogue_search import ArtistCatalogue, SearchItem
 from services.requests import catalogue_browse_request, music_request
 from tests.conftest import make_session, make_settings
@@ -28,8 +34,8 @@ def _item(kind: str, index: int, **kwargs) -> SearchItem:
 
 
 @pytest.mark.asyncio
-async def test_artist_card_limits_top_and_albums(monkeypatch, tmp_path):
-    """Artist Card keeps the approved TOP-30 and 50-album bounds."""
+async def test_artist_card_has_menu_and_bounded_top_and_albums(monkeypatch, tmp_path):
+    """Artist Card keeps TOP-30 behind its menu button and bounds both lists."""
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
@@ -46,14 +52,71 @@ async def test_artist_card_limits_top_and_albums(monkeypatch, tmp_path):
     )
     assert len(card.stored.payload.top_tracks) == 30
     assert len(card.stored.payload.albums) == 50
-    assert len(card.keyboard.inline_keyboard) == 32
-    assert "Listeners: 123" in card.caption
-    first_callback = CatalogueCallback.unpack(
+    assert card.caption.splitlines()[1:] == [
+        "💽 Albums: 50",
+        "👥 Fans on Deezer: 123",
+    ]
+    assert [
+        [button.text for button in row] for row in card.keyboard.inline_keyboard
+    ] == [["TOP 30 🔝", "ALBUMS 💽"], ["FOLLOW ➕"]]
+    menu_top = CatalogueCallback.unpack(
         card.keyboard.inline_keyboard[0][0].callback_data
+    )
+    assert menu_top.action == "top"
+    assert menu_top.token == card.stored.token
+
+    top_card = render_artist_card(session, card.stored, top=True)
+    assert len(top_card.keyboard.inline_keyboard) == 31
+    first_callback = CatalogueCallback.unpack(
+        top_card.keyboard.inline_keyboard[0][0].callback_data
     )
     assert first_callback.action == "dl"
     assert first_callback.token.startswith(f"{card.stored.token}.")
+    back_callback = CatalogueCallback.unpack(
+        top_card.keyboard.inline_keyboard[-1][0].callback_data
+    )
+    assert back_callback.action == "menu"
 
+
+@pytest.mark.asyncio
+async def test_artist_albums_separate_singles_and_eps(monkeypatch, tmp_path):
+    """Album buttons stay icon-free, with singles and EPs below one section divider."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    catalogue = ArtistCatalogue(
+        artist=_item("artist", 1),
+        albums=[
+            _item("album", 0, title="Single", album_type="single"),
+            _item("album", 1, title="LP", album_type="album", explicit=True),
+            _item("album", 2, title="EP", album_type="EP", explicit=True),
+            _item("album", 3, title="Compilation", album_type="compilation"),
+            _item("album", 4, title="Untyped"),
+        ],
+    )
+    monkeypatch.setattr(
+        session.catalogue_search, "artist", AsyncMock(return_value=catalogue)
+    )
+    card = await artist_card(session, provider="deezer", artist_id="deezer:1")
+
+    release_card = render_artist_card(session, card.stored, albums=True)
+
+    assert [
+        [button.text for button in row] for row in release_card.keyboard.inline_keyboard
+    ] == [
+        ["LP 🅴"],
+        ["Compilation"],
+        ["Untyped"],
+        ["━", "Singles and EPs", "━"],
+        ["Single"],
+        ["EP 🅴"],
+        ["BACK 🔙"],
+    ]
+    single_callback = CatalogueCallback.unpack(
+        release_card.keyboard.inline_keyboard[4][0].callback_data
+    )
+    assert single_callback.action == "open"
+    assert single_callback.token == f"{card.stored.token}.0"
 
 @pytest.mark.asyncio
 async def test_album_card_has_track_get_all_zip_and_back(monkeypatch, tmp_path):

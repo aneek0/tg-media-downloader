@@ -157,6 +157,54 @@ async def test_network_failure_returns_retryable_error_not_empty_results(
 
 
 @pytest.mark.asyncio
+async def test_top_and_menu_callbacks_switch_artist_views(monkeypatch, tmp_path):
+    """TOP opens downloads separately and BACK restores the compact artist menu."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    stored = catalogue_browse_request(
+        session.request_store,
+        ParsedInput(source_url="https://www.deezer.com/artist/1"),
+        CataloguePayload(
+            provider="deezer",
+            artist_id="deezer:1",
+            name="Artist",
+            top_tracks=[_found().items[0].to_dict()],
+        ),
+    )
+    show_card = AsyncMock()
+    monkeypatch.setattr("routers.catalogue._show_card", show_card)
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=99),
+        inline_message_id="inline-id",
+        answer=AsyncMock(),
+        bot=SimpleNamespace(),
+    )
+
+    await catalogue_callback(
+        query, CatalogueCallback(action="top", token=stored.token), session
+    )
+
+    top_card = show_card.await_args.args[3]
+    assert len(top_card.keyboard.inline_keyboard) == 2
+    assert CatalogueCallback.unpack(
+        top_card.keyboard.inline_keyboard[0][0].callback_data
+    ).action == "dl"
+    assert CatalogueCallback.unpack(
+        top_card.keyboard.inline_keyboard[-1][0].callback_data
+    ).action == "menu"
+
+    await catalogue_callback(
+        query, CatalogueCallback(action="menu", token=stored.token), session
+    )
+
+    menu_card = show_card.await_args.args[3]
+    assert [
+        [button.text for button in row] for row in menu_card.keyboard.inline_keyboard
+    ] == [["TOP 30 🔝", "ALBUMS 💽"], ["FOLLOW ➕"]]
+
+
+@pytest.mark.asyncio
 async def test_follow_toggle_rerenders_artist_card(monkeypatch, tmp_path):
     """Follow must update the visible toggle instead of returning before the rerender."""
     settings = make_settings(tmp_path)

@@ -282,6 +282,8 @@ async def catalogue_callback(  # pylint: disable=too-complex
         elif action == "albums":
             card = render_artist_card(session, stored, following=following, albums=True)
         elif action == "top":
+            card = render_artist_card(session, stored, following=following, top=True)
+        elif action == "menu":
             card = render_artist_card(session, stored, following=following)
         else:
             await query.answer()

@@ -83,6 +83,7 @@ class SearchItem:  # pylint: disable=too-many-instance-attributes
     duration_ms: int | None = None
     release_date: str = ""
     album_type: str = ""
+    explicit: bool = False
     total_tracks: int = 0
     listeners: int = 0
 
@@ -226,6 +227,7 @@ def _item(raw: dict, provider: str, fallback_kind: str | None) -> SearchItem | N
         duration_ms=duration_ms or None,
         release_date=str(raw.get("release_date") or ""),
         album_type=str(raw.get("album_type") or ""),
+        explicit=bool(raw.get("explicit") or raw.get("explicit_lyrics")),
         total_tracks=_as_int(raw.get("total_tracks") or raw.get("nb_tracks"), 0),
         listeners=_as_int(raw.get("listeners") or raw.get("nb_fan"), 0),
     )
