@@ -8,9 +8,9 @@ from typing import Any
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
-    FSInputFile,
     InputMediaAudio,
     InputMediaDocument,
+    InputMediaPhoto,
     InputMediaVideo,
 )
 
@@ -21,9 +21,8 @@ from services.status import StatusSurface, inline_caption_status, inline_status
 from services.session import Session
 from services.user_settings import UserPreferences
 from services.requests import lifecycle
-from services.delivery import DirectDelivery, media_item
+from services.delivery import DirectDelivery
 from services.pipeline import download_inline
-from services.sources import SourceKind, classify
 from services.mornye import audio_cache_key
 from utils import text
 from utils.models import (
@@ -199,21 +198,14 @@ async def run_inline_download(
         )
 
 
-def _needs_dm_file_id(stored: StoredRequest, first: DownloadArtifact) -> bool:
-    """Catalogue music and album ZIPs need a DM-uploaded file_id; ordinary
-    direct documents still edit inline from their source URL."""
-    return (
-        classify(stored.parsed_input).kind is SourceKind.MUSIC
-        and first.send_type in {"audio", "document"}
-    )
-
-
-async def _music_dm_media(
+async def _dm_media(
     bot: Bot, user_id: int, first: DownloadArtifact, caption: str, mention: str
 ) -> tuple[Any, CachedMedia]:
-    """DM-upload catalogue audio/ZIP and return its inline media plus cache
-    entry. Inline edits cannot upload files, so the file_id must come from
-    the DM copy; a refused DM is surfaced as InlineDmBlocked."""
+    """Upload the artifact to the user's DM and return its inline media plus
+    cache entry. Inline edits cannot upload a new file, so every first
+    artifact must reuse the file_id Telegram returns for the DM copy."""
+    if first.send_type in {"video", "video_note"}:
+        width, height, duration = await _video_dimensions(first)
     try:
         uploaded = await DirectDelivery(bot, user_id).deliver(
             [first], started_at=datetime.now()
@@ -224,6 +216,20 @@ async def _music_dm_media(
     if not uploaded:
         raise RuntimeError("Telegram did not return an uploaded file id")
     dm_entry = uploaded[0]
+    if first.send_type == "photo":
+        return InputMediaPhoto(media=dm_entry.file_id, caption=caption), dm_entry
+    if first.send_type in {"video", "video_note"}:
+        return (
+            InputMediaVideo(
+                media=dm_entry.file_id,
+                caption=caption,
+                width=width,
+                height=height,
+                duration=duration,
+                supports_streaming=True,
+            ),
+            dm_entry,
+        )
     if first.send_type == "audio":
         return (
             InputMediaAudio(
@@ -247,63 +253,24 @@ async def _deliver_first(
     status: StatusSurface,
     first: DownloadArtifact,
     caption: str,
-    dm_upload: bool,
-    dm_audio: bool = False,
     mention: str = "",
 ) -> tuple[object, list[CachedMedia]]:
     """Swap the inline message into the tapped artifact and return the
-    edited message plus the DM entries to cache (the poster flow prepends
-    its DM video copy).
+    edited message plus the DM file_id entry to cache.
 
-    Bot API rule: editing an INLINE message cannot upload a new file -
-    media must be a file_id or a URL. For big videos (poster flow) the URL
-    fetcher also fails (>20MB), so the video is uploaded to the user's DM
-    first (sendVideo accepts uploads) and its file_id edits the inline
-    message. The DM copy doubles as the delivery when the inline edit is
-    impossible. Audio and documents need that same file_id; when Telegram
-    refuses the DM (the user never started the bot) :class:`InlineDmBlocked`
-    tells the caller to finish with the open-bot note instead of hanging.
+    Bot API rule: editing an inline message cannot upload a new file; media
+    must be a file_id or a URL. Every artifact is therefore uploaded to the
+    user's DM first and the inline edit reuses that file_id. The DM copy
+    doubles as the delivery when the inline edit is impossible. When
+    Telegram refuses the DM (the user never started the bot),
+    :class:`InlineDmBlocked` tells the caller to finish with the open-bot
+    note instead of hanging.
     """
-    item: Any
-    item, cover = media_item(first, caption)
     edited: object = None
     dm_entries: list[CachedMedia] = []
     try:
-        if dm_audio and first.send_type in {"audio", "document"}:
-            item, dm_entry = await _music_dm_media(bot, user_id, first, caption, mention)
-            dm_entries = [dm_entry, *dm_entries]
-        if dm_upload and first.send_type == "video":
-            try:
-                width, height, duration = await _video_dimensions(first)
-                sent = await bot.send_video(
-                    chat_id=user_id,
-                    video=FSInputFile(first.path),
-                    caption=caption,
-                    width=width,
-                    height=height,
-                    duration=duration,
-                    supports_streaming=True,
-                )
-                dm_entry = cached_media_from(
-                    sent,
-                    send_type="video",
-                    file_name=first.file_name,
-                    caption=first.caption,
-                )
-                if dm_entry:
-                    dm_entries = [dm_entry, *dm_entries]
-                    item = InputMediaVideo(
-                        media=dm_entry.file_id,
-                        width=width,
-                        height=height,
-                        duration=duration,
-                        supports_streaming=True,
-                        caption=caption,
-                    )
-            except TelegramAPIError as exc:
-                logger.info(
-                    "Inline DM upload failed | user=%s error=%s", user_id, exc
-                )
+        item, dm_entry = await _dm_media(bot, user_id, first, caption, mention)
+        dm_entries.append(dm_entry)
         edited = await bot.edit_message_media(
             inline_message_id=inline_message_id,
             media=item,
@@ -323,8 +290,6 @@ async def _deliver_first(
             f"{text.INLINE_FAILED}\n<code>{text.esc(str(exc))}</code>",
         )
     finally:
-        if cover is not None:
-            cover.unlink(missing_ok=True)
         first.path.unlink(missing_ok=True)
     return edited, dm_entries
 
@@ -476,8 +441,6 @@ async def _run_inline_download(
             status=status,
             first=first,
             caption=caption,
-            dm_upload=bool(media_payload.video_url),
-            dm_audio=_needs_dm_file_id(stored, first),
             mention=mention,
         )
     except InlineDmBlocked as exc:

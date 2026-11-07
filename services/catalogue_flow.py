@@ -357,8 +357,6 @@ async def run_album_zip(
             status=status,
             first=artifact,
             caption=text.esc(artifact.file_name),
-            dm_upload=False,
-            dm_audio=True,
             mention=session.identity.mention,
         )
     except RuntimeError as exc:

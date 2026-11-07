@@ -164,9 +164,10 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
-        edit_message_media=AsyncMock(
-            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC10"))
+        send_video=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC11"))
         ),
+        edit_message_media=AsyncMock(return_value=True),
     )
 
     await run_inline_download(
@@ -177,9 +178,12 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
         stored=stored,
     )
 
+    bot.send_video.assert_awaited_once()
+    media = bot.edit_message_media.await_args.kwargs["media"]
+    assert media.media == "BAAC11"
     entries = cache.get(url)
     assert entries is not None
-    assert entries[0].file_id == "BAAC10"
+    assert entries[0].file_id == "BAAC11"
     assert entries[0].send_type == "video"
     assert store.load("tok-c") is None
 
@@ -713,12 +717,13 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
-        edit_message_media=AsyncMock(
-            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC40"))
-        ),
+        edit_message_media=AsyncMock(return_value=True),
         send_media_group=AsyncMock(return_value=[]),
         send_video=AsyncMock(
-            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC41"))
+            side_effect=[
+                SimpleNamespace(video=SimpleNamespace(file_id="BAAC41")),
+                SimpleNamespace(video=SimpleNamespace(file_id="BAAC42")),
+            ]
         ),
     )
 
@@ -731,9 +736,10 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
     )
 
     media = bot.edit_message_media.await_args.kwargs["media"]
-    assert media.media.filename == "999_2.mp4"
-    assert cache.get(url)[0].file_id == "BAAC40"
+    assert media.media == "BAAC41"
+    assert cache.get(url)[0].file_id == "BAAC41"
     assert store.load("tok-name") is None
+    assert bot.send_video.await_args_list[0].kwargs["video"].path.name == "999_2.mp4"
 
 
 @pytest.mark.asyncio
@@ -812,7 +818,9 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     monkeypatch, tmp_path
 ):
     """Page URLs (TikTok, Reddit, …) must go through yt-dlp. The old
-    behaviour plain-GET-ed the HTML page and shipped it as a document."""
+    behaviour plain-GET-ed the HTML page and shipped it as a document.
+    Telegram rejects new-file uploads on inline edits, so the downloaded
+    video must reach the DM first and the edit must reuse that file_id."""
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
@@ -842,9 +850,10 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
-        edit_message_media=AsyncMock(
-            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC20"))
+        send_video=AsyncMock(
+            return_value=SimpleNamespace(video=SimpleNamespace(file_id="BAAC21"))
         ),
+        edit_message_media=AsyncMock(return_value=True),
     )
 
     await run_inline_download(
@@ -858,9 +867,12 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     probe_mock.assert_awaited_once()
     best_mock.assert_awaited_once()
     direct_mock.assert_not_awaited()
+    bot.send_video.assert_awaited_once()
+    media = bot.edit_message_media.await_args.kwargs["media"]
+    assert media.media == "BAAC21"
     entries = cache.get(url)
     assert entries is not None
-    assert entries[0].file_id == "BAAC20"
+    assert entries[0].file_id == "BAAC21"
     assert store.load("tok-tt") is None
 
 
@@ -897,9 +909,10 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
-        edit_message_media=AsyncMock(
-            return_value=SimpleNamespace(document=SimpleNamespace(file_id="BAAC30"))
+        send_document=AsyncMock(
+            return_value=SimpleNamespace(document=SimpleNamespace(file_id="BAAC31"))
         ),
+        edit_message_media=AsyncMock(return_value=True),
     )
 
     await run_inline_download(
@@ -913,7 +926,9 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
     probe_mock.assert_awaited_once()
     direct_mock.assert_awaited_once()
     best_mock.assert_not_awaited()
-    assert cache.get(url) is not None
+    media = bot.edit_message_media.await_args.kwargs["media"]
+    assert media.media == "BAAC31"
+    assert cache.get(url)[0].file_id == "BAAC31"
     assert store.load("tok-direct") is None
 
 
@@ -1040,9 +1055,10 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
-        edit_message_media=AsyncMock(
-            return_value=SimpleNamespace(photo=[SimpleNamespace(file_id="PH_B")])
+        send_photo=AsyncMock(
+            return_value=SimpleNamespace(photo=[SimpleNamespace(file_id="PH_B_DM")])
         ),
+        edit_message_media=AsyncMock(return_value=True),
         send_media_group=AsyncMock(
             return_value=[
                 SimpleNamespace(photo=[SimpleNamespace(file_id="PH_A")]),
@@ -1059,16 +1075,18 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
         stored=stored,
     )
 
-    # The message media must be the tapped photo (b.jpg), not artifacts[0].
+    # The message media must be the DM-uploaded copy of the tapped photo
+    # (b.jpg), not artifacts[0] and not a local-file upload.
     media = bot.edit_message_media.await_args.kwargs["media"]
-    assert media.media.filename == "b.jpg"
+    assert media.media == "PH_B_DM"
+    assert bot.send_photo.await_args.kwargs["photo"].path.name == "b.jpg"
     # Remaining photos spill to DM as an album in original order: a.jpg, c.jpg.
     bot.send_media_group.assert_awaited_once()
     dm_media = bot.send_media_group.await_args.kwargs["media"]
     assert [m.media.filename for m in dm_media] == ["a.jpg", "c.jpg"]
     entries = cache.get(url)
     assert entries is not None
-    assert entries[0].file_id == "PH_B"
+    assert entries[0].file_id == "PH_B_DM"
     assert [e.file_id for e in entries[1:]] == ["PH_A", "PH_C"]
     assert store.load("tok-idx") is None
 
@@ -1252,15 +1270,20 @@ async def test_inline_spillover_note_names_the_bot(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "services.inline_flow.download_inline", AsyncMock(return_value=files)
     )
+    audio_calls = 0
+
+    async def _send_audio(**_kwargs):
+        nonlocal audio_calls
+        audio_calls += 1
+        if audio_calls == 1:
+            return SimpleNamespace(audio=SimpleNamespace(file_id="A1"))
+        raise RuntimeError("bot can't initiate conversation")
+
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
-        edit_message_media=AsyncMock(
-            return_value=SimpleNamespace(audio=SimpleNamespace(file_id="A1"))
-        ),
+        edit_message_media=AsyncMock(return_value=True),
         edit_message_caption=AsyncMock(),
-        send_audio=AsyncMock(
-            side_effect=RuntimeError("bot can't initiate conversation")
-        ),
+        send_audio=AsyncMock(side_effect=_send_audio),
     )
     session = make_session(settings, store, cache)
     session.identity.mention = "@my_media_bot"

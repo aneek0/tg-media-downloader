@@ -39,6 +39,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Single gallery media now uses the same direct HTTP downloader as albums before falling back to `gallery-dl`,
   fixing `403 Forbidden` failures on Pawchive CDN video links.
 
+- Inline tap-to-download results now upload the first downloaded artifact to the user's DM and edit the
+  inline message with the returned `file_id`. Telegram rejects new-file uploads on inline message edits,
+  which previously made downloaded TikTok/gallery videos fail with "invalid message content".
+
 ## [3.2.0] - 2026-11-06
 
 ### Added
