@@ -402,6 +402,31 @@ async def test_intake_twitter_routes_to_gallery(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_intake_twitter_text_post_returns_text(monkeypatch, tmp_path):
+    """Text-only tweets are content, not direct-download HTML pages."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    monkeypatch.setattr(
+        "services.pipeline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe([], "text <post>", None)),
+    )
+    probe_url = AsyncMock(side_effect=AssertionError("yt-dlp must not run"))
+    monkeypatch.setattr("services.pipeline.probe_url", probe_url)
+    message = make_message()
+    message.text = "https://x.com/a/status/1"
+    message.bot = SimpleNamespace()
+    status = SimpleNamespace(edit_text=AsyncMock())
+    message.reply.return_value = status
+
+    await intake_message(message, make_session(settings))
+
+    probe_url.assert_not_awaited()
+    assert status.edit_text.await_args_list[-1].args[0] == "text &lt;post&gt;"
+    message.answer.assert_not_awaited()
+    assert not list(settings.requests_dir.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_intake_cache_hit_sends_file_id_without_download(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
@@ -678,6 +703,30 @@ async def test_intake_ignores_inline_processing_placeholder(raw_text, tmp_path):
     message.answer.assert_not_awaited()
     message.reply.assert_not_awaited()
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        (
+            "This link returns a web page, not a media file. "
+            "It is not directly downloadable."
+        ),
+        "Downloading https://example.com/file.mp4",
+    ],
+)
+async def test_intake_ignores_any_own_inline_service_message(raw_text, tmp_path):
+    """Inline status or error text in DM must not start another request."""
+    message = make_message()
+    message.text = raw_text
+    message.via_bot = SimpleNamespace(id=123)
+    message.bot = SimpleNamespace(id=123)
+
+    await intake_message(message, make_session(make_settings(tmp_path)))
+
+    message.answer.assert_not_awaited()
+    message.reply.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_text_search_menu_has_two_columns_and_global_search(tmp_path):

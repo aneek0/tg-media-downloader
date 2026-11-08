@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Private intake now ignores every message sent via this bot after an inline selection, so status and error text
+  cannot be submitted again as a catalogue search or a new download. The existing plain-text placeholder guard remains.
+- Text-only Twitter/X posts now return their text in private chat and as ready inline results instead of falling
+  through yt-dlp to the HTML direct-download error. Long posts are split into Telegram-sized messages/results.
+
 ## [3.3.0] - 2026-11-08
 
 ### Added

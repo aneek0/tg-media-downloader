@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlparse
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from services.executor import execute_request
 from services.catalogue_flow import artist_card
 from services.catalogue_search import artist_source
+from services.executor import execute_request
 from services.gallery import _gallery_friendly_error
 from services.media_cache import cached_media_from, send_cached_media
 from services.mornye import audio_cache_key
@@ -98,6 +99,9 @@ async def intake_message(  # pylint: disable=too-complex
     media_cache = session.media_cache
     mornye = session.mornye
     raw_text = message.text or ""
+    via_bot = message.via_bot
+    if via_bot and via_bot.id == cast(Bot, message.bot).id:
+        return
     if not message.from_user:
         return
     if raw_text.strip().rstrip(".…").casefold() == text.PROCESSING.rstrip(".").casefold():

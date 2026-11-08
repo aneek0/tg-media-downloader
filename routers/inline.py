@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from typing import cast
 
 import aiohttp
-
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
     CallbackQuery,
     ChosenInlineResult,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQuery,
     InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultPhoto,
@@ -328,6 +330,26 @@ async def _answer_gallery_media(
         (probe.error or "-")[:120],
     )
     twitter = is_twitter_status_url(parsed.source_url)
+    body = plain_caption(probe.content)
+    if twitter and not probe.error and not probe.file_dicts and body:
+        chunks = text.split_message(body)
+        await query.answer(
+            [
+                InlineQueryResultArticle(
+                    id=f"text:{index}",
+                    title="Post text" if len(chunks) == 1 else f"Post text {index + 1}/{len(chunks)}",
+                    description=chunk[:120],
+                    input_message_content=InputTextMessageContent(
+                        message_text=chunk,
+                        parse_mode=None,
+                    ),
+                )
+                for index, chunk in enumerate(chunks)
+            ],
+            cache_time=0,
+            is_personal=True,
+        )
+        return True
     if probe.error or not probe.file_dicts:
         if twitter and probe.error and "Unsupported URL" not in probe.error:
             friendly = _gallery_friendly_error(probe.error, bool(settings.twitter_cookies))
@@ -580,16 +602,10 @@ async def inline_query_handler(  # pylint: disable=too-complex
     )
 
 
-def _result_needs_no_download(token: str, inline_message_id: str | None) -> bool:
-    """True for result ids that must never start a download: 'cached*' ids
-    post media instantly client-side, 'gallery:' ids are their own
-    self-contained pager (the saved token drives navigation), 'video*' ids
-    are instant CDN videos, and a missing inline_message_id leaves nothing
-    to edit."""
-    if not inline_message_id:
-        return True
+def _result_needs_no_download(token: str) -> bool:
+    """True for ready results that must never start a background download."""
     return token in {"help", "rich"} or token.startswith(
-        ("cached", "gallery:", "video")
+        ("cached", "gallery:", "video", "text:")
     )
 
 
@@ -600,27 +616,27 @@ async def inline_chosen_handler(
 ) -> None:
     token = chosen.result_id
     inline_message_id = chosen.inline_message_id
-    if _result_needs_no_download(token, inline_message_id):
+    if not inline_message_id or _result_needs_no_download(token):
         return
 
+    # aiogram binds a bot to every dispatched update.
+    bot = cast(Bot, chosen.bot)
     stored = session.request_store.load(token)
     if not stored:
         logger.warning(
             "Expired inline request | user=%s token=%s", chosen.from_user.id, token
         )
-        try:
-            await chosen.bot.edit_message_text(
+        with contextlib.suppress(TelegramAPIError):
+            await bot.edit_message_text(
                 inline_message_id=inline_message_id,
                 text=text.REQUEST_EXPIRED,
             )
-        except TelegramAPIError:
-            pass
         return
 
     task = asyncio.create_task(
         run_inline_download(
             session,
-            bot=chosen.bot,
+            bot=bot,
             user_id=chosen.from_user.id,
             inline_message_id=inline_message_id,
             stored=stored,

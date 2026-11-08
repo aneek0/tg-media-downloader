@@ -29,7 +29,7 @@ job, and sends the result back to Telegram with the correct media type and metad
 - `url * filename`
 - YouTube quick audio and quick video downloads
 - format selection for supported `yt-dlp` sources
-- **Twitter/X posts via `gallery-dl`** — photos, videos, and albums, including 18+ posts with cookies
+- **Twitter/X posts via `gallery-dl`** — photos, videos, albums, and text-only posts, including 18+ posts with cookies
 - **Gallery post links** — direct-message gallery deliveries use the post text (or filename) as a link to the original post
 - **Parallel gallery albums** — local multi-file downloads overlap up to 3 files per album and 6 across the bot,
   preserve album order and source headers, and fall back to gallery-dl if direct CDN retrieval fails
@@ -54,7 +54,7 @@ Enable inline mode for the bot via [@BotFather](https://t.me/BotFather) (`/setin
 and downloads/Artist Cards cannot start without that update. Then:
 
 - type `@yourbot <url>` in any chat — tweet photos come back as direct Twitter CDN results (no
-  download step), tweet videos and other supported links download on tap with a cancel button
+  download step), text-only tweets are ready text results, and other supported links download on tap with a cancel button
 - search the catalogue with `@yourbot <query>` or scope it with `.trk`, `.a`, `.art`, `.pla`;
   choose Deezer/Spotify/Tidal in `/settings`; artist results open an Artist Card with TOP 30/ALBUMS/FOLLOW controls
 - repeated track selections reuse the cached Telegram audio `file_id`; the shared inline runner skips

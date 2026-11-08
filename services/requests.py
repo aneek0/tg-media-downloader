@@ -36,8 +36,10 @@ def gallery_request(
     parsed_input: ParsedInput,
     options: Sequence[DownloadOption],
     url_media: list[dict[str, Any]],
+    *,
+    content: str | None = None,
 ) -> StoredRequest:
-    """Gallery/CDN request: Telegram fetches ``url_media`` by URL."""
+    """Gallery/CDN request, including a text-only post when no media exists."""
     return _save(
         store,
         StoredRequest(
@@ -45,7 +47,7 @@ def gallery_request(
             request_type=RequestType.GALLERY_MEDIA,
             parsed_input=parsed_input,
             options=list(options),
-            info=GalleryPayload(url_media=url_media).to_info(),
+            info=GalleryPayload(url_media=url_media, content=content).to_info(),
         ),
     )
 

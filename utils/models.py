@@ -19,13 +19,13 @@ class RequestType(StrEnum):
 
 @dataclass(slots=True)
 class GalleryPayload:
-    """Telegram-CDN send list: one dict per media item with url/filename/
-    send_type/caption."""
+    """Telegram-CDN media list, or the body of a text-only gallery post."""
 
     url_media: list[dict[str, Any]] = field(default_factory=list)
+    content: str | None = None
 
     def to_info(self) -> dict[str, Any]:
-        return {"url_media": self.url_media}
+        return {"url_media": self.url_media, "content": self.content}
 
 
 @dataclass(slots=True)
@@ -125,7 +125,10 @@ def request_payload(request_type: RequestType, info: dict[str, Any]) -> RequestP
     """Decode the legacy ``info`` dict into the variant's payload. Unknown
     keys are ignored so stale request files keep resolving."""
     if request_type is RequestType.GALLERY_MEDIA:
-        return GalleryPayload(url_media=list(info.get("url_media") or []))
+        return GalleryPayload(
+            url_media=list(info.get("url_media") or []),
+            content=info.get("content"),
+        )
     if request_type is RequestType.INLINE_GALLERY:
         return InlineGalleryPayload(
             photos=list(info.get("photos") or []),

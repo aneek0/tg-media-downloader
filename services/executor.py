@@ -55,8 +55,18 @@ async def execute_request(  # pylint: disable=too-complex
     )
     delivery = ChatDelivery(bot, source_message)
     try:
-        await status.start_download(safe_name)
         payload = stored.payload
+        if (
+            stored.request_type == RequestType.GALLERY_MEDIA
+            and isinstance(payload, GalleryPayload)
+            and payload.content
+        ):
+            chunks = text.split_message(payload.content)
+            await status.edit(text.esc(chunks[0]))
+            for chunk in chunks[1:]:
+                await source_message.answer(text.esc(chunk))
+            return
+        await status.start_download(safe_name)
         if stored.request_type == RequestType.GALLERY_MEDIA:
             url_items = (
                 payload.url_media if isinstance(payload, GalleryPayload) else []

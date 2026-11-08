@@ -396,6 +396,42 @@ async def test_inline_twitter_query_uses_gallery_probe_with_timeout(
     assert not list((settings.requests_dir).iterdir())
 
 
+
+@pytest.mark.asyncio
+async def test_inline_twitter_text_post_is_ready_result(monkeypatch, tmp_path):
+    """A text-only tweet must never fall through to HTML direct download."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe([], "text-only post", None)),
+    )
+    query = SimpleNamespace(
+        query="https://x.com/a/status/1",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, session)
+
+    results = query.answer.await_args.args[0]
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, InlineQueryResultArticle)
+    assert result.id == "text:0"
+    assert result.input_message_content.message_text == "text-only post"
+    assert not list(settings.requests_dir.iterdir())
+
+    chosen = SimpleNamespace(
+        result_id=result.id,
+        inline_message_id="inline-message",
+        from_user=SimpleNamespace(id=99),
+        bot=SimpleNamespace(edit_message_text=AsyncMock()),
+    )
+    await inline_chosen_handler(chosen, session)
+    chosen.bot.edit_message_text.assert_not_awaited()
+
 @pytest.mark.asyncio
 async def test_inline_twitter_gallery_first_result_and_token_stored(
     monkeypatch, tmp_path

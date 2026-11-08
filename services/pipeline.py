@@ -116,12 +116,13 @@ async def prepare_request(session: Session, parsed: ParsedInput) -> PreparedRequ
         return PreparedRequest(stored, source, GalleryProbe([], None, None))
 
     gallery = await probe_gallery(parsed, settings)
-    if gallery.file_dicts:
+    if gallery.file_dicts or (source.is_twitter and gallery.content):
         stored = gallery_request(
             store,
             parsed,
             GALLERY_OPTIONS,
             gallery_url_items(gallery.file_dicts, gallery.content, parsed),
+            content=gallery.content if not gallery.file_dicts else None,
         )
         return PreparedRequest(stored, source, gallery)
 
