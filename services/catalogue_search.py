@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import asdict, dataclass, field, fields
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -131,6 +132,24 @@ class SearchQuery:
         if parts and parts[0] in _PREFIXES:
             return cls(parts[1] if len(parts) > 1 else "", _PREFIXES[parts[0]])
         return cls(text)
+
+def artist_source(url: str) -> tuple[str, str] | None:
+    """Return provider/id for a public artist URL, or None for other URLs."""
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    try:
+        index = parts.index("artist")
+        artist_id = parts[index + 1]
+    except (ValueError, IndexError):
+        return None
+    host = (parsed.hostname or "").lower()
+    if host == "deezer.com" or host.endswith(".deezer.com"):
+        return "deezer", f"deezer:{artist_id}"
+    if host == "open.spotify.com":
+        return "spotify-web", artist_id
+    if host == "tidal.com" or host.endswith(".tidal.com"):
+        return "tidal-web", artist_id
+    return None
 
 
 def _open_provider(provider: str):
@@ -285,19 +304,31 @@ class CatalogueSearch:
         if artist is None:
             raise RuntimeError(f"{provider} artist {artist_id}: malformed payload")
         top_tracks = _items(payload.get("top_tracks"), provider, "track")
+        albums = _items(payload.get("albums"), provider, "album")[:50]
         if provider == "deezer":
             try:
                 direct_top = await self._deezer_top(artist_id)
+                known = {item.item_id.removeprefix("deezer:") for item in direct_top}
+                top_tracks = direct_top + [
+                    item
+                    for item in top_tracks
+                    if item.item_id.removeprefix("deezer:") not in known
+                ]
+                if len(top_tracks) < 30 and albums:
+                    known = {item.item_id.removeprefix("deezer:") for item in top_tracks}
+                    top_tracks.extend(
+                        await self._deezer_discography_tracks(
+                            albums,
+                            exclude=known,
+                            limit=30 - len(top_tracks),
+                        )
+                    )
             except _TRANSPORT_ERRORS as exc:
                 raise _provider_error(provider, "getArtist top tracks", exc) from exc
-            known = {item.item_id for item in direct_top}
-            top_tracks = direct_top + [
-                item for item in top_tracks if item.item_id not in known
-            ]
         return ArtistCatalogue(
             artist=artist,
             top_tracks=top_tracks[:30],
-            albums=_items(payload.get("albums"), provider, "album")[:50],
+            albums=albums,
         )
 
     @staticmethod
@@ -315,6 +346,36 @@ class CatalogueSearch:
         if not isinstance(data, list):
             raise RuntimeError(f"deezer artist {artist_id}: malformed top tracks")
         return _items(data, "deezer", "track")
+
+    @staticmethod
+    async def _deezer_discography_tracks(
+        albums: list[SearchItem], *, exclude: set[str], limit: int
+    ) -> list[SearchItem]:
+        """Fill missing TOP slots with unique tracks from the artist's albums."""
+        tracks = []
+        known = set(exclude)
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            for album in albums:
+                album_id = album.item_id.removeprefix("deezer:")
+                async with session.get(
+                    f"https://api.deezer.com/album/{album_id}/tracks",
+                    params={"limit": 100},
+                ) as response:
+                    response.raise_for_status()
+                    payload = await response.json()
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, list):
+                    raise RuntimeError(f"deezer album {album_id}: malformed tracks")
+                for track in _items(data, "deezer", "track"):
+                    track_id = track.item_id.removeprefix("deezer:")
+                    if track_id in known:
+                        continue
+                    known.add(track_id)
+                    tracks.append(track)
+                    if len(tracks) >= limit:
+                        return tracks
+        return tracks
 
     async def _invoke(self, provider: str, method: str, *args) -> object:
         try:

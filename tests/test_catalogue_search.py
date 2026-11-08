@@ -15,6 +15,7 @@ from services.catalogue_search import (
     CatalogueSearch,
     SearchItem,
     SearchQuery,
+    artist_source,
 )
 
 
@@ -345,6 +346,9 @@ async def test_artist_maps_payload(monkeypatch, provider, payload):
     _patch(monkeypatch, _FakeExtension(payload=payload))
 
     monkeypatch.setattr(CatalogueSearch, "_deezer_top", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        CatalogueSearch, "_deezer_discography_tracks", AsyncMock(return_value=[])
+    )
     catalogue = await CatalogueSearch().artist(provider, "artist-id")
 
     assert catalogue.artist.kind == "artist"
@@ -437,6 +441,60 @@ _ARTIST_PAYLOAD = {
     "top_tracks": [],
 }
 
+@pytest.mark.asyncio
+async def test_artist_top_deduplicates_numeric_and_prefixed_deezer_ids(monkeypatch):
+    """The public and extension TOP copies must not double an artist's track list."""
+    payload = {
+        "artist": {"id": "deezer:27", "name": "Daft Punk"},
+        "albums": [],
+        "top_tracks": [{"item_type": "track", "id": "deezer:2", "name": "One More Time"}],
+    }
+    _patch(monkeypatch, _FakeExtension(payload=payload))
+    direct = SearchItem(
+        provider="deezer", kind="track", item_id="2", title="One More Time"
+    )
+    monkeypatch.setattr(CatalogueSearch, "_deezer_top", AsyncMock(return_value=[direct]))
+
+    catalogue = await CatalogueSearch().artist("deezer", "27")
+
+    assert [track.item_id for track in catalogue.top_tracks] == ["2"]
+
+@pytest.mark.asyncio
+async def test_artist_top_fills_short_list_with_unique_album_tracks(monkeypatch):
+    """DeezLoad-compatible TOP 30 uses unique album tracks after the short Deezer TOP."""
+    payload = {
+        "artist": {
+            "id": "deezer:27",
+            "name": "Daft Punk",
+            "albums": [{"item_type": "album", "id": "deezer:1", "name": "Discovery"}],
+            "top_tracks": [],
+        }
+    }
+    _patch(monkeypatch, _FakeExtension(payload=payload))
+    direct = SearchItem(
+        provider="deezer", kind="track", item_id="2", title="One More Time"
+    )
+    extra = [
+        SearchItem(
+            provider="deezer",
+            kind="track",
+            item_id=str(index),
+            title=f"Track {index}",
+        )
+        for index in range(3, 32)
+    ]
+    monkeypatch.setattr(CatalogueSearch, "_deezer_top", AsyncMock(return_value=[direct]))
+    fill = AsyncMock(return_value=extra)
+    monkeypatch.setattr(CatalogueSearch, "_deezer_discography_tracks", fill)
+
+    catalogue = await CatalogueSearch().artist("deezer", "27")
+
+    ids = [track.item_id for track in catalogue.top_tracks]
+    assert len(ids) == 30
+    assert len(set(ids)) == 30
+    assert fill.await_args.kwargs["exclude"] == {"2"}
+    assert fill.await_args.kwargs["limit"] == 29
+
 
 @pytest.mark.asyncio
 async def test_artist_deezer_top_timeout_surfaces_retryable_error(monkeypatch):
@@ -464,3 +522,16 @@ async def test_artist_deezer_top_programming_error_is_not_hidden(monkeypatch):
 
     with pytest.raises(KeyError):
         await CatalogueSearch().artist("deezer", "deezer:27")
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://www.deezer.com/artist/123", ("deezer", "deezer:123")),
+        ("https://open.spotify.com/artist/abc", ("spotify-web", "abc")),
+        ("https://www.tidal.com/artist/456", ("tidal-web", "456")),
+        ("https://www.deezer.com/track/123", None),
+        ("https://example.com/artist/123", None),
+    ],
+)
+def test_artist_source_recognizes_only_supported_artist_urls(url, expected):
+    assert artist_source(url) == expected

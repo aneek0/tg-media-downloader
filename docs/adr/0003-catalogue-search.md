@@ -34,31 +34,35 @@ handle downloading and delivery.
    is limited to one search per 1.5 seconds per user. REQUEST_COOLDOWN
    applies only to downloads.
 
-3. **A single results renderer.** Filtered search shows up to eight
-   results of the selected type; global search shows up to four of each type. Tracks
-   and collections are represented as articles with a cover, `Artist — Title`, and the description
-   `Album: … · mm:ss`. A tap creates a Music Request from `external_urls`.
-
+3. **Search results.** Filtered search shows up to eight results of the selected
+   type; global search shows up to four of each type. Tracks and collections are
+   articles with a cover, `Artist — Title`, and the description `Album: … · mm:ss`.
+   Artist hits are named articles with thumbnails so photo-grid clients cannot hide
+   their names. A tap creates a Music Request from `external_urls`.
 4. **Artist Card is created on selection.** The first inline result for an artist
    uses the search metadata already retrieved and does not trigger a second API call.
-   When the result is selected, `getArtist` populates the cover, listener count, TOP, and
-   ALBUMS. The Deezer extension limits TOP to twenty tracks, so the public
-   `api.deezer.com/artist/{id}/top?limit=30` supplements them to 30, merging by id.
-   TOP contains up to 30 tracks, and ALBUMS contains up to 50 albums. Each track
-   receives its own `inline_media` token; TOP/ALBUMS/BACK modify only the
-   existing card via `inline_message_id`. Follow toggles the record from
-   ADR 0004. An external URL is not used in `callback_data`: the Bot API limit is
-   64 bytes.
+   In a private chat it inserts the artist URL; the normal DM intake then fetches and
+   sends a bot-authored Artist Card without a `chosen_inline_result` edit. Other chats
+   retain the `browse:` token and editable inline card. `getArtist` populates the cover,
+   listener count, TOP, and ALBUMS. The Deezer extension limits TOP to twenty tracks,
+   so the public `api.deezer.com/artist/{id}/top?limit=30` supplements them to 30,
+   merging numeric and `deezer:`-prefixed IDs as the same track. When the endpoint returns
+   fewer than 30, unique tracks from the artist's albums fill the remaining slots; artist radio
+   and other performers are not used. TOP contains up to 30 tracks, and ALBUMS contains up to 50 albums.
+   Each track receives its own Music Request token; TOP/ALBUMS/BACK modify the current
+   chat message or `inline_message_id`. Follow toggles the record from ADR 0004. An
+   external URL is not used in `callback_data`: the Bot API limit is 64 bytes.
 5. **Album Card and downloading.** An album from ALBUMS opens its cover, metadata,
    tracks, and the `GET ALL`, `Download ZIP`, and `BACK` buttons. GET ALL downloads
    the collection through the existing mornye pipeline and sends the audio files one by one.
-   ZIP packages the actually downloaded files into a single archive; the inline message is changed
-   to a document using the file_id from a preliminary DM upload, because the Bot API does
-   not allow uploading a new file directly in an inline message edit.
+   ZIP packages the actually downloaded files into a single archive. A bot-authored DM card
+   sends a normal document; the inline message is changed to a document using the file_id
+   from a preliminary DM upload, because inline edits cannot upload a new file.
 6. **Inline track delivery.** The message first shows Downloading,
    then the file is uploaded to the private chat to obtain a `file_id`, after which
    `editMessageMedia` replaces the content with `InputMediaAudio`. The private copy
-   remains as delivery and a fallback if the edit fails.
+   remains as delivery and a fallback if the edit fails. DM Artist Card downloads instead
+   use the ordinary `execute_request` and `ChatDelivery` path directly.
 
 ## Risks and Consequences
 

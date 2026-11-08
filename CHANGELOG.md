@@ -39,6 +39,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Inline release ZIP uploads now use the artist and release title in their Telegram filename instead of `album.zip`.
+- Private inline artist selections now insert the artist URL so normal DM intake answers with a bot-authored Artist
+  Card; selections in other chats retain the existing editable inline card.
+- Artist inline results now use named articles with cover thumbnails, keeping artist names visible in clients that
+  hide photo-result titles.
+- Deezer Artist Cards deduplicate public/extension TOP IDs and fill short lists with unique album tracks up to 30.
 - Single gallery media now uses the same direct HTTP downloader as albums before falling back to `gallery-dl`,
   fixing `403 Forbidden` failures on Pawchive CDN video links.
 

@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from services.catalogue_search import SearchItem
+from services.delivery import ChatDelivery
 from services.requests import catalogue_browse_request, music_request
 from services.inline_flow import _deliver_first
-from services.status import inline_caption_status, inline_status
+from services.status import chat_status, inline_caption_status, inline_status
 from services.session import Session
 from utils import text
 from utils.callbacks import CatalogueCallback
@@ -366,6 +368,29 @@ async def run_album_zip(
             first=artifact,
             caption=text.esc(artifact.file_name),
             mention=session.identity.mention,
+        )
+    except RuntimeError as exc:
+        await status.fail(text.esc(str(exc)))
+    finally:
+        session.request_store.delete(stored.token)
+
+
+async def run_chat_album_zip(
+    session: Session,
+    *,
+    bot: Bot,
+    user_id: int,
+    source_message: Message,
+    stored: StoredRequest,
+) -> None:
+    """Archive an album and send a normal bot-authored document in DM."""
+    status_message = await source_message.reply(text.PROCESSING)
+    status = chat_status(status_message, name=stored.payload.name)
+    started_at = datetime.now()
+    try:
+        artifact = await download_album_zip(session, stored, user_id)
+        await ChatDelivery(bot, source_message).deliver(
+            [artifact], status=status, started_at=started_at
         )
     except RuntimeError as exc:
         await status.fail(text.esc(str(exc)))

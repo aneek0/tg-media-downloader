@@ -9,6 +9,8 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from services.executor import execute_request
+from services.catalogue_flow import artist_card
+from services.catalogue_search import artist_source
 from services.gallery import _gallery_friendly_error
 from services.media_cache import cached_media_from, send_cached_media
 from services.mornye import audio_cache_key
@@ -55,6 +57,37 @@ def _search_keyboard(query: str) -> InlineKeyboardMarkup:
     )
 logger = logging.getLogger(__name__)
 
+async def _answer_artist_card(
+    message: Message, session: Session, provider: str, artist_id: str
+) -> None:
+    """Answer an artist Source URL with a normal bot-authored Artist Card."""
+    try:
+        following = any(
+            follow.provider == provider and follow.artist_id == artist_id
+            for follow in session.follows.list_for_user(message.from_user.id)
+        )
+        card = await artist_card(
+            session,
+            provider=provider,
+            artist_id=artist_id,
+            following=following,
+        )
+        payload = card.stored.payload
+        if payload.cover_url:
+            await message.answer_photo(
+                photo=payload.cover_url,
+                caption=card.caption,
+                reply_markup=card.keyboard,
+            )
+        else:
+            await message.answer(card.caption, reply_markup=card.keyboard)
+        payload.media_message = bool(payload.cover_url)
+        card.stored.info = payload.to_info()
+        session.request_store.save(card.stored)
+    except (RuntimeError, ValueError, TelegramAPIError) as exc:
+        logger.info("Artist Card failed | user=%s error=%s", message.from_user.id, exc)
+        await message.answer(text.esc(str(exc)))
+
 
 @router.message(F.chat.type == "private", F.text)
 async def intake_message(  # pylint: disable=too-complex
@@ -86,6 +119,11 @@ async def intake_message(  # pylint: disable=too-complex
         message.chat.id,
         safe_url_label(parsed.source_url),
     )
+
+    artist = artist_source(parsed.source_url)
+    if artist is not None:
+        await _answer_artist_card(message, session, *artist)
+        return
 
     blocked_seconds = cooldown.check(message.from_user.id, settings.auth_users)
     if blocked_seconds:

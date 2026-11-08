@@ -13,6 +13,7 @@ from services.catalogue_flow import (
     download_album_zip,
     render_artist_card,
     run_album_zip,
+    run_chat_album_zip,
 )
 from services.catalogue_search import ArtistCatalogue, SearchItem
 from services.requests import catalogue_browse_request, music_request
@@ -264,4 +265,55 @@ async def test_run_album_zip_uses_browse_name_and_cleans_request(monkeypatch, tm
 
     assert status_names == ["Album"]
     deliver.assert_awaited_once()
+    assert session.request_store.load(stored.token) is None
+
+@pytest.mark.asyncio
+async def test_run_chat_album_zip_sends_normal_document_and_cleans_request(monkeypatch, tmp_path):
+    """DM ZIP delivery uses a bot chat message, not an inline media edit."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    stored = music_request(
+        session.request_store,
+        ParsedInput(source_url="https://www.deezer.com/album/2"),
+        kind="album",
+        name="Album",
+        count=1,
+    )
+    target = SimpleNamespace(
+        name="Album",
+        tracks=[SimpleNamespace(album_artist="Artist", artists="Artist")],
+    )
+    audio = tmp_path / "song.flac"
+    audio.write_bytes(b"fLaC-audio")
+    artifact = DownloadArtifact(
+        path=audio, file_name=audio.name, send_type="audio", caption="Song"
+    )
+    monkeypatch.setattr(session.mornye, "resolve_url", AsyncMock(return_value=target))
+    monkeypatch.setattr(
+        session.mornye,
+        "download_target",
+        AsyncMock(return_value=([artifact], None)),
+    )
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    source_message = SimpleNamespace(
+        chat=SimpleNamespace(id=99),
+        reply=AsyncMock(return_value=status_message),
+        reply_document=AsyncMock(
+            return_value=SimpleNamespace(document=SimpleNamespace(file_id="D1"))
+        ),
+    )
+    bot = SimpleNamespace(id=1, send_chat_action=AsyncMock(), edit_message_media=AsyncMock())
+
+    await run_chat_album_zip(
+        session,
+        bot=bot,
+        user_id=99,
+        source_message=source_message,
+        stored=stored,
+    )
+
+    upload = source_message.reply_document.await_args.kwargs["document"]
+    assert upload.filename == "Artist — Album.zip"
+    bot.edit_message_media.assert_not_awaited()
     assert session.request_store.load(stored.token) is None

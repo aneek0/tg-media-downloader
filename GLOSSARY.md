@@ -154,8 +154,9 @@ creates a Music Request for its Source URL.
 _Avoid_: global search, deezer, spotify
 
 **Artist Card**:
-An Inline Result with the artist's photo, album and listener counts, and the
-TOP 30, ALBUMS, and Follow buttons. The buttons edit the same message.
+An artist catalogue view with the artist's photo, album and listener counts, and
+the TOP 30, ALBUMS, and Follow buttons. Private inline selections hand off the
+artist URL to produce a bot-authored DM card; other chats edit the Inline Result.
 _Avoid_: card, profile, artist result
 
 **Follow**:

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from config import Settings
 from services.cooldown import CooldownManager
-from services.catalogue_search import CatalogueSearch
+from services.catalogue_search import CatalogueSearch, SearchItem
 from services.follow_store import FollowStore
 from services.media_cache import MediaCache
 from services.mornye import MornyeService
@@ -16,6 +16,18 @@ from services.request_store import RequestStore
 from services.session import Session
 from services.user_settings import UserSettingsStore
 from utils.models import CachedMedia
+
+
+def make_artist_search_item() -> SearchItem:
+    return SearchItem(
+        provider="deezer",
+        kind="artist",
+        item_id="deezer:1",
+        title="Artist",
+        cover_url="https://example.com/artist.jpg",
+        external_url="https://www.deezer.com/artist/1",
+        listeners=123,
+    )
 
 
 def make_settings(tmp_path: Path) -> Settings:

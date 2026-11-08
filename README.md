@@ -41,7 +41,8 @@ job, and sends the result back to Telegram with the correct media type and metad
 - **SoundCloud links** — short/mobile/canonical URLs resolve through the mornye SoundCloud extension; playable
   native AAC streams use `ext:soundcloud`, while unavailable streams or extension failures retain yt-dlp fallback
 - **Artist Cards** — cover, fan metadata, a separate TOP 30 view, up to 50 albums, per-track downloads,
-  album GET ALL/ZIP, and follows
+  album GET ALL/ZIP, and follows. Private inline selections insert the artist URL and receive a bot-authored DM card;
+  selections in other chats retain editable inline cards
 - **Release follows** — `/follow`, `/follows`, and `/unfollow`; new-release checks run every six hours per follower
 - per-user `/settings` for text search, default catalogue provider, FLAC/MP3 delivery, and CD vs Hi-Res
   (Hi-Res is only used where the provider has a 24-bit master; everything else stays lossless CD)

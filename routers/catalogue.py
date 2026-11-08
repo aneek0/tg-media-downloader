@@ -12,9 +12,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
-    InlineQueryResultPhoto,
     InputMediaPhoto,
     InputTextMessageContent,
+    Message,
 )
 
 from services.catalogue_flow import (
@@ -23,6 +23,7 @@ from services.catalogue_flow import (
     artist_card,
     render_artist_card,
     run_album_zip,
+    run_chat_album_zip,
 )
 from services.catalogue_search import (
     CatalogueNetworkError,
@@ -30,9 +31,12 @@ from services.catalogue_search import (
     SearchQuery,
     SearchResults,
 )
+from services.executor import execute_request
 from services.inline_flow import run_inline_download
+from services.pipeline import MUSIC_OPTIONS
 from services.requests import catalogue_browse_request, inline_media_request
 from services.session import Session
+from services.status import chat_status
 from utils import text
 from utils.callbacks import CatalogueCallback, InlineCancelCallback
 from utils.models import (
@@ -130,16 +134,35 @@ async def catalogue_query(query: InlineQuery, session: Session) -> object | None
         )
         return
 
+    private_handoff = getattr(query, "chat_type", None) in {"private", "sender"}
     results = []
     for item in found.items:
         if item.kind == "artist":
-            results.append(_artist_result(session, item))
+            results.append(
+                _artist_link_result(item)
+                if private_handoff
+                else _artist_result(session, item)
+            )
         else:
             results.append(_media_result(session, item))
     await query.answer(results, cache_time=30, is_personal=True)
 
 
-def _artist_result(session: Session, item: SearchItem):
+def _artist_link_result(item: SearchItem) -> InlineQueryResultArticle:
+    """DM handoff: the inserted artist URL triggers a normal bot response."""
+    description = f"👥 {item.listeners}" if item.listeners else text.ARTIST_CARD
+    return InlineQueryResultArticle(
+        id=f"artist-link:{item.provider}:{item.item_id}",
+        title=f"🎤 {item.title}",
+        description=description,
+        thumbnail_url=item.cover_url or None,
+        input_message_content=InputTextMessageContent(
+            message_text=text.esc(item.external_url)
+        ),
+    )
+
+
+def _artist_result(session: Session, item: SearchItem) -> InlineQueryResultArticle:
     stored = catalogue_browse_request(
         session.request_store, ParsedInput(source_url=item.external_url)
     )
@@ -150,7 +173,7 @@ def _artist_result(session: Session, item: SearchItem):
         cover_url=item.cover_url,
         artist_url=item.external_url,
         listeners=item.listeners,
-        media_message=bool(item.cover_url),
+        media_message=False,
     ).to_info()
     session.request_store.save(stored)
     keyboard = InlineKeyboardMarkup(
@@ -166,20 +189,11 @@ def _artist_result(session: Session, item: SearchItem):
         ]
     )
     description = f"👥 {item.listeners}" if item.listeners else text.ARTIST_CARD
-    if item.cover_url:
-        return InlineQueryResultPhoto(
-            id=f"browse:{stored.token}",
-            photo_url=item.cover_url,
-            thumbnail_url=item.cover_url,
-            title=f"🎤 {item.title}",
-            description=description,
-            caption=text.esc(item.title),
-            reply_markup=keyboard,
-        )
     return InlineQueryResultArticle(
         id=f"browse:{stored.token}",
         title=f"🎤 {item.title}",
         description=description,
+        thumbnail_url=item.cover_url or None,
         input_message_content=InputTextMessageContent(message_text=text.esc(item.title)),
         reply_markup=keyboard,
     )
@@ -203,6 +217,8 @@ def _media_result(session: Session, item: SearchItem) -> InlineQueryResultArticl
 
 @router.chosen_inline_result()
 async def catalogue_chosen(query: ChosenInlineResult, session: Session) -> object | None:
+    if query.result_id.startswith("artist-link:"):
+        return
     if not query.result_id.startswith("browse:"):
         return UNHANDLED
     token = query.result_id.split(":", 1)[1]
@@ -288,7 +304,11 @@ async def catalogue_callback(  # pylint: disable=too-complex
         else:
             await query.answer()
             return
-        await _show_card(query.bot, query.inline_message_id, session, card)
+        message = getattr(query, "message", None)
+        if message is not None:
+            await _show_message_card(message, session, card)
+        else:
+            await _show_card(query.bot, query.inline_message_id, session, card)
         await query.answer()
     except (RuntimeError, ValueError, TelegramAPIError) as exc:
         logger.info("Catalogue action failed | action=%s error=%s", action, exc)
@@ -314,6 +334,23 @@ async def _download_callback(query: CallbackQuery, session: Session, token: str)
         payload = album.payload
         caption_status = isinstance(payload, CataloguePayload) and payload.media_message
         stored = album_download_request(session, album)
+    message = getattr(query, "message", None)
+    if message is not None:
+        if stored is None:
+            await query.answer(text.REQUEST_EXPIRED, show_alert=True)
+            return
+        status_message = await message.reply(text.PROCESSING)
+        await query.answer()
+        await execute_request(
+            session,
+            stored,
+            MUSIC_OPTIONS[0],
+            bot=query.bot,
+            status=chat_status(status_message),
+            source_message=message,
+            user_id=query.from_user.id,
+        )
+        return
     if stored is None or not query.inline_message_id:
         await query.answer(text.REQUEST_EXPIRED, show_alert=True)
         return
@@ -330,7 +367,8 @@ async def _download_callback(query: CallbackQuery, session: Session, token: str)
 
 async def _zip_callback(query: CallbackQuery, session: Session, token: str) -> None:
     album = _load(session, token, RequestType.CATALOGUE_BROWSE)
-    if album is None or not query.inline_message_id:
+    message = getattr(query, "message", None)
+    if album is None or (message is None and not query.inline_message_id):
         await query.answer(text.REQUEST_EXPIRED, show_alert=True)
         return
     payload = album.payload
@@ -339,6 +377,15 @@ async def _zip_callback(query: CallbackQuery, session: Session, token: str) -> N
         return
     stored = album_download_request(session, album)
     await query.answer()
+    if message is not None:
+        await run_chat_album_zip(
+            session,
+            bot=query.bot,
+            user_id=query.from_user.id,
+            source_message=message,
+            stored=stored,
+        )
+        return
     await run_album_zip(
         session,
         bot=query.bot,
@@ -347,6 +394,34 @@ async def _zip_callback(query: CallbackQuery, session: Session, token: str) -> N
         stored=stored,
         caption_status=payload.media_message,
     )
+
+
+async def _show_message_card(message: Message, session: Session, card) -> None:
+    """Render an Artist Card into an ordinary bot message in private chat."""
+    payload = card.stored.payload
+    if not isinstance(payload, CataloguePayload):
+        raise ValueError("not an Artist Card")
+    if payload.cover_url:
+        media = InputMediaPhoto(media=payload.cover_url, caption=card.caption)
+        if getattr(message, "photo", None):
+            await message.edit_media(media=media, reply_markup=card.keyboard)
+        else:
+            await message.delete()
+            await message.answer_photo(
+                photo=payload.cover_url,
+                caption=card.caption,
+                reply_markup=card.keyboard,
+            )
+        payload.media_message = True
+    else:
+        if getattr(message, "photo", None):
+            await message.delete()
+            await message.answer(card.caption, reply_markup=card.keyboard)
+        else:
+            await message.edit_text(card.caption, reply_markup=card.keyboard)
+        payload.media_message = False
+    card.stored.info = payload.to_info()
+    session.request_store.save(card.stored)
 
 
 async def _show_card(query_bot, inline_message_id: str | None, session: Session, card) -> None:

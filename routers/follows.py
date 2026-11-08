@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import (
@@ -11,27 +9,13 @@ from aiogram.types import (
     Message,
 )
 
+from services.catalogue_search import artist_source
 from services.follow_store import Follow
 from services.session import Session
 from utils import text
 from utils.callbacks import FollowCallback
 
 router = Router(name="follows")
-
-
-def _artist_source(url: str) -> tuple[str, str]:
-    parsed = urlparse(url)
-    parts = [part for part in parsed.path.split("/") if part]
-    try:
-        index = parts.index("artist")
-        artist_id = parts[index + 1]
-    except (ValueError, IndexError) as exc:
-        raise ValueError("Expected a public Deezer or Spotify artist URL") from exc
-    if parsed.hostname and "deezer.com" in parsed.hostname:
-        return "deezer", f"deezer:{artist_id}"
-    if parsed.hostname == "open.spotify.com":
-        return "spotify-web", artist_id
-    raise ValueError("Expected a public Deezer or Spotify artist URL")
 
 
 def _view(follows: list[Follow]) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -62,7 +46,10 @@ async def follow_command(message: Message, session: Session) -> None:
         await message.answer(text.FOLLOW_USAGE)
         return
     try:
-        provider, artist_id = _artist_source(args[1].strip())
+        source = artist_source(args[1].strip())
+        if source is None:
+            raise ValueError("Expected a public Deezer, Spotify, or Tidal artist URL")
+        provider, artist_id = source
         catalogue = await session.catalogue_search.artist(provider, artist_id)
         existing = session.follows.get(provider, artist_id)
         if any(follow.user_id == message.from_user.id for follow in existing):

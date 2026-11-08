@@ -8,6 +8,7 @@ from routers.callbacks import request_callback
 from routers.commands import about_command, help_command, start_command
 from routers.intake import intake_message
 from services.executor import execute_request
+from services.catalogue_search import ArtistCatalogue
 from services.gallery import GalleryProbe
 from services.request_store import RequestStore
 from services.status import StatusSurface
@@ -18,6 +19,7 @@ from services.ytdlp import (
     download_best_quality,
 )
 from tests.conftest import (
+    make_artist_search_item,
     make_media_cache,
     make_message,
     make_session,
@@ -699,3 +701,28 @@ async def test_text_search_menu_has_two_columns_and_global_search(tmp_path):
         [".art Radiohead", ".pla Radiohead"],
         ["Radiohead"],
     ]
+
+@pytest.mark.asyncio
+async def test_private_artist_url_gets_normal_bot_card(monkeypatch, tmp_path):
+    """An artist URL from inline feedback receives a new bot-authored Artist Card."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    artist = make_artist_search_item()
+    monkeypatch.setattr(
+        session.catalogue_search,
+        "artist",
+        AsyncMock(return_value=ArtistCatalogue(artist=artist)),
+    )
+    message = make_message()
+    message.text = artist.external_url
+
+    await intake_message(message, session)
+
+    kwargs = message.answer_photo.await_args.kwargs
+    assert kwargs["photo"] == artist.cover_url
+    assert "🎤 Artist:" in kwargs["caption"]
+    assert kwargs["reply_markup"] is not None
+    message.reply.assert_not_awaited()
+    callback = kwargs["reply_markup"].inline_keyboard[0][0].callback_data
+    assert session.request_store.load(callback.split(":")[-1]) is not None

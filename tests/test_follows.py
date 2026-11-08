@@ -175,6 +175,11 @@ async def test_deezer_top_timeout_skips_one_artist_and_keeps_polling(
         "_deezer_top",
         fail_first_artist,
     )
+    monkeypatch.setattr(
+        CatalogueSearch,
+        "_deezer_discography_tracks",
+        AsyncMock(return_value=[]),
+    )
     poller = FollowPoller(session, bot)
 
     await poller.poll_once()

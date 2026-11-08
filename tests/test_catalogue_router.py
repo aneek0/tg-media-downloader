@@ -7,24 +7,32 @@ from unittest.mock import AsyncMock
 import pytest
 from aiogram import Bot
 from aiogram.dispatcher.event.bases import UNHANDLED
-from aiogram.types import Update
+from aiogram.types import InlineQueryResultArticle, Update
 
 from app import create_dispatcher
-from routers.catalogue import _LAST_SEARCH, _SEARCH_CACHE, catalogue_callback, catalogue_query
+from routers.catalogue import (
+    _LAST_SEARCH,
+    _SEARCH_CACHE,
+    catalogue_callback,
+    catalogue_chosen,
+    catalogue_query,
+)
 from services.catalogue_search import (
     CatalogueNetworkError,
     SearchItem,
     SearchResults,
 )
-from services.requests import catalogue_browse_request, inline_media_request
+from services.requests import catalogue_browse_request, inline_media_request, music_request
+from tests.conftest import make_artist_search_item as _artist
 from tests.conftest import make_session, make_settings
 from utils.callbacks import CatalogueCallback
 from utils.models import CataloguePayload, ParsedInput
 
 
-def _query(text: str) -> SimpleNamespace:
+def _query(text: str, chat_type: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         query=text,
+        chat_type=chat_type,
         from_user=SimpleNamespace(id=99),
         answer=AsyncMock(),
     )
@@ -44,6 +52,7 @@ def _found() -> SearchResults:
             )
         ]
     )
+
 
 
 @pytest.mark.asyncio
@@ -235,3 +244,136 @@ async def test_follow_toggle_rerenders_artist_card(monkeypatch, tmp_path):
         for row in card.keyboard.inline_keyboard
         for button in row
     )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type", ["private", "sender"])
+async def test_private_artist_feedback_inserts_url_without_inline_edit(
+    monkeypatch, tmp_path, chat_type
+):
+    """DM artist feedback hands its URL to the normal bot-authored intake flow."""
+    _SEARCH_CACHE.clear()
+    _LAST_SEARCH.clear()
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    monkeypatch.setattr(
+        session.catalogue_search,
+        "search",
+        AsyncMock(return_value=SearchResults(items=[_artist()])),
+    )
+    query = _query(".art Artist", chat_type)
+
+    await catalogue_query(query, session)
+
+    result = query.answer.await_args.args[0][0]
+    assert isinstance(result, InlineQueryResultArticle)
+    assert result.id.startswith("artist-link:")
+    assert result.title == "🎤 Artist"
+    assert result.thumbnail_url == _artist().cover_url
+    assert result.input_message_content.message_text == _artist().external_url
+    assert result.reply_markup is None
+    chosen = SimpleNamespace(result_id=result.id)
+    assert await catalogue_chosen(chosen, session) is None
+
+
+@pytest.mark.asyncio
+async def test_public_artist_feedback_keeps_inline_artist_card(monkeypatch, tmp_path):
+    """Outside DM, artist selection retains its browse token and inline keyboard."""
+    _SEARCH_CACHE.clear()
+    _LAST_SEARCH.clear()
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    monkeypatch.setattr(
+        session.catalogue_search,
+        "search",
+        AsyncMock(return_value=SearchResults(items=[_artist()])),
+    )
+    query = _query(".art Artist", "group")
+
+    await catalogue_query(query, session)
+
+    result = query.answer.await_args.args[0][0]
+    assert isinstance(result, InlineQueryResultArticle)
+    assert result.id.startswith("browse:")
+    assert result.title == "🎤 Artist"
+    assert result.thumbnail_url == _artist().cover_url
+    assert result.reply_markup is not None
+    stored = session.request_store.load(result.id.split(":", 1)[1])
+    assert stored.payload.media_message is False
+
+
+@pytest.mark.asyncio
+async def test_bot_artist_card_callbacks_edit_normal_message(tmp_path):
+    """TOP edits the bot's DM photo instead of requiring an inline_message_id."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    stored = catalogue_browse_request(
+        session.request_store,
+        ParsedInput(source_url=_artist().external_url),
+        CataloguePayload(
+            provider="deezer",
+            artist_id="deezer:1",
+            name="Artist",
+            cover_url=_artist().cover_url,
+            top_tracks=[_found().items[0].to_dict()],
+        ),
+    )
+    message = SimpleNamespace(photo=[SimpleNamespace()], edit_media=AsyncMock())
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=99),
+        message=message,
+        inline_message_id=None,
+        answer=AsyncMock(),
+        bot=SimpleNamespace(edit_message_media=AsyncMock()),
+    )
+
+    await catalogue_callback(
+        query, CatalogueCallback(action="top", token=stored.token), session
+    )
+
+    message.edit_media.assert_awaited_once()
+    query.bot.edit_message_media.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bot_artist_card_download_uses_normal_executor(monkeypatch, tmp_path):
+    """Artist Card tracks in DM use chat delivery rather than inline media edits."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    session = make_session(settings)
+    card = catalogue_browse_request(
+        session.request_store,
+        ParsedInput(source_url=_artist().external_url),
+        CataloguePayload(provider="deezer", artist_id="deezer:1", name="Artist"),
+    )
+    music = music_request(
+        session.request_store,
+        ParsedInput(source_url="https://www.deezer.com/track/1"),
+        kind="track",
+        name="Song",
+        count=1,
+    )
+    status_message = SimpleNamespace(edit_text=AsyncMock())
+    message = SimpleNamespace(reply=AsyncMock(return_value=status_message))
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=99),
+        message=message,
+        inline_message_id=None,
+        answer=AsyncMock(),
+        bot=SimpleNamespace(),
+    )
+    execute = AsyncMock()
+    inline_download = AsyncMock()
+    monkeypatch.setattr("routers.catalogue.execute_request", execute)
+    monkeypatch.setattr("routers.catalogue.run_inline_download", inline_download)
+
+    await catalogue_callback(
+        query,
+        CatalogueCallback(action="dl", token=f"{card.token}.{music.token}"),
+        session,
+    )
+
+    assert execute.await_args.kwargs["source_message"] is message
+    inline_download.assert_not_awaited()
