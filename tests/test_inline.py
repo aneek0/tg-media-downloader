@@ -1,7 +1,6 @@
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-
-import re
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest

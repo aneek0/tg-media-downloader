@@ -7,13 +7,14 @@ from pathlib import Path
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, Message
+
+from services.delivery import ChatDelivery, send_url_media
 from services.media_cache import CachedMedia
-from services.pipeline import download_artifacts
 from services.mornye import audio_cache_key
+from services.pipeline import download_artifacts
 from services.progress import humanbytes
 from services.session import Session
 from services.status import StatusSurface, elapsed_seconds
-from services.delivery import ChatDelivery, send_url_media
 from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import (
@@ -27,7 +28,7 @@ from utils.models import (
 logger = logging.getLogger(__name__)
 
 
-async def execute_request(  # pylint: disable=too-complex
+async def execute_request(  # noqa: C901
     session: Session,
     stored: StoredRequest,
     option: DownloadOption,
@@ -156,7 +157,7 @@ async def execute_request(  # pylint: disable=too-complex
             )
         )
         return
-    except Exception as exc:  # pylint: disable=broad-exception-caught  # pragma: no cover - user-facing safety boundary
+    except Exception as exc:  # pragma: no cover - user-facing safety boundary
         logger.exception(
             "Request action failed | user=%s token=%s type=%s option=%s",
             user_id,
@@ -266,7 +267,7 @@ async def _run_mornye_request(
                 artifacts=artifacts, status=status, started_at=started_at
             )
         )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Spotify upload failed | user=%s token=%s error=%s",
             user_id,

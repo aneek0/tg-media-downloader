@@ -226,5 +226,6 @@ Run the checks locally (CI runs the same):
 
 ```bash
 uv run pytest
-uv run pylint $(git ls-files '*.py')
+uv run ruff check .
+uv run ty check
 ```

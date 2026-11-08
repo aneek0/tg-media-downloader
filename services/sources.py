@@ -71,7 +71,7 @@ def gallery_supports_url(url: str) -> bool:
     call warms the extractor table once; later calls cost microseconds."""
     try:
         return _gdl_extractor.find(url) is not None
-    except Exception:  # pylint: disable=broad-exception-caught  # gallery-dl API, not our contract
+    except Exception:  # noqa: BLE001  # gallery-dl API, not our contract
         return False
 
 

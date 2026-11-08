@@ -4,8 +4,9 @@ import asyncio
 import logging
 import os
 import signal
-from pathlib import Path
 from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import cast
 
 from utils.logging_config import redact_command
 
@@ -37,7 +38,7 @@ async def _read_stream(
         if on_output is not None:
             try:
                 await on_output(line.decode(errors="replace").rstrip("\r\n"))
-            except Exception:  # pylint: disable=broad-exception-caught
+            except Exception:
                 logger.debug("on_output callback failed", exc_info=True)
 
 
@@ -90,7 +91,7 @@ async def run_command(
             timeout,
         )
         raise RuntimeError(
-            f"Command timed out after {int(timeout)}s: {command[0]}"
+            f"Command timed out after {int(cast(float, timeout))}s: {command[0]}"
         ) from exc
     if process.returncode != 0:
         error_text = (

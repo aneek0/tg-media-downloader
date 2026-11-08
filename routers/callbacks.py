@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
-from aiogram import Router
-from aiogram.types import CallbackQuery
+from aiogram import Bot, Router
+from aiogram.types import CallbackQuery, InaccessibleMessage
 
 from routers.commands import handle_ui_callback
 from services.executor import execute_request
@@ -35,9 +36,13 @@ async def request_callback(
     callback_data: RequestCallback,
     session: Session,
 ) -> None:
-    if not query.message:
+    message = query.message
+    if not message or isinstance(message, InaccessibleMessage):
         await query.answer()
         return
+
+    # aiogram binds a bot to every dispatched update.
+    bot = cast(Bot, query.bot)
 
     stored = session.request_store.load(callback_data.token)
     if not stored:
@@ -47,7 +52,7 @@ async def request_callback(
             callback_data.token,
             callback_data.action,
         )
-        await query.message.edit_text(text.REQUEST_EXPIRED)
+        await message.edit_text(text.REQUEST_EXPIRED)
         await query.answer()
         return
 
@@ -59,7 +64,7 @@ async def request_callback(
             callback_data.token,
             callback_data.action,
         )
-        await query.message.edit_text(text.REQUEST_EXPIRED)
+        await message.edit_text(text.REQUEST_EXPIRED)
         await query.answer()
         return
 
@@ -67,9 +72,9 @@ async def request_callback(
         session,
         stored,
         option,
-        bot=query.bot,
-        status=chat_status(query.message),
-        source_message=query.message.reply_to_message or query.message,
+        bot=bot,
+        status=chat_status(message),
+        source_message=message.reply_to_message or message,
         user_id=query.from_user.id,
     )
     await query.answer()

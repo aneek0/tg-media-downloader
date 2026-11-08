@@ -8,6 +8,7 @@ in :mod:`services.progress`.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
@@ -122,7 +123,7 @@ class StatusSurface:
     ) -> tuple[str, str, str | None, str | None] | None:
         match = cls._LINE_RE.search(line)
         if match:
-            return match.groups()
+            return match.group(1), match.group(2), match.group(3), match.group(4)
         aria2_match = cls._ARIA2_RE.search(line)
         if not aria2_match:
             return None
@@ -132,10 +133,8 @@ class StatusSurface:
     async def _silent_edit(self, message: str, *, muted_ok: bool = False) -> None:
         if self._muted and not muted_ok:
             return
-        try:
+        with contextlib.suppress(Exception):
             await self._edit(message)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
 
 
 def chat_status(message: Message, *, name: str = "") -> StatusSurface:

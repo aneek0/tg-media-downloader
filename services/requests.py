@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
 from services.request_store import RequestStore
 from utils.models import (
+    CataloguePayload,
     DirectPayload,
     DownloadOption,
     GalleryPayload,
     InlineGalleryPayload,
     InlineMediaPayload,
     MusicPayload,
-    CataloguePayload,
     ParsedInput,
     ProbePayload,
     RequestType,
@@ -172,7 +172,7 @@ def catalogue_browse_request(
     )
 
 @contextmanager
-def lifecycle(store: RequestStore, token: str) -> Iterator[str]:
+def lifecycle(store: RequestStore, token: str) -> Generator[str, None, None]:
     """Guarantee request-token and work-directory cleanup on every terminal
     path (success, failure, cancellation)."""
     try:

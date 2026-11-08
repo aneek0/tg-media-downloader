@@ -3,12 +3,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import Chat, InaccessibleMessage
 
 from routers.callbacks import request_callback
-from routers.commands import about_command, help_command, start_command
+from routers.commands import about_command, handle_ui_callback, help_command, start_command
 from routers.intake import intake_message
-from services.executor import execute_request
 from services.catalogue_search import ArtistCatalogue
+from services.executor import execute_request
 from services.gallery import GalleryProbe
 from services.request_store import RequestStore
 from services.status import StatusSurface
@@ -26,8 +27,8 @@ from tests.conftest import (
     make_settings,
     record_cached_video,
 )
-from utils.callbacks import RequestCallback
 from utils import text
+from utils.callbacks import RequestCallback
 from utils.models import (
     CachedMedia,
     DownloadArtifact,
@@ -35,6 +36,7 @@ from utils.models import (
     ParsedInput,
     StoredRequest,
 )
+
 
 @pytest.mark.asyncio
 async def test_start_help_about_handlers():
@@ -45,6 +47,27 @@ async def test_start_help_about_handlers():
     await about_command(message)
 
     assert message.answer.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_callbacks_acknowledge_inaccessible_messages():
+    """Inaccessible callback messages must be acknowledged without edit/delete."""
+    query = SimpleNamespace(
+        message=InaccessibleMessage(
+            chat=Chat(id=1, type="private"),
+            message_id=1,
+        ),
+        answer=AsyncMock(),
+    )
+
+    await request_callback(
+        query,
+        RequestCallback(token="token123", action="direct_primary"),
+        SimpleNamespace(),
+    )
+    await handle_ui_callback(query, "help")
+
+    assert query.answer.await_count == 2
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `ty` 0.0.99 type checking for production modules in local, CI, and release checks.
+
+### Changed
+
+- Replaced pylint with Ruff for local, CI, and release linting; lint configuration now lives in `pyproject.toml`.
+
 ### Fixed
 
 - Private intake now ignores every message sent via this bot after an inline selection, so status and error text

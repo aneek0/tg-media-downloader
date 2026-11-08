@@ -7,16 +7,17 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from services.catalogue_search import SearchItem
 from services.delivery import ChatDelivery
-from services.requests import catalogue_browse_request, music_request
 from services.inline_flow import _deliver_first
-from services.status import chat_status, inline_caption_status, inline_status
+from services.requests import catalogue_browse_request, music_request
 from services.session import Session
+from services.status import chat_status, inline_caption_status, inline_status
 from utils import text
 from utils.callbacks import CatalogueCallback
 from utils.models import (
@@ -356,7 +357,7 @@ async def run_album_zip(
 ) -> None:
     """Download, archive, DM-upload, then swap the inline card to the ZIP."""
     status_factory = inline_caption_status if caption_status else inline_status
-    status = status_factory(bot, inline_message_id, name=stored.payload.name)
+    status = status_factory(bot, inline_message_id, name=cast(CataloguePayload, stored.payload).name)
     try:
         artifact = await download_album_zip(session, stored, user_id)
         await _deliver_first(
@@ -385,7 +386,7 @@ async def run_chat_album_zip(
 ) -> None:
     """Archive an album and send a normal bot-authored document in DM."""
     status_message = await source_message.reply(text.PROCESSING)
-    status = chat_status(status_message, name=stored.payload.name)
+    status = chat_status(status_message, name=cast(CataloguePayload, stored.payload).name)
     started_at = datetime.now()
     try:
         artifact = await download_album_zip(session, stored, user_id)

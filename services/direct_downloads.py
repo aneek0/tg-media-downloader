@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import mimetypes
 import os
 import re
 import time
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlparse
 
 import aiohttp
@@ -21,7 +23,6 @@ from utils.models import (
     FileTooLargeError,
     ParsedInput,
 )
-
 
 # Files smaller than this are not split: extra requests cost more than they save.
 _SEGMENT_MIN_BYTES = 1024 * 1024
@@ -86,14 +87,14 @@ def _resolve_target(
 ) -> tuple[str, Path]:
     ext = option.file_ext or suggested_ext
     if not ext:
-        guessed_ext = mimetypes.guess_extension(content_type.split(";")[0].strip())
+        guessed_ext = mimetypes.guess_extension(content_type.split(";", maxsplit=1)[0].strip())
         ext = guessed_ext.lstrip(".") if guessed_ext else None
     file_name = _normalize_file_name(file_name, ext)
     return file_name, work_dir / file_name
 
 
 def _reject_html(content_type: str) -> None:
-    if content_type.split(";")[0].strip().lower() == "text/html":
+    if content_type.split(";", maxsplit=1)[0].strip().lower() == "text/html":
         raise RuntimeError(
             "This link returns a web page, not a media file. "
             "It is not directly downloadable."
@@ -289,18 +290,16 @@ async def _run_segments(
     failure: BaseException | None = None
     try:
         await asyncio.gather(*tasks)
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001
         failure = exc
     finally:
         if failure is not None:
             for task in tasks:
                 task.cancel()
         monitor.cancel()
-        try:
+        # Outer cancellation delivered here; the handle must still be closed.
+        with contextlib.suppress(BaseException):
             await asyncio.gather(*tasks, monitor, return_exceptions=True)
-        except BaseException:
-            # Outer cancellation delivered here; the handle must still be closed.
-            pass
         handle.close()
     return failure
 
@@ -388,7 +387,7 @@ async def _download_parallel(
     return destination, file_name
 
 
-async def _download_single(  # pylint: disable=too-many-arguments
+async def _download_single(  # noqa: PLR0913
     *,
     session: aiohttp.ClientSession,
     url: str,
@@ -510,7 +509,9 @@ async def download_direct_file(
     )
 
     timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
-    connector = aiohttp.TCPConnector(ssl=None if settings.verify_ssl else False)
+    connector = aiohttp.TCPConnector(
+        ssl=cast(bool, None if settings.verify_ssl else False)
+    )
     started = time.time()
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:

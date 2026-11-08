@@ -1,9 +1,9 @@
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
+from aiogram.types import CallbackQuery, InaccessibleMessage, LinkPreviewOptions, Message
 
-from utils.keyboards import about_keyboard, help_keyboard, start_keyboard
 from utils import text
+from utils.keyboards import about_keyboard, help_keyboard, start_keyboard
 
 router = Router(name="commands")
 
@@ -41,30 +41,31 @@ async def about_command(message: Message) -> None:
 
 
 async def handle_ui_callback(callback: CallbackQuery, action: str) -> None:
-    if not callback.message:
+    message = callback.message
+    if not message or isinstance(message, InaccessibleMessage):
         await callback.answer()
         return
 
     if action == "home":
         name = callback.from_user.first_name if callback.from_user else "there"
-        await callback.message.edit_text(
+        await message.edit_text(
             text.START_TEXT.format(name=name),
             reply_markup=start_keyboard(),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     elif action == "help":
-        await callback.message.edit_text(
+        await message.edit_text(
             text.HELP_TEXT,
             reply_markup=help_keyboard(),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     elif action == "about":
-        await callback.message.edit_text(
+        await message.edit_text(
             text.ABOUT_TEXT,
             reply_markup=about_keyboard(),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     elif action == "close":
-        await callback.message.delete()
+        await message.delete()
 
     await callback.answer()

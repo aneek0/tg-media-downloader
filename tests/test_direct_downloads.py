@@ -4,8 +4,8 @@ from pathlib import Path
 
 import aiohttp
 import pytest
-from config import Settings
 
+from config import Settings
 from services.direct_downloads import download_direct_file
 from services.status import StatusSurface
 from utils.models import DownloadOption, FileTooLargeError, ParsedInput

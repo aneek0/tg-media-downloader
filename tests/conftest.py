@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from config import Settings
-from services.cooldown import CooldownManager
 from services.catalogue_search import CatalogueSearch, SearchItem
+from services.cooldown import CooldownManager
 from services.follow_store import FollowStore
 from services.media_cache import MediaCache
 from services.mornye import MornyeService
@@ -72,6 +71,7 @@ def make_message():
         from_user=user,
         chat=chat,
         text=None,
+        via_bot=None,
         entities=None,
         answer=AsyncMock(),
         reply=AsyncMock(),

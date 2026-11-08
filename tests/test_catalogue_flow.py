@@ -18,8 +18,9 @@ from services.catalogue_flow import (
 from services.catalogue_search import ArtistCatalogue, SearchItem
 from services.requests import catalogue_browse_request, music_request
 from tests.conftest import make_session, make_settings
-from utils.models import CataloguePayload, DownloadArtifact, ParsedInput
 from utils.callbacks import CatalogueCallback
+from utils.models import CataloguePayload, DownloadArtifact, ParsedInput
+
 
 def _item(kind: str, index: int, **kwargs) -> SearchItem:
     values = {

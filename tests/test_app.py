@@ -3,8 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from aiogram.methods import GetMe
 from aiogram.exceptions import TelegramAPIError
+from aiogram.methods import GetMe
 
 from app import register_bot_commands
 

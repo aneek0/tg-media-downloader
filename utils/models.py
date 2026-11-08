@@ -5,6 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Union
 
+
 class RequestType(StrEnum):
     GALLERY_MEDIA = "gallery_media"
     MORNYE = "mornye"
@@ -65,7 +66,7 @@ class MusicPayload:
         return {"kind": self.kind, "name": self.name, "count": self.count}
 
 @dataclass(slots=True)
-class CataloguePayload:  # pylint: disable=too-many-instance-attributes
+class CataloguePayload:
     """Persisted Artist Card and album browsing state."""
 
     provider: str = ""
@@ -208,7 +209,10 @@ class StoredRequest:
 
     @property
     def payload(self) -> RequestPayload:
-        return request_payload(self.request_type, self.info)
+        request_type = self.request_type
+        if not isinstance(request_type, RequestType):
+            request_type = RequestType(request_type)
+        return request_payload(request_type, self.info)
 
     def to_dict(self) -> dict[str, Any]:
         return {

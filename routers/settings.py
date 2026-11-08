@@ -13,8 +13,8 @@ from aiogram.types import (
 
 from services.session import Session
 from services.user_settings import UserPreferences
-from utils.callbacks import SettingsCallback
 from utils import text as strings
+from utils.callbacks import SettingsCallback
 
 router = Router(name="settings")
 _PROVIDER_LABELS = {

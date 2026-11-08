@@ -12,18 +12,18 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BotCommand
 
-from utils.logging_config import setup_logging
+from config import Settings
 from routers.callbacks import router as callbacks_router
 from routers.catalogue import router as catalogue_router
 from routers.commands import router as commands_router
 from routers.follows import router as follows_router
-from routers.intake import router as intake_router
 from routers.inline import router as inline_router
+from routers.intake import router as intake_router
 from routers.settings import router as settings_router
-from config import Settings
+from services.follows import FollowPoller
 from services.mornye import MornyeService
 from services.session import Session, build_session
-from services.follows import FollowPoller
+from utils.logging_config import setup_logging
 
 BOT_COMMANDS = [
     BotCommand(command="start", description="Start the bot"),

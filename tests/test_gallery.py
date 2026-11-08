@@ -22,7 +22,6 @@ from utils.logging_config import redact_command
 from utils.models import ParsedInput
 
 
-
 def make_status() -> StatusSurface:
     return StatusSurface(AsyncMock(), muted=True)
 
@@ -68,6 +67,8 @@ def test_gallery_probe_command_shape(tmp_path):
         str(cookies_path),
         "-o",
         "extractor.twitter.cookies-update=false",
+        "-o",
+        "extractor.twitter.text-tweets=true",
         url,
     ]
 
@@ -80,11 +81,11 @@ def test_gallery_download_command_shape(tmp_path):
 
     command = _gallery_download_command(ParsedInput(source_url=url), settings, work_dir)
 
-    assert ("-D", str(work_dir)) in zip(command, command[1:])
-    assert ("-f", "{tweet_id}_{num}.{extension}") in zip(command, command[1:])
+    assert ("-D", str(work_dir)) in zip(command, command[1:], strict=False)
+    assert ("-f", "{tweet_id}_{num}.{extension}") in zip(command, command[1:], strict=False)
     assert "--no-part" in command
     assert "--no-mtime" in command
-    assert ("-C", str(cookies_path)) in zip(command, command[1:])
+    assert ("-C", str(cookies_path)) in zip(command, command[1:], strict=False)
     assert command[-1] == url
 
     bare_settings = make_gallery_settings(tmp_path, "", http_proxy="")
@@ -93,7 +94,7 @@ def test_gallery_download_command_shape(tmp_path):
     )
     assert "--proxy" not in bare_command
     assert "-C" not in bare_command
-    assert "-o" not in bare_command
+    assert "extractor.twitter.cookies-update=false" not in bare_command
 
 
 def test_parse_gallery_probe_extracts_media_and_content():
@@ -314,7 +315,7 @@ async def test_download_gallery_media_fallback_discards_partial_files(monkeypatc
         path.write_bytes(b"partial")
         raise RuntimeError("expired CDN URL")
 
-    async def fallback(command, cwd=None, timeout=None):  # pylint: disable=unused-argument
+    async def fallback(command, cwd=None, timeout=None):  # noqa: ARG001
         (Path(cwd) / "one.jpg").write_bytes(b"one")
         (Path(cwd) / "two.jpg").write_bytes(b"two")
         return "", ""
@@ -400,7 +401,7 @@ def test_tiktok_gallery_disables_only_videos(url, tmp_path):
         _gallery_probe_command(ParsedInput(source_url=url), settings),
         _gallery_download_command(ParsedInput(source_url=url), settings, tmp_path),
     ):
-        assert ("-o", "videos=false") in zip(command, command[1:])
+        assert ("-o", "videos=false") in zip(command, command[1:], strict=False)
 
 
 @pytest.mark.asyncio

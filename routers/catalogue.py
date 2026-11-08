@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 from time import monotonic
-from aiogram import Router
+from typing import cast
+
+from aiogram import Bot, Router
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
@@ -12,6 +14,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
+    InlineQueryResultUnion,
     InputMediaPhoto,
     InputTextMessageContent,
     Message,
@@ -135,7 +138,7 @@ async def catalogue_query(query: InlineQuery, session: Session) -> object | None
         return
 
     private_handoff = getattr(query, "chat_type", None) in {"private", "sender"}
-    results = []
+    results: list[InlineQueryResultUnion] = []
     for item in found.items:
         if item.kind == "artist":
             results.append(
@@ -247,7 +250,7 @@ async def catalogue_chosen(query: ChosenInlineResult, session: Session) -> objec
 
 
 @router.callback_query(CatalogueCallback.filter())
-async def catalogue_callback(  # pylint: disable=too-complex
+async def catalogue_callback(  # noqa: C901
     query: CallbackQuery, callback_data: CatalogueCallback, session: Session
 ) -> None:
     if not query.from_user:
@@ -345,7 +348,7 @@ async def _download_callback(query: CallbackQuery, session: Session, token: str)
             session,
             stored,
             MUSIC_OPTIONS[0],
-            bot=query.bot,
+            bot=cast(Bot, query.bot),
             status=chat_status(status_message),
             source_message=message,
             user_id=query.from_user.id,
@@ -357,7 +360,7 @@ async def _download_callback(query: CallbackQuery, session: Session, token: str)
     await query.answer()
     await run_inline_download(
         session,
-        bot=query.bot,
+        bot=cast(Bot, query.bot),
         user_id=query.from_user.id,
         inline_message_id=query.inline_message_id,
         stored=stored,
@@ -380,7 +383,7 @@ async def _zip_callback(query: CallbackQuery, session: Session, token: str) -> N
     if message is not None:
         await run_chat_album_zip(
             session,
-            bot=query.bot,
+            bot=cast(Bot, query.bot),
             user_id=query.from_user.id,
             source_message=message,
             stored=stored,
@@ -388,9 +391,9 @@ async def _zip_callback(query: CallbackQuery, session: Session, token: str) -> N
         return
     await run_album_zip(
         session,
-        bot=query.bot,
+        bot=cast(Bot, query.bot),
         user_id=query.from_user.id,
-        inline_message_id=query.inline_message_id,
+        inline_message_id=cast(str, query.inline_message_id),
         stored=stored,
         caption_status=payload.media_message,
     )

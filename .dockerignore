@@ -5,7 +5,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 .coverage
-.pylintrc
+.ruff_cache/
 DOWNLOADS/
 All-Url-Uploader.session
 docs/

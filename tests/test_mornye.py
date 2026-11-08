@@ -8,6 +8,7 @@ the package.
 """
 
 from __future__ import annotations
+
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -16,22 +17,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-
 from mornye.core.errors import MornyeError
 
 from config import Settings
+from services.delivery import ChatDelivery
 from services.executor import execute_request
 from services.media_cache import CachedMedia
-from services.request_store import RequestStore
 from services.mornye import (
-    SpotifyTarget,
     MornyeService,
-    audio_cache_key,
+    SpotifyTarget,
     _artifacts_from_results,
-    is_mornye_url,
     _fetch_cover_aiohttp,
+    audio_cache_key,
+    is_mornye_url,
 )
-from services.delivery import ChatDelivery
+from services.request_store import RequestStore
 from services.status import StatusSurface
 from tests.conftest import make_media_cache, make_session, make_settings
 from utils.models import DownloadArtifact, DownloadOption, ParsedInput, StoredRequest
@@ -765,7 +765,7 @@ async def test_resolve_tidal_album_uses_tidal_metadata(tmp_path):
     tidal = SimpleNamespace(
         get_url=AsyncMock(return_value=("Album", tracks, "cover.jpg", {}))
     )
-    service._tidal = tidal  # pylint: disable=protected-access
+    service._tidal = tidal
 
     target = await service.resolve_url("https://listen.tidal.com/album/413114053")
 

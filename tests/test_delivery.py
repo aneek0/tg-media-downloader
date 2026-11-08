@@ -228,7 +228,7 @@ async def test_deliver_album_returns_cached_media(tmp_path):
 
 
 def test_media_item_prefers_artifact_metadata(monkeypatch, tmp_path):
-    def fail_metadata(path):
+    def fail_metadata(path):  # noqa: ARG001
         raise AssertionError("hachoir should not run when artifact fields are set")
 
     monkeypatch.setattr("services.delivery.video_metadata", fail_metadata)
@@ -260,7 +260,7 @@ def test_media_item_falls_back_to_metadata(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_single_send_prefers_artifact_metadata(monkeypatch, tmp_path):
-    async def fail_duration(path):
+    async def fail_duration(path):  # noqa: ARG001
         raise AssertionError("hachoir should not run when artifact fields are set")
 
     monkeypatch.setattr("services.delivery.ChatActionSender", _NoAction)

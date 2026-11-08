@@ -7,7 +7,6 @@ import threading
 from unittest.mock import AsyncMock
 
 import pytest
-
 from mornye.core.errors import NetworkError
 
 from services.catalogue_search import (

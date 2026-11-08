@@ -22,11 +22,12 @@ from services.parsing import (
 )
 from services.pipeline import prepare_request
 from services.session import Session
-from services.status import chat_status
 from services.sources import SourceKind, classify
+from services.status import chat_status
 from utils import text
 from utils.keyboards import format_keyboard
 from utils.logging_config import safe_url_label
+from utils.models import CataloguePayload
 
 router = Router(name="intake")
 
@@ -62,6 +63,8 @@ async def _answer_artist_card(
     message: Message, session: Session, provider: str, artist_id: str
 ) -> None:
     """Answer an artist Source URL with a normal bot-authored Artist Card."""
+    if not message.from_user:
+        return
     try:
         following = any(
             follow.provider == provider and follow.artist_id == artist_id
@@ -73,7 +76,7 @@ async def _answer_artist_card(
             artist_id=artist_id,
             following=following,
         )
-        payload = card.stored.payload
+        payload = cast(CataloguePayload, card.stored.payload)
         if payload.cover_url:
             await message.answer_photo(
                 photo=payload.cover_url,
@@ -91,7 +94,7 @@ async def _answer_artist_card(
 
 
 @router.message(F.chat.type == "private", F.text)
-async def intake_message(  # pylint: disable=too-complex
+async def intake_message(  # noqa: C901
     message: Message, session: Session
 ) -> None:
     settings = session.settings
@@ -147,7 +150,7 @@ async def intake_message(  # pylint: disable=too-complex
     cached = media_cache.get(cache_key)
     if cached:
         try:
-            await send_cached_media(message.bot, message.chat.id, cached)
+            await send_cached_media(cast(Bot, message.bot), message.chat.id, cached)
             logger.info(
                 "Cache hit | user=%s source=%s files=%s",
                 message.from_user.id,
@@ -177,7 +180,8 @@ async def intake_message(  # pylint: disable=too-complex
             or "photo.jpg"
         )
         try:
-            sent = await message.bot.send_photo(
+            # aiogram binds a bot to every dispatched update.
+            sent = await cast(Bot, message.bot).send_photo(
                 chat_id=message.chat.id,
                 photo=parsed.source_url,
                 caption=(parsed.custom_file_name or file_name)[:1024],
@@ -201,7 +205,7 @@ async def intake_message(  # pylint: disable=too-complex
 
     try:
         prepared = await prepare_request(session, parsed)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Request preparation failed | user=%s source=%s error=%s",
             message.from_user.id,
@@ -219,8 +223,11 @@ async def intake_message(  # pylint: disable=too-complex
         and prepared.gallery.error
         and "Unsupported URL" not in prepared.gallery.error
     ):
+        friendly_error = _gallery_friendly_error(
+            prepared.gallery.error, bool(settings.twitter_cookies)
+        )
         await status.fail(
-            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(_gallery_friendly_error(prepared.gallery.error, bool(settings.twitter_cookies)))}</code>"
+            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(friendly_error)}</code>"
         )
         return
 
@@ -237,7 +244,7 @@ async def intake_message(  # pylint: disable=too-complex
             session,
             stored,
             stored.options[0],
-            bot=message.bot,
+            bot=cast(Bot, message.bot),
             status=status,
             source_message=message,
             user_id=message.from_user.id,

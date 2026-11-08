@@ -22,8 +22,8 @@ from aiogram.types import (
     InputRichMessage,
     InputRichMessageContent,
     InputTextMessageContent,
-    InlineQuery,
 )
+
 from config import Settings
 from services.delivery import rich_post_html
 from services.gallery import (
@@ -41,10 +41,10 @@ from services.requests import inline_gallery_request, inline_media_request
 from services.session import Session
 from services.sources import VIDEO_EXTENSIONS, SourceKind, classify
 from services.ytdlp import probe_url
+from utils import text
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
 from utils.keyboards import gallery_keyboard
 from utils.logging_config import safe_url_label
-from utils import text
 from utils.models import InlineGalleryPayload, ParsedInput
 
 router = Router(name="inline")
@@ -170,15 +170,14 @@ def _poster_photo_result(
 async def _content_length(url: str) -> int | None:
     """Content-Length of a media URL, or None when unreachable."""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.head(
-                url,
-                allow_redirects=True,
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as response:
-                if response.status != 200:
-                    return None
-                return response.content_length
+        async with aiohttp.ClientSession() as session, session.head(
+            url,
+            allow_redirects=True,
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as response:
+            if response.status != 200:
+                return None
+            return response.content_length
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return None
 
@@ -439,7 +438,7 @@ async def _answer_gallery_media(
 
 
 @router.inline_query()
-async def inline_query_handler(  # pylint: disable=too-complex
+async def inline_query_handler(  # noqa: C901
     query: InlineQuery,
     session: Session,
 ) -> None:
@@ -536,7 +535,7 @@ async def inline_query_handler(  # pylint: disable=too-complex
     if mornye and mornye.enabled and source.kind is SourceKind.MUSIC:
         try:
             target = await mornye.resolve_url(parsed.source_url)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
+        except Exception as exc:  # noqa: BLE001
             logger.info(
                 "Inline spotify resolve failed | user=%s source=%s error=%s",
                 query.from_user.id,
@@ -661,13 +660,13 @@ async def inline_cancel_callback(
         message_text = "Nothing to cancel."
 
     if query.inline_message_id:
-        try:
-            await query.bot.edit_message_text(
+        # aiogram binds a bot to every dispatched update.
+        bot = cast(Bot, query.bot)
+        with contextlib.suppress(TelegramAPIError):
+            await bot.edit_message_text(
                 inline_message_id=query.inline_message_id,
                 text=message_text,
             )
-        except TelegramAPIError:
-            pass
     request_store.delete(token)
     await query.answer()
 
@@ -686,8 +685,10 @@ async def gallery_nav_callback(
         await query.answer("This gallery is expired. Send the link again.")
         return
     index = callback_data.index % len(photos)
+    # aiogram binds a bot to every dispatched update.
+    bot = cast(Bot, query.bot)
     try:
-        await query.bot.edit_message_media(
+        await bot.edit_message_media(
             inline_message_id=query.inline_message_id,
             media=InputMediaPhoto(
                 media=photos[index],

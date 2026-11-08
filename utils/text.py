@@ -33,11 +33,14 @@ Send a message containing any of these formats:
 
 <b>Extra commands</b>
 
-By default I download the best available quality automatically. If format selection is enabled, I will show a menu before uploading."""
+By default I download the best available quality automatically. If format selection is enabled, I will show a menu \
+before uploading."""
 
 ABOUT_TEXT = """<b>tg-media-downloader</b>
 
-Built with <a href="https://docs.aiogram.dev/">aiogram 3</a>, <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a>, and <a href="https://github.com/mikf/gallery-dl">gallery-dl</a>.
+Built with <a href="https://docs.aiogram.dev/">aiogram 3</a>, \
+<a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a>, and \
+<a href="https://github.com/mikf/gallery-dl">gallery-dl</a>.
 
 <b>Repository</b>
 <a href="https://github.com/aneek0/tg-media-downloader">github.com/aneek0/tg-media-downloader</a>
@@ -119,7 +122,8 @@ def split_message(value: str, limit: int = TEXT_LIMIT) -> list[str]:
     """Split text on line boundaries; over-long single lines are hard-wrapped."""
     chunks: list[str] = []
     current = ""
-    for line in value.split("\n"):
+    for source_line in value.split("\n"):
+        line = source_line
         while len(line) > limit:
             if current:
                 chunks.append(current)

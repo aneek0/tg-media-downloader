@@ -5,7 +5,6 @@ import pytest
 from config import Settings
 
 
-
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)

@@ -12,9 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from mutagen.flac import FLAC
-from mutagen.mp3 import MP3
-
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 from aiogram.types import (
@@ -28,6 +25,8 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 from aiohttp import ClientOSError
+from mutagen.flac import FLAC
+from mutagen.mp3 import MP3
 
 from services.media import audio_duration, video_metadata, video_note_metadata
 from services.media_cache import cached_media_from
@@ -227,7 +226,7 @@ async def send_url_media(
                 for index, item in enumerate(chunk)
             ],
         )
-        for item, sent in zip(chunk, sent_group):
+        for item, sent in zip(chunk, sent_group, strict=False):
             entry = cached_media_from(
                 sent,
                 send_type=item["send_type"],
@@ -259,7 +258,7 @@ def _extract_cover(path: Path) -> Path | None:
         cover = Path(tempfile.mkstemp(suffix=".jpg")[1])
         cover.write_bytes(picture.data)
         return cover
-    except Exception:  # pylint: disable=broad-exception-caught
+    except Exception:  # noqa: BLE001
         logger.debug("Cover extraction failed | file=%s", path.name)
         return None
 
@@ -345,7 +344,7 @@ async def _send_overflow(
             await bot.send_message(chat_id, chunk)
 
 
-async def _send_single(  # pylint: disable=too-complex
+async def _send_single(  # noqa: C901
     bot: Bot,
     chat_id: int,
     artifact: DownloadArtifact,
@@ -482,7 +481,7 @@ async def _send_group(
         for cover in covers:
             cover.unlink(missing_ok=True)
     cached: list[CachedMedia] = []
-    for (artifact, _), sent in zip(entries, sent_group):
+    for (artifact, _), sent in zip(entries, sent_group, strict=False):
         entry = cached_media_from(
             sent,
             send_type=artifact.send_type,

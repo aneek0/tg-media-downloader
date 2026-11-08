@@ -125,7 +125,7 @@ class FollowStore:
                 f"Follow store at {self._path} is unreadable: {exc}"
             ) from exc
 
-    def toggle(  # pylint: disable=too-many-positional-arguments
+    def toggle(
         self,
         user_id: int,
         provider: str,

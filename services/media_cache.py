@@ -17,6 +17,7 @@ from aiogram.types import (
     InlineQueryResultCachedVideo,
     InputMediaPhoto,
     InputMediaVideo,
+    MediaUnion,
     Message,
 )
 
@@ -140,7 +141,7 @@ def _caption_parts(entry: CachedMedia) -> tuple[str | None, list[str]]:
     return text.split_caption(entry.caption)
 
 
-async def send_cached_media(  # pylint: disable=too-complex
+async def send_cached_media(  # noqa: C901
     bot: Bot, chat_id: int, entries: list[CachedMedia]
 ) -> list[Message]:
     """Resend cached file_ids to a chat; raises TelegramAPIError to the
@@ -154,7 +155,7 @@ async def send_cached_media(  # pylint: disable=too-complex
         for start in range(0, len(entries), _ALBUM_CHUNK):
             chunk = entries[start : start + _ALBUM_CHUNK]
             caption, overflow = _caption_parts(chunk[0])
-            items = [
+            items: list[MediaUnion] = [
                 (
                     InputMediaPhoto(
                         media=entry.file_id,

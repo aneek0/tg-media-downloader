@@ -70,7 +70,7 @@ _FILTERS: dict[str, dict[str | None, str | None]] = {
 
 
 @dataclass(slots=True)
-class SearchItem:  # pylint: disable=too-many-instance-attributes
+class SearchItem:
     """Provider-independent catalogue record."""
 
     provider: str
@@ -200,7 +200,7 @@ def _fallback_url(provider: str, kind: str, item_id: str) -> str:
     if provider == "spotify-web":
         return f"https://open.spotify.com/{kind}/{item_id}"
     if provider == "tidal-web":
-        return f"https://www.tidal.com/{kind}/{item_id.split(':')[-1]}"
+        return f"https://www.tidal.com/{kind}/{item_id.rsplit(':', maxsplit=1)[-1]}"
     return f"https://www.deezer.com/{kind}/{item_id.removeprefix('deezer:')}"
 
 
@@ -228,7 +228,9 @@ def _item(raw: dict, provider: str, fallback_kind: str | None) -> SearchItem | N
     item_id = str(raw.get("id") or "")
     if not item_id:
         return None
-    album = raw.get("album") if isinstance(raw.get("album"), dict) else {}
+    album = raw.get("album")
+    if not isinstance(album, dict):
+        album = {}
     duration_ms = _as_int(raw.get("duration_ms"), 0)
     if not duration_ms:
         duration_ms = _as_int(raw.get("duration"), 0) * 1000
@@ -336,12 +338,11 @@ class CatalogueSearch:
         """Deezer's extension caps top tracks at 20; its public API provides 30."""
         numeric_id = artist_id.removeprefix("deezer:")
         timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.get(
-                f"https://api.deezer.com/artist/{numeric_id}/top", params={"limit": 30}
-            ) as response:
-                response.raise_for_status()
-                payload = await response.json()
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session, session.get(
+            f"https://api.deezer.com/artist/{numeric_id}/top", params={"limit": 30}
+        ) as response:
+            response.raise_for_status()
+            payload = await response.json()
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             raise RuntimeError(f"deezer artist {artist_id}: malformed top tracks")

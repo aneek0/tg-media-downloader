@@ -7,6 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import aiohttp
@@ -15,18 +16,17 @@ from config import Settings
 from services.direct_downloads import download_http_file
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
-from services.status import StatusSurface
 from services.sources import (
     VIDEO_EXTENSIONS,
     gallery_supports_url,
     is_tiktok_url,
     send_type_for_extension,
 )
+from services.status import StatusSurface
 from services.ytdlp import _prepare_cookies_file
 from utils import text
 from utils.logging_config import safe_url_label
-from utils.models import DownloadArtifact, ParsedInput
-from utils.models import FileTooLargeError
+from utils.models import DownloadArtifact, FileTooLargeError, ParsedInput
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,8 @@ def _gallery_flags(settings: Settings, source_url: str) -> list[str]:
     if cookies_file:
         flags.extend(["-C", str(cookies_file)])
         flags.extend(["-o", "extractor.twitter.cookies-update=false"])
+    if is_twitter_status_url(source_url):
+        flags.extend(["-o", "extractor.twitter.text-tweets=true"])
     if is_tiktok_url(source_url):
         # Keep imagePost photos/audio here; videos use yt-dlp's H.264 path.
         flags.extend(["-o", "videos=false"])
@@ -277,25 +279,26 @@ async def _download_gallery_files(
 
     request_limiter = asyncio.Semaphore(GALLERY_DOWNLOADS_PER_REQUEST)
     timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
-    connector = aiohttp.TCPConnector(ssl=None if settings.verify_ssl else False)
+    connector = aiohttp.TCPConnector(
+        ssl=cast(bool, None if settings.verify_ssl else False)
+    )
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as client:
 
         async def download(target) -> Path:
             url, headers, name, extension = target
-            async with request_limiter:
-                async with download_limiter:
-                    return await download_http_file(
-                        session=client,
-                        url=url,
-                        headers=headers,
-                        proxy=settings.http_proxy or None,
-                        work_dir=work_dir,
-                        file_name=name,
-                        file_ext=extension,
-                        send_type=send_type_for_extension(extension),
-                        status=status,
-                        settings=settings,
-                    )
+            async with request_limiter, download_limiter:
+                return await download_http_file(
+                    session=client,
+                    url=url,
+                    headers=headers,
+                    proxy=settings.http_proxy or None,
+                    work_dir=work_dir,
+                    file_name=name,
+                    file_ext=extension,
+                    send_type=send_type_for_extension(extension),
+                    status=status,
+                    settings=settings,
+                )
 
         tasks = [asyncio.create_task(download(target)) for target in targets]
         try:

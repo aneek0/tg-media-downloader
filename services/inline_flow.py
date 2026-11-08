@@ -14,16 +14,16 @@ from aiogram.types import (
     InputMediaVideo,
 )
 
-from services.media_cache import cached_media_from
-from services.media import video_metadata
-from services.progress import humanbytes
-from services.status import StatusSurface, inline_caption_status, inline_status
-from services.session import Session
-from services.user_settings import UserPreferences
-from services.requests import lifecycle
 from services.delivery import DirectDelivery
-from services.pipeline import download_inline
+from services.media import video_metadata
+from services.media_cache import cached_media_from
 from services.mornye import audio_cache_key
+from services.pipeline import download_inline
+from services.progress import humanbytes
+from services.requests import lifecycle
+from services.session import Session
+from services.status import StatusSurface, inline_caption_status, inline_status
+from services.user_settings import UserPreferences
 from utils import text
 from utils.models import (
     CachedMedia,
@@ -139,7 +139,7 @@ async def _spillover_dm(
     try:
         entries = await _dm_send_artifacts(bot, user_id, rest)
         note = _spillover_note(len(rest), delivered=True, mention=mention)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except Exception as exc:  # noqa: BLE001
         logger.info("Inline DM delivery failed | user=%s error=%s", user_id, exc)
         entries = []
         note = _spillover_note(len(rest), delivered=False, mention=mention)
@@ -364,7 +364,7 @@ async def _obtain_artifacts(
             ),
         )
         return None
-    except Exception as exc:  # pylint: disable=broad-exception-caught  # pragma: no cover - user-facing safety boundary
+    except Exception as exc:  # pragma: no cover - user-facing safety boundary
         logger.exception(
             "Inline request failed | user=%s token=%s", user_id, token
         )

@@ -18,10 +18,10 @@ import logging
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import aiohttp
-
 
 from config import Settings
 from utils.models import DownloadArtifact, ParsedInput
@@ -133,14 +133,17 @@ async def _resolve_catalogue_url(url: str) -> SpotifyTarget | None:
     matching extension. ``ExtensionMetadataClient.get_url_async`` answers
     ``(name, tracks, cover)`` — no ``extra`` dict, unlike the Spotify
     metadata client."""
-    from mornye.core.extension_metadata import ExtensionMetadataClient
-    from mornye.core.extension_metadata import parse_catalogue_url
+    from mornye.core.extension_metadata import (
+        CatalogueLink,
+        ExtensionMetadataClient,
+        parse_catalogue_url,
+    )
 
     client = ExtensionMetadataClient.for_url(url)
     name, tracks, cover = await client.get_url_async(url)
     if not tracks:
         return None
-    kind = parse_catalogue_url(url).kind
+    kind = cast(CatalogueLink, parse_catalogue_url(url)).kind
     return SpotifyTarget(
         kind=kind,
         name=name or "Unknown",
@@ -281,7 +284,7 @@ class MornyeService:
                 client = signed_session_client(installed.manifest)
                 if client is not None:
                     await self._maintain_signed_client(extension, client, log_ready=log_ready)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Signed session maintenance failed | provider=%s error=%r retry=300s",
                     extension,
@@ -298,7 +301,7 @@ class MornyeService:
             await asyncio.sleep(_SESSION_MAINTENANCE_SECONDS)
             try:
                 await self.renew_signed_sessions_once()
-            except Exception:  # pylint: disable=broad-exception-caught
+            except Exception:
                 logger.exception("Signed session maintenance pass failed | retry=300s")
 
     async def _metadata_client(self):
@@ -406,7 +409,7 @@ class MornyeService:
         if is_soundcloud_url(url):
             try:
                 return await self._resolve_soundcloud(url)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "SoundCloud metadata unavailable, using yt-dlp fallback | error=%s",
                     exc,
@@ -550,7 +553,7 @@ class MornyeService:
         *,
         audio_format: str,
     ) -> tuple[list[DownloadArtifact], Path | None]:
-        from mornye.application.download_engine import DownloadOptions
+        from mornye.application.download_engine import DownloadOptions, DownloadResult
         from mornye.application.post_processing import apply_post_processing
 
         native_dir = work_dir / "soundcloud-native"
@@ -611,7 +614,7 @@ class MornyeService:
             )
             if failure is not None:
                 raise failure
-            results = dict(outcomes)
+            results = dict(cast(list[tuple[str, DownloadResult]], outcomes))
             artifacts = await asyncio.to_thread(
                 _artifacts_from_results, results, target
             )
@@ -665,7 +668,7 @@ class MornyeService:
                         info=info,
                     )
                 )
-            except Exception as exc:  # pylint: disable=broad-exception-caught
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "SoundCloud track rescue failed | source=%s error=%s",
                     track_url,
@@ -684,15 +687,16 @@ class MornyeService:
         try:
             dest = work_dir / "cover.jpg"
             timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(target.cover_url) as resp:
-                    resp.raise_for_status()
-                    data = await resp.read()
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                target.cover_url
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.read()
             if not data:
                 return None
             dest.write_bytes(data)
             return dest
-        except Exception:  # pylint: disable=broad-exception-caught
+        except Exception:  # noqa: BLE001
             logger.debug("Cover fetch failed | url=%s", target.cover_url)
             return None
 
@@ -775,13 +779,14 @@ def _install_aiohttp_cover_fetch() -> None:
     if getattr(original, "_tgmd_aiohttp", False):
         return
 
-    async def fetch_cover(url: str, session=None) -> bytes | None:
+    async def fetch_cover(url: str, session: Any | None = None) -> bytes | None:
         if session is not None:
             return await original(url, session)
         return await _fetch_cover_aiohttp(url)
 
-    fetch_cover._tgmd_aiohttp = True  # type: ignore[attr-defined]
-    tagger._fetch_cover_async = fetch_cover  # pylint: disable=protected-access
+    # Function markers and the private third-party hook are dynamic attributes.
+    setattr(fetch_cover, "_tgmd_aiohttp", True)  # noqa: B010
+    setattr(tagger, "_fetch_cover_async", fetch_cover)  # noqa: B010
 
 
 def _artifacts_from_results(
