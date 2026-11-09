@@ -9,11 +9,13 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from services.catalogue_flow import artist_card
+from config import Settings
+from services import pixiv, pixiv_flow
+from services.catalogue_flow import CardSurface, artist_card, present_card
 from services.catalogue_search import artist_source
+from services.delivery import cached_media_from, send_cached
 from services.executor import execute_request
 from services.gallery import _gallery_friendly_error
-from services.media_cache import cached_media_from, send_cached_media
 from services.mornye import audio_cache_key
 from services.parsing import (
     extract_link_text,
@@ -23,13 +25,34 @@ from services.parsing import (
 from services.pipeline import prepare_request
 from services.session import Session
 from services.sources import SourceKind, classify
-from services.status import chat_status
+from services.status import StatusSurface, chat_status
 from utils import text
 from utils.keyboards import format_keyboard
 from utils.logging_config import safe_url_label
-from utils.models import CataloguePayload
+from utils.models import ParsedInput
+
+
+async def _fail_gallery_error(
+    status: StatusSurface,
+    parsed: ParsedInput,
+    error: str | None,
+    settings: Settings,
+) -> bool:
+    """Show the source-specific gallery error, when there is one to show."""
+    if not error or "Unsupported URL" in error:
+        return False
+    if is_twitter_status_url(parsed.source_url):
+        message = _gallery_friendly_error(error, bool(settings.twitter_cookies))
+    elif pixiv.is_pixiv_url(parsed.source_url):
+        message = pixiv.friendly_error(RuntimeError(error))
+    else:
+        return False
+    await status.fail(f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(message)}</code>")
+    return True
+
 
 router = Router(name="intake")
+
 
 def _search_keyboard(query: str) -> InlineKeyboardMarkup:
     choices = (
@@ -76,25 +99,49 @@ async def _answer_artist_card(
             artist_id=artist_id,
             following=following,
         )
-        payload = cast(CataloguePayload, card.stored.payload)
-        if payload.cover_url:
-            await message.answer_photo(
-                photo=payload.cover_url,
-                caption=card.caption,
-                reply_markup=card.keyboard,
-            )
-        else:
-            await message.answer(card.caption, reply_markup=card.keyboard)
-        payload.media_message = bool(payload.cover_url)
-        card.stored.info = payload.to_info()
-        session.request_store.save(card.stored)
+        await present_card(card, surface=CardSurface.ANSWER, message=message)
     except (RuntimeError, ValueError, TelegramAPIError) as exc:
         logger.info("Artist Card failed | user=%s error=%s", message.from_user.id, exc)
         await message.answer(text.esc(str(exc)))
 
+async def _handle_pixiv(
+    session: Session,
+    message: Message,
+    parsed: ParsedInput,
+    status: StatusSurface,
+) -> bool:
+    """True when the message was a Pixiv link and this handler owns it.
+
+    A profile is browsed page by page, never enumerated through gallery-dl
+    (which cannot seek into a profile); link kinds outside the supported set
+    are rejected instead of falling through to the generic ladder.
+    """
+    if not pixiv.is_pixiv_url(parsed.source_url):
+        return False
+    kind = pixiv.pixiv_kind(parsed.source_url)
+    if kind == "unsupported":
+        await status.fail(text.PIXIV_UNSUPPORTED)
+        return True
+    # A profile only needs Pixiv's public web endpoints; an artwork download
+    # needs gallery-dl credentials, which may come from its own OAuth cache.
+    if kind == "work" and not pixiv.credentials_available(session.settings):
+        await status.fail(text.PIXIV_NOT_CONFIGURED)
+        return True
+    if kind == "profile":
+        await pixiv_flow.open_profile(
+            session,
+            bot=cast(Bot, message.bot),
+            message=message,
+            source_url=parsed.source_url,
+            status=status,
+        )
+        return True
+    return False
+
+
 
 @router.message(F.chat.type == "private", F.text)
-async def intake_message(  # noqa: C901
+async def intake_message(  # noqa: C901, PLR0911
     message: Message, session: Session
 ) -> None:
     settings = session.settings
@@ -150,7 +197,7 @@ async def intake_message(  # noqa: C901
     cached = media_cache.get(cache_key)
     if cached:
         try:
-            await send_cached_media(cast(Bot, message.bot), message.chat.id, cached)
+            await send_cached(cast(Bot, message.bot), message.chat.id, cached)
             logger.info(
                 "Cache hit | user=%s source=%s files=%s",
                 message.from_user.id,
@@ -169,11 +216,14 @@ async def intake_message(  # noqa: C901
             # fall through to the normal download flow
     status_message = await message.reply(text.PROCESSING)
     status = chat_status(status_message)
-
     # Fast-path: direct image links are outsourced to Telegram's CDN fetch
     # (symmetry with the inline image branch). On any API error fall
     # through to the normal probe flow.
-    if source.kind is SourceKind.IMAGE and not source.is_twitter:
+    if (
+        source.kind is SourceKind.IMAGE
+        and not source.is_twitter
+        and not pixiv.is_pixiv_image_url(parsed.source_url)
+    ):
         file_name = (
             parsed.custom_file_name
             or Path(urlparse(parsed.source_url).path).name
@@ -184,7 +234,9 @@ async def intake_message(  # noqa: C901
             sent = await cast(Bot, message.bot).send_photo(
                 chat_id=message.chat.id,
                 photo=parsed.source_url,
-                caption=(parsed.custom_file_name or file_name)[:1024],
+                caption=(parsed.custom_file_name or file_name)[
+                    : text.CAPTION_LIMIT
+                ],
             )
         except TelegramAPIError:
             sent = None
@@ -199,6 +251,9 @@ async def intake_message(  # noqa: C901
                 await media_cache.record(parsed.source_url, [entry])
             await status.done(download_seconds=0, upload_seconds=1)
             return
+
+    if await _handle_pixiv(session, message, parsed, status):
+        return
 
     if mornye and mornye.enabled and source.kind is SourceKind.MUSIC:
         await status.edit(text.MUSIC_RESOLVING)
@@ -217,18 +272,9 @@ async def intake_message(  # noqa: C901
         )
         return
 
+
     stored = prepared.stored
-    if (
-        is_twitter_status_url(parsed.source_url)
-        and prepared.gallery.error
-        and "Unsupported URL" not in prepared.gallery.error
-    ):
-        friendly_error = _gallery_friendly_error(
-            prepared.gallery.error, bool(settings.twitter_cookies)
-        )
-        await status.fail(
-            f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(friendly_error)}</code>"
-        )
+    if await _fail_gallery_error(status, parsed, prepared.gallery.error, settings):
         return
 
     logger.info(

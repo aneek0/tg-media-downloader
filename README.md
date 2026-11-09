@@ -30,6 +30,12 @@ job, and sends the result back to Telegram with the correct media type and metad
 - YouTube quick audio and quick video downloads
 - format selection for supported `yt-dlp` sources
 - **Twitter/X posts via `gallery-dl`** — photos, videos, albums, and text-only posts, including 18+ posts with cookies
+- **Pixiv** — `/artworks/<id>` links download immediately (multi-page works, ugoira as MP4); artist profiles open a
+  paged browser (Cover Album + ◀/▶ buttons) and download at most 50 files per page. Artwork downloads need a Pixiv
+  login: `gallery-dl oauth:pixiv` once on the bot host caches the token, which gallery-dl then uses automatically
+  (`PIXIV_REFRESH_TOKEN` is only needed to override it);
+  covers are fetched by the bot because `i.pximg.net` refuses requests without a Pixiv Referer. Bookmarks, rankings,
+  tags, search, series, and novels are rejected with an explicit message
 - **Gallery post links** — direct-message gallery deliveries use the post text (or filename) as a link to the original post
 - **Parallel gallery albums** — local multi-file downloads overlap up to 3 files per album and 6 across the bot,
   preserve album order and source headers, and fall back to gallery-dl if direct CDN retrieval fails
@@ -115,7 +121,7 @@ uv run python bot.py
 - `PROCESS_MAX_TIMEOUT` - optional hard timeout in seconds for one yt-dlp / gallery-dl process (default 3700)
 - `AUTO_BEST_QUALITY` - optional; when `true` (default) yt-dlp links skip the format-selection keyboard and download at the best quality within `MAX_HEIGHT`
 - `MAX_HEIGHT` - optional; maximum video height for auto downloads (default 1080)
-- `GALLERY_PROBE_TIMEOUT` - optional; gallery-dl probe timeout for Twitter/X posts in seconds (default 15)
+- `GALLERY_PROBE_TIMEOUT` - optional; gallery-dl probe timeout for gallery sources (Twitter/X and Pixiv) in seconds (default 15)
 - `REQUEST_COOLDOWN_SECONDS` - optional per-user cooldown window in seconds (default 3); `OWNER_ID` and `AUTH_USERS` bypass it
 - `MAX_UPLOAD_BYTES` - optional; downloads larger than this are skipped with a friendly message (default 1992294400 ≈ 1.9 GB, the local Bot API server limit; set 52428800 for the cloud Bot API)
 - `VERIFY_SSL` - optional; set false only for broken TLS interception (default true)
@@ -124,6 +130,8 @@ uv run python bot.py
 - `TELEGRAM_API_URL` - optional base URL of a self-hosted local Bot API server (e.g. `http://localhost:8081`); raises the bot upload limit from 50 MB to 2000 MB. Run the official `telegram-bot-api` binary with `--local --api-id ... --api-hash ...` (keys from my.telegram.org) next to the bot; leave empty for the cloud Bot API
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` - not read by the bot itself; used by the local Bot API server (see [Docker Compose](#docker-compose-recommended)) — the same keys from my.telegram.org
 - `TWITTER_COOKIES_FILE` / `TWITTER_COOKIES` - optional; path to a Netscape-format cookies.txt exported from a logged-in X/Twitter account, or the file content pasted into `.env` as a multiline value; enables downloads of 18+ (NSFW) posts. Export cookies with a browser extension ("Get cookies.txt LOCALLY") while logged in to x.com.
+- `PIXIV_REFRESH_TOKEN` - optional; overrides Pixiv's OAuth refresh token. Usually unnecessary: run `gallery-dl oauth:pixiv` once on the bot host (Docker: `docker compose exec bot gallery-dl oauth:pixiv`; `compose.yml` persists the cache volume) and gallery-dl stores and reuses the token in its own cache (`~/.cache/gallery-dl/cache.sqlite3`). Set the variable only when the cache cannot be written; it is passed to gallery-dl through a temporary 0600 config file so it never appears in the process list or logs
+- `PIXIV_COOKIES` - optional; Netscape cookies.txt of a logged-in pixiv.net account (path or pasted content). Needed to see some R18 works in profiles and to keep web lookups logged in
 - `SEARCH_PROVIDER` - default catalogue provider: `deezer` (default), `spotify-web`, or `tidal-web`
 - `FOLLOW_POLL_SECONDS` - release-check interval in seconds (default `21600`, six hours)
 - `MORNYE_SERVICES` - comma-separated provider extensions in download priority order; required for catalogue audio. With the extensions installed, `ext:tidal-web,ext:qobuz-web,ext:deezer` prefers the currently reliable Tidal path and keeps Deezer as fallback

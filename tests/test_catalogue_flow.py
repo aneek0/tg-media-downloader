@@ -16,10 +16,15 @@ from services.catalogue_flow import (
     run_chat_album_zip,
 )
 from services.catalogue_search import ArtistCatalogue, SearchItem
-from services.requests import catalogue_browse_request, music_request
 from tests.conftest import make_session, make_settings
 from utils.callbacks import CatalogueCallback
-from utils.models import CataloguePayload, DownloadArtifact, ParsedInput
+from utils.models import (
+    CataloguePayload,
+    DownloadArtifact,
+    MusicPayload,
+    ParsedInput,
+    RequestType,
+)
 
 
 def _item(kind: str, index: int, **kwargs) -> SearchItem:
@@ -67,7 +72,7 @@ async def test_artist_card_has_menu_and_bounded_top_and_albums(monkeypatch, tmp_
     assert menu_top.action == "top"
     assert menu_top.token == card.stored.token
 
-    top_card = render_artist_card(session, card.stored, top=True)
+    top_card = render_artist_card(card.stored, top=True)
     assert len(top_card.keyboard.inline_keyboard) == 31
     first_callback = CatalogueCallback.unpack(
         top_card.keyboard.inline_keyboard[0][0].callback_data
@@ -101,7 +106,7 @@ async def test_artist_albums_separate_singles_and_eps(monkeypatch, tmp_path):
     )
     card = await artist_card(session, provider="deezer", artist_id="deezer:1")
 
-    release_card = render_artist_card(session, card.stored, albums=True)
+    release_card = render_artist_card(card.stored, albums=True)
 
     assert [
         [button.text for button in row] for row in release_card.keyboard.inline_keyboard
@@ -194,12 +199,10 @@ async def test_album_zip_uses_artist_release_name_and_contains_tracks(monkeypatc
     session = make_session(settings)
     stored = session.request_store
 
-    request = music_request(
-        stored,
+    request = stored.open(
+        RequestType.MORNYE,
         ParsedInput(source_url="https://www.deezer.com/album/2"),
-        kind="album",
-        name="Album",
-        count=1,
+        payload=MusicPayload(kind="album", name="Album", count=1),
     )
     target = SimpleNamespace(
         name="Album",
@@ -231,10 +234,10 @@ async def test_run_album_zip_uses_browse_name_and_cleans_request(monkeypatch, tm
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    stored = catalogue_browse_request(
-        session.request_store,
+    stored = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
         ParsedInput(source_url="https://www.deezer.com/album/1"),
-        CataloguePayload(provider="deezer", artist_id="deezer:1", name="Album"),
+        payload=CataloguePayload(provider="deezer", artist_id="deezer:1", name="Album"),
     )
     artifact = DownloadArtifact(
         path=tmp_path / "Album.zip",
@@ -274,12 +277,10 @@ async def test_run_chat_album_zip_sends_normal_document_and_cleans_request(monke
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    stored = music_request(
-        session.request_store,
+    stored = session.request_store.open(
+        RequestType.MORNYE,
         ParsedInput(source_url="https://www.deezer.com/album/2"),
-        kind="album",
-        name="Album",
-        count=1,
+        payload=MusicPayload(kind="album", name="Album", count=1),
     )
     target = SimpleNamespace(
         name="Album",

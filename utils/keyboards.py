@@ -1,7 +1,12 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from utils.callbacks import GalleryNavCallback, RequestCallback, UiCallback
+from utils.callbacks import (
+    GalleryNavCallback,
+    PixivNavCallback,
+    RequestCallback,
+    UiCallback,
+)
 from utils.models import DownloadOption
 
 
@@ -91,4 +96,37 @@ def gallery_keyboard(token: str, count: int, index: int) -> InlineKeyboardMarkup
             callback_data=GalleryNavCallback(token=token, index=(index + 1) % count).pack(),
         ),
     )
+    return builder.as_markup()
+
+
+def pixiv_page_keyboard(
+    *, token: str, page: int, download_label: str, has_next: bool = True
+) -> InlineKeyboardMarkup:
+    """Profile Page switcher: previous, download this page, next (hidden on
+    the last page)."""
+    builder = InlineKeyboardBuilder()
+    buttons = [
+        InlineKeyboardButton(
+            text="◀",
+            callback_data=PixivNavCallback(
+                token=token, page=max(page - 1, 0), action="prev"
+            ).pack(),
+        ),
+        InlineKeyboardButton(
+            text=download_label,
+            callback_data=PixivNavCallback(
+                token=token, page=page, action="dl"
+            ).pack(),
+        ),
+    ]
+    if has_next:
+        buttons.append(
+            InlineKeyboardButton(
+                text="▶",
+                callback_data=PixivNavCallback(
+                    token=token, page=page + 1, action="next"
+                ).pack(),
+            )
+        )
+    builder.row(*buttons)
     return builder.as_markup()

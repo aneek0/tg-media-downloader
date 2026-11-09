@@ -110,12 +110,32 @@ Extra media from an album that did not fit into the Inline Result and was sent
 to the user in direct messages.
 _Avoid_: tail, extra, remainder
 
+## Gallery
+
+**Work**:
+One Pixiv artwork: a single image, a multi-page illustration, or an ugoira.
+_Avoid_: post, illustration, image
+
+**Ugoira**:
+A Pixiv Work made of animation frames; the bot delivers it as an MP4 video.
+_Avoid_: animation, gif, frames
+
+**Profile Page**:
+One screenful of an artist's Works in a browsing sequence. A page never splits
+a Work, and its Works total at most 50 files.
+_Avoid_: batch, chunk, slice
+
+**Cover Album**:
+The album of Work covers shown before a Profile Page is downloaded.
+_Avoid_: preview, thumbnails, gallery preview
+
 ## Music
 
 **Source Domain**:
-The origin of a Source URL: a general site, a tweet post, or a music service.
-The domain determines which pipeline turns a Request into an Artifact. Current
-ones: guess (general), twitter, spotify, deezer, tidal, soundcloud.
+The origin of a Source URL: a general site, a tweet post, a Pixiv artist or
+Work, or a music service. The domain determines which pipeline turns a Request
+into an Artifact. Current ones: guess (general), twitter, pixiv, spotify,
+deezer, tidal, soundcloud.
 _Avoid_: platform, link type, provider
 
 **Music Request**:

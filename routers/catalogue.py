@@ -15,18 +15,19 @@ from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
     InlineQueryResultUnion,
-    InputMediaPhoto,
     InputTextMessageContent,
-    Message,
 )
 
 from services.catalogue_flow import (
+    CardSurface,
     album_card,
     album_download_request,
     artist_card,
+    present_card,
     render_artist_card,
     run_album_zip,
     run_chat_album_zip,
+    track_request,
 )
 from services.catalogue_search import (
     CatalogueNetworkError,
@@ -37,13 +38,13 @@ from services.catalogue_search import (
 from services.executor import execute_request
 from services.inline_flow import run_inline_download
 from services.pipeline import MUSIC_OPTIONS
-from services.requests import catalogue_browse_request, inline_media_request
 from services.session import Session
 from services.status import chat_status
 from utils import text
-from utils.callbacks import CatalogueCallback, InlineCancelCallback
+from utils.callbacks import CatalogueCallback, InlineCancelCallback, split_token
 from utils.models import (
     CataloguePayload,
+    InlineMediaPayload,
     ParsedInput,
     RequestType,
     StoredRequest,
@@ -166,19 +167,19 @@ def _artist_link_result(item: SearchItem) -> InlineQueryResultArticle:
 
 
 def _artist_result(session: Session, item: SearchItem) -> InlineQueryResultArticle:
-    stored = catalogue_browse_request(
-        session.request_store, ParsedInput(source_url=item.external_url)
+    stored = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
+        ParsedInput(source_url=item.external_url),
+        payload=CataloguePayload(
+            provider=item.provider,
+            artist_id=item.item_id,
+            name=item.title,
+            cover_url=item.cover_url,
+            artist_url=item.external_url,
+            listeners=item.listeners,
+
+        ),
     )
-    stored.info = CataloguePayload(
-        provider=item.provider,
-        artist_id=item.item_id,
-        name=item.title,
-        cover_url=item.cover_url,
-        artist_url=item.external_url,
-        listeners=item.listeners,
-        media_message=False,
-    ).to_info()
-    session.request_store.save(stored)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -203,8 +204,10 @@ def _artist_result(session: Session, item: SearchItem) -> InlineQueryResultArtic
 
 
 def _media_result(session: Session, item: SearchItem) -> InlineQueryResultArticle:
-    stored = inline_media_request(
-        session.request_store, ParsedInput(source_url=item.external_url)
+    stored = session.request_store.open(
+        RequestType.INLINE_MEDIA,
+        ParsedInput(source_url=item.external_url),
+        payload=InlineMediaPayload(plan="music"),
     )
     icons = {"track": "🎵", "album": "💽", "playlist": "🎶"}
     description = item.artists or item.album or item.external_url
@@ -243,7 +246,12 @@ async def catalogue_chosen(query: ChosenInlineResult, session: Session) -> objec
             token=token,
             following=following,
         )
-        await _show_card(query.bot, query.inline_message_id, session, card)
+        await present_card(
+            card,
+            bot=query.bot,
+            surface=CardSurface.INLINE,
+            inline_message_id=query.inline_message_id,
+        )
     except (RuntimeError, ValueError, TelegramAPIError) as exc:
         logger.info("Artist Card failed | user=%s error=%s", query.from_user.id, exc)
         await _show_failure(query.bot, query.inline_message_id, stored, str(exc))
@@ -264,7 +272,8 @@ async def catalogue_callback(  # noqa: C901
         await _zip_callback(query, session, token)
         return
 
-    stored = _load(session, token.split(".", 1)[0], RequestType.CATALOGUE_BROWSE)
+    card_token, tail = split_token(token)
+    stored = _load(session, card_token, RequestType.CATALOGUE_BROWSE)
     if stored is None:
         await query.answer(text.REQUEST_EXPIRED, show_alert=True)
         return
@@ -294,24 +303,31 @@ async def catalogue_callback(  # noqa: C901
                 else text.FOLLOW_REMOVED.format(name=payload.name)
             )
             following = added
-            card = render_artist_card(session, stored, following=following)
+            card = render_artist_card(stored, following=following)
         elif action == "open":
-            index = int(token.split(".", 1)[1])
+            index = int(tail or "")
             card = await album_card(session, stored, index)
         elif action == "albums":
-            card = render_artist_card(session, stored, following=following, albums=True)
+            card = render_artist_card(stored, following=following, albums=True)
         elif action == "top":
-            card = render_artist_card(session, stored, following=following, top=True)
+            card = render_artist_card(stored, following=following, top=True)
         elif action == "menu":
-            card = render_artist_card(session, stored, following=following)
+            card = render_artist_card(stored, following=following)
         else:
             await query.answer()
             return
         message = getattr(query, "message", None)
         if message is not None:
-            await _show_message_card(message, session, card)
+            await present_card(
+                card, bot=query.bot, surface=CardSurface.CHAT, message=message
+            )
         else:
-            await _show_card(query.bot, query.inline_message_id, session, card)
+            await present_card(
+                card,
+                bot=query.bot,
+                surface=CardSurface.INLINE,
+                inline_message_id=query.inline_message_id,
+            )
         await query.answer()
     except (RuntimeError, ValueError, TelegramAPIError) as exc:
         logger.info("Catalogue action failed | action=%s error=%s", action, exc)
@@ -319,24 +335,26 @@ async def catalogue_callback(  # noqa: C901
 
 
 async def _download_callback(query: CallbackQuery, session: Session, token: str) -> None:
-    caption_status = False
-    if "." in token:
-        card_token, request_token = token.split(".", 1)
-        card = _load(session, card_token, RequestType.CATALOGUE_BROWSE)
-        if card is None:
-            await query.answer(text.REQUEST_EXPIRED, show_alert=True)
-            return
-        payload = card.payload
-        caption_status = isinstance(payload, CataloguePayload) and payload.media_message
-        stored = _load(session, request_token, RequestType.MORNYE)
-    else:
-        album = _load(session, token, RequestType.CATALOGUE_BROWSE)
-        if album is None:
-            await query.answer(text.REQUEST_EXPIRED, show_alert=True)
-            return
-        payload = album.payload
-        caption_status = isinstance(payload, CataloguePayload) and payload.media_message
-        stored = album_download_request(session, album)
+    card_token, track_index = split_token(token)
+    card = _load(session, card_token, RequestType.CATALOGUE_BROWSE)
+    if card is None:
+        await query.answer(text.REQUEST_EXPIRED, show_alert=True)
+        return
+    payload = card.payload
+    if not isinstance(payload, CataloguePayload):
+        await query.answer(text.REQUEST_EXPIRED, show_alert=True)
+        return
+    # A media message cannot take a text status, so it reports through the caption.
+    caption_status = bool(payload.cover_url)
+    try:
+        stored = (
+            track_request(session, card, int(track_index))
+            if track_index is not None
+            else album_download_request(session, card)
+        )
+    except (ValueError, IndexError):
+        await query.answer(text.REQUEST_EXPIRED, show_alert=True)
+        return
     message = getattr(query, "message", None)
     if message is not None:
         if stored is None:
@@ -395,60 +413,10 @@ async def _zip_callback(query: CallbackQuery, session: Session, token: str) -> N
         user_id=query.from_user.id,
         inline_message_id=cast(str, query.inline_message_id),
         stored=stored,
-        caption_status=payload.media_message,
+        caption_status=bool(payload.cover_url),
     )
 
 
-async def _show_message_card(message: Message, session: Session, card) -> None:
-    """Render an Artist Card into an ordinary bot message in private chat."""
-    payload = card.stored.payload
-    if not isinstance(payload, CataloguePayload):
-        raise ValueError("not an Artist Card")
-    if payload.cover_url:
-        media = InputMediaPhoto(media=payload.cover_url, caption=card.caption)
-        if getattr(message, "photo", None):
-            await message.edit_media(media=media, reply_markup=card.keyboard)
-        else:
-            await message.delete()
-            await message.answer_photo(
-                photo=payload.cover_url,
-                caption=card.caption,
-                reply_markup=card.keyboard,
-            )
-        payload.media_message = True
-    else:
-        if getattr(message, "photo", None):
-            await message.delete()
-            await message.answer(card.caption, reply_markup=card.keyboard)
-        else:
-            await message.edit_text(card.caption, reply_markup=card.keyboard)
-        payload.media_message = False
-    card.stored.info = payload.to_info()
-    session.request_store.save(card.stored)
-
-
-async def _show_card(query_bot, inline_message_id: str | None, session: Session, card) -> None:
-    if not inline_message_id:
-        raise ValueError("Artist Cards work only in inline messages")
-    payload = card.stored.payload
-    if not isinstance(payload, CataloguePayload):
-        raise ValueError("not an Artist Card")
-    if payload.cover_url:
-        await query_bot.edit_message_media(
-            inline_message_id=inline_message_id,
-            media=InputMediaPhoto(media=payload.cover_url, caption=card.caption),
-            reply_markup=card.keyboard,
-        )
-        payload.media_message = True
-    else:
-        await query_bot.edit_message_text(
-            inline_message_id=inline_message_id,
-            text=card.caption,
-            reply_markup=card.keyboard,
-        )
-        payload.media_message = False
-    card.stored.info = payload.to_info()
-    session.request_store.save(card.stored)
 
 
 async def _show_failure(query_bot, inline_message_id: str | None, stored: StoredRequest, error: str) -> None:
@@ -456,7 +424,7 @@ async def _show_failure(query_bot, inline_message_id: str | None, stored: Stored
         return
     payload = stored.payload
     message = text.esc(error)
-    if isinstance(payload, CataloguePayload) and payload.media_message:
+    if isinstance(payload, CataloguePayload) and payload.cover_url:
         await query_bot.edit_message_caption(
             inline_message_id=inline_message_id, caption=message
         )

@@ -8,6 +8,7 @@ import re
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,11 +17,17 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 from aiogram.types import (
     FSInputFile,
+    InlineQueryResultCachedAudio,
+    InlineQueryResultCachedDocument,
+    InlineQueryResultCachedMpeg4Gif,
+    InlineQueryResultCachedPhoto,
+    InlineQueryResultCachedVideo,
     InputMediaAudio,
     InputMediaDocument,
     InputMediaPhoto,
     InputMediaVideo,
     InputRichMessage,
+    MediaUnion,
     Message,
 )
 from aiogram.utils.chat_action import ChatActionSender
@@ -29,7 +36,6 @@ from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 
 from services.media import audio_duration, video_metadata, video_note_metadata
-from services.media_cache import cached_media_from
 from services.status import StatusSurface, elapsed_seconds
 from utils import text
 from utils.logging_config import safe_url_label
@@ -263,66 +269,104 @@ def _extract_cover(path: Path) -> Path | None:
         return None
 
 
-def media_item(
-    artifact: DownloadArtifact, caption: str | None
+@dataclass(frozen=True, slots=True)
+class MediaFacts:
+    """What Telegram needs about the file when the download did not supply it."""
+
+    width: int | None = None
+    height: int | None = None
+    duration: int | None = None
+
+
+async def media_facts(artifact: DownloadArtifact) -> MediaFacts:
+    """Read the missing dimensions/duration off the file, off the loop.
+
+    Every consumer of an artifact's metadata goes through here: the single-send
+    path (send_video needs width/height/duration) and the InputMedia path (a
+    media group, an inline edit). Reading the file must happen before the
+    artifact is uploaded and unlinked.
+    """
+    width, height, duration = artifact.width, artifact.height, artifact.duration
+    if artifact.send_type == "video_note":
+        if width is None or duration is None:
+            length, fallback_duration = await asyncio.to_thread(
+                video_note_metadata, artifact.path
+            )
+            width = length if width is None else width
+            height = length if height is None else height
+            duration = fallback_duration if duration is None else duration
+    elif artifact.send_type == "video":
+        if width is None or height is None or duration is None:
+            fallback_width, fallback_height, fallback_duration = (
+                await asyncio.to_thread(video_metadata, artifact.path)
+            )
+            width = fallback_width if width is None else width
+            height = fallback_height if height is None else height
+            duration = fallback_duration if duration is None else duration
+    elif artifact.send_type == "audio" and duration is None:
+        duration = await asyncio.to_thread(audio_duration, artifact.path)
+    return MediaFacts(width=width, height=height, duration=duration)
+
+
+async def media_item(
+    artifact: DownloadArtifact,
+    caption: str | None,
+    *,
+    media: FSInputFile | str,
+    facts: MediaFacts | None = None,
 ) -> tuple[object, Path | None]:
-    """Build one InputMedia entry for an artifact; the second element is a
-    temp cover file the caller must unlink after the request (aiogram reads
-    InputFile bodies lazily at send time)."""
-    file_input = FSInputFile(artifact.path, filename=artifact.file_name)
+    """Build one InputMedia entry for an artifact.
+
+    ``media`` is either a local file (a media group) or an existing ``file_id``
+    (editing an inline message, where the Bot API refuses to upload). The second
+    element is a temp cover file the caller must unlink after the request;
+    aiogram reads InputFile bodies lazily at send time. A ``file_id`` never gets
+    a thumbnail: an inline edit cannot upload one.
+    """
+    facts = facts if facts is not None else await media_facts(artifact)
+    local = isinstance(media, FSInputFile)
     if artifact.send_type == "photo":
-        return InputMediaPhoto(media=file_input, caption=caption), None
+        return InputMediaPhoto(media=media, caption=caption), None
     if artifact.send_type == "video":
-        if (
-            artifact.duration is not None
-            and artifact.width is not None
-            and artifact.height is not None
-        ):
-            width, height, duration = artifact.width, artifact.height, artifact.duration
-        else:
-            width, height, duration = video_metadata(artifact.path)
         return (
             InputMediaVideo(
-                media=file_input,
-                width=width,
-                height=height,
-                duration=duration,
+                media=media,
+                width=facts.width,
+                height=facts.height,
+                duration=facts.duration,
                 supports_streaming=True,
                 caption=caption,
             ),
             None,
         )
     if artifact.send_type == "audio":
-        duration = artifact.duration
-        if duration is None:
-            duration = audio_duration(artifact.path)
-        cover = _extract_cover(artifact.path)
-        item = InputMediaAudio(
-            media=file_input,
-            duration=duration,
-            caption=caption,
-            title=artifact.audio_title,
-            performer=artifact.audio_performer,
-            thumbnail=FSInputFile(cover) if cover is not None else None,
+        cover = await asyncio.to_thread(_extract_cover, artifact.path) if local else None
+        return (
+            InputMediaAudio(
+                media=media,
+                duration=facts.duration,
+                caption=caption,
+                title=artifact.audio_title or artifact.file_name,
+                performer=artifact.audio_performer,
+                thumbnail=FSInputFile(cover) if cover is not None else None,
+            ),
+            cover,
         )
-        return item, cover
     if artifact.send_type == "video_note":
-        # Video notes cannot live in a media group or an edited inline
-        # message; fall back to sending the file as a regular video.
-        length = artifact.width or video_note_metadata(artifact.path)[0]
-        duration = artifact.duration or video_note_metadata(artifact.path)[1]
+        # A video note cannot travel in a media group or an inline edit, so it
+        # degrades to a regular video of the same length.
         return (
             InputMediaVideo(
-                media=file_input,
-                width=length,
-                height=length,
-                duration=duration,
+                media=media,
+                width=facts.width,
+                height=facts.width,
+                duration=facts.duration,
                 supports_streaming=True,
                 caption=caption,
             ),
             None,
         )
-    return InputMediaDocument(media=file_input, caption=caption), None
+    return InputMediaDocument(media=media, caption=caption), None
 
 
 def _action(reply: Message | None, method: Any, bot: Bot, chat_id: int) -> Any:
@@ -344,7 +388,7 @@ async def _send_overflow(
             await bot.send_message(chat_id, chunk)
 
 
-async def _send_single(  # noqa: C901
+async def _send_single(
     bot: Bot,
     chat_id: int,
     artifact: DownloadArtifact,
@@ -370,32 +414,20 @@ async def _send_single(  # noqa: C901
 
     send_type = artifact.send_type
     caption, overflow = text.split_caption(artifact.caption)
+    facts = await media_facts(artifact)
     extracted_cover: Path | None = None
     if send_type == "video":
-        width = artifact.width
-        height = artifact.height
-        duration = artifact.duration
-        if duration is None or width is None or height is None:
-            fallback_width, fallback_height, fallback_duration = await asyncio.to_thread(
-                video_metadata, artifact.path
-            )
-            width = fallback_width if width is None else width
-            height = fallback_height if height is None else height
-            duration = fallback_duration if duration is None else duration
         async with _action(reply, ChatActionSender.upload_video, bot, chat_id):
             sent = await send(
                 "video",
                 video=file_input,
                 caption=caption,
-                duration=duration,
-                width=width,
-                height=height,
+                duration=facts.duration,
+                width=facts.width,
+                height=facts.height,
                 supports_streaming=True,
             )
     elif send_type == "audio":
-        duration = artifact.duration
-        if duration is None:
-            duration = await asyncio.to_thread(audio_duration, artifact.path)
         extracted_cover = await asyncio.to_thread(_extract_cover, artifact.path)
         try:
             async with _action(reply, ChatActionSender.upload_document, bot, chat_id):
@@ -403,7 +435,7 @@ async def _send_single(  # noqa: C901
                     "audio",
                     audio=file_input,
                     caption=caption,
-                    duration=duration,
+                    duration=facts.duration,
                     thumbnail=(
                         FSInputFile(extracted_cover) if extracted_cover is not None else None
                     ),
@@ -414,20 +446,12 @@ async def _send_single(  # noqa: C901
             if extracted_cover is not None:
                 extracted_cover.unlink(missing_ok=True)
     elif send_type == "video_note":
-        length = artifact.width
-        duration = artifact.duration
-        if duration is None or length is None:
-            fallback_length, fallback_duration = await asyncio.to_thread(
-                video_note_metadata, artifact.path
-            )
-            length = fallback_length if length is None else length
-            duration = fallback_duration if duration is None else duration
         async with _action(reply, ChatActionSender.upload_video_note, bot, chat_id):
             sent = await send(
                 "video_note",
                 video_note=file_input,
-                duration=duration,
-                length=length,
+                duration=facts.duration,
+                length=facts.width,
             )
     elif send_type == "photo":
         async with _action(reply, ChatActionSender.upload_photo, bot, chat_id):
@@ -460,9 +484,10 @@ async def _send_group(
     )
     try:
         for index, artifact in enumerate(chunk):
-            item, cover = media_item(
+            item, cover = await media_item(
                 artifact,
                 caption if index == 0 else None,
+                media=FSInputFile(artifact.path, filename=artifact.file_name),
             )
             entries.append((artifact, item))
             if cover is not None:
@@ -605,3 +630,159 @@ class DirectDelivery:
             started_at=started_at,
             album_caption=True,
         )
+
+
+def cached_media_from(
+    sent: Any, *, send_type: str, file_name: str, caption: str | None
+) -> CachedMedia | None:
+    """Extract a CachedMedia from a just-sent Message (or a bool/None from
+    edge-case edit methods)."""
+    if sent is None or isinstance(sent, bool):
+        return None
+    if send_type == "photo":
+        content = getattr(sent, "photo", None)
+        file_id = content[-1].file_id if content else None
+    else:
+        file_id = getattr(getattr(sent, send_type, None), "file_id", None)
+    if not file_id:
+        logger.warning(
+            "Cannot capture file_id from sent message | send_type=%s file=%s",
+            send_type,
+            file_name,
+        )
+        return None
+    return CachedMedia(
+        file_id=file_id, send_type=send_type, file_name=file_name, caption=caption
+    )
+
+
+async def send_cached(  # noqa: C901
+    bot: Bot, chat_id: int, entries: list[CachedMedia]
+) -> list[Message]:
+    """Resend cached file_ids to a chat; raises TelegramAPIError to the
+    caller (used as the invalid-file_id fallback trigger)."""
+    sent_messages: list[Message] = []
+    if (
+        len(entries) > 1
+        and all(entry.send_type in {"photo", "video"} for entry in entries)
+    ):
+        for start in range(0, len(entries), _ALBUM_CHUNK):
+            chunk = entries[start : start + _ALBUM_CHUNK]
+            caption, overflow = text.split_caption(chunk[0].caption)
+            items: list[MediaUnion] = [
+                (
+                    InputMediaPhoto(
+                        media=entry.file_id,
+                        caption=caption if index == 0 else None,
+                    )
+                    if entry.send_type == "photo"
+                    else InputMediaVideo(
+                        media=entry.file_id,
+                        supports_streaming=True,
+                        caption=caption if index == 0 else None,
+                    )
+                )
+                for index, entry in enumerate(chunk)
+            ]
+            sent_messages.extend(await bot.send_media_group(chat_id, media=items))
+            for part in overflow:
+                sent_messages.append(await bot.send_message(chat_id, part))
+        return sent_messages
+
+    for entry in entries:
+        caption, overflow = text.split_caption(entry.caption)
+        if entry.send_type == "photo":
+            sent_messages.append(
+                await bot.send_photo(chat_id, photo=entry.file_id, caption=caption)
+            )
+        elif entry.send_type == "video":
+            sent_messages.append(
+                await bot.send_video(
+                    chat_id,
+                    video=entry.file_id,
+                    caption=caption,
+                    supports_streaming=True,
+                )
+            )
+        elif entry.send_type == "audio":
+            sent_messages.append(
+                await bot.send_audio(
+                    chat_id,
+                    audio=entry.file_id,
+                    caption=caption,
+                    title=entry.file_name,
+                )
+            )
+        elif entry.send_type == "animation":
+            sent_messages.append(
+                await bot.send_animation(
+                    chat_id, animation=entry.file_id, caption=caption
+                )
+            )
+        elif entry.send_type == "video_note":
+            sent_messages.append(
+                await bot.send_video_note(chat_id, video_note=entry.file_id)
+            )
+        else:
+            sent_messages.append(
+                await bot.send_document(
+                    chat_id, document=entry.file_id, caption=caption
+                )
+            )
+        for part in overflow:
+            sent_messages.append(await bot.send_message(chat_id, part))
+    return sent_messages
+
+
+def inline_cached_results(entries: list[CachedMedia]) -> list:
+    """Cached inline answers; result ids use the 'cached' prefix so the
+    chosen-result handler can skip them (they post instantly client-side)."""
+    results: list[Any] = []
+    for index, entry in enumerate(entries):
+        result_id = f"cached{index}"
+        caption = (entry.caption or "")[: text.CAPTION_LIMIT] or None
+        if entry.send_type == "photo":
+            results.append(
+                InlineQueryResultCachedPhoto(
+                    id=result_id,
+                    photo_file_id=entry.file_id,
+                    caption=caption if index == 0 else None,
+                )
+            )
+        elif entry.send_type == "video":
+            results.append(
+                InlineQueryResultCachedVideo(
+                    id=result_id,
+                    video_file_id=entry.file_id,
+                    title=entry.file_name or f"Video {index + 1}",
+                    caption=caption if index == 0 else None,
+                )
+            )
+        elif entry.send_type == "audio":
+            results.append(
+                InlineQueryResultCachedAudio(
+                    id=result_id,
+                    audio_file_id=entry.file_id,
+                    caption=caption if index == 0 else None,
+                )
+            )
+        elif entry.send_type == "animation":
+            results.append(
+                InlineQueryResultCachedMpeg4Gif(
+                    id=result_id,
+                    mpeg4_file_id=entry.file_id,
+                    caption=caption if index == 0 else None,
+                )
+            )
+        elif entry.send_type == "video_note":
+            continue  # no cached inline type for video notes
+        else:
+            results.append(
+                InlineQueryResultCachedDocument(
+                    id=result_id,
+                    document_file_id=entry.file_id,
+                    title=entry.file_name or f"File {index + 1}",
+                    caption=caption if index == 0 else None,
+                )
+            )
+    return results

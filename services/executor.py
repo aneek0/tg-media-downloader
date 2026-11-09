@@ -9,15 +9,16 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, Message
 
 from services.delivery import ChatDelivery, send_url_media
-from services.media_cache import CachedMedia
 from services.mornye import audio_cache_key
-from services.pipeline import download_artifacts
+from services.pipeline import DownloadChoice, Downloaded, download_artifacts
 from services.progress import humanbytes
 from services.session import Session
 from services.status import StatusSurface, elapsed_seconds
+from services.user_settings import UserPreferences
 from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import (
+    CachedMedia,
     DownloadOption,
     FileTooLargeError,
     GalleryPayload,
@@ -102,25 +103,23 @@ async def execute_request(  # noqa: C901
                         len(sent_media),
                     )
                     return
-            artifacts = await download_artifacts(
-                session, stored, option, status=status
-            )
-            uploaded = await delivery.deliver(
-                artifacts=artifacts, status=status, started_at=started_at
-            )
-            if uploaded:
-                await media_cache.record(stored.parsed_input.source_url, uploaded)
-            logger.info(
-                "Completed request action | user=%s token=%s files=%s",
-                user_id,
-                stored.token,
-                len(artifacts),
-            )
-            return
-        if stored.request_type == RequestType.MORNYE:
-            await _run_mornye_request(
+        preferences = session.preferences(user_id)
+        downloaded = await download_artifacts(
+            session,
+            stored,
+            DownloadChoice(
+                option,
+                audio_format=preferences.audio_format,
+                audio_quality=preferences.audio_quality,
+            ),
+            status=status,
+        )
+        if downloaded.music_target is not None:
+            await _finish_music(
                 session,
                 stored,
+                downloaded,
+                preferences,
                 delivery=delivery,
                 status=status,
                 source_message=source_message,
@@ -128,19 +127,16 @@ async def execute_request(  # noqa: C901
                 started_at=started_at,
             )
             return
-        artifacts = await download_artifacts(
-            session, stored, option, status=status
+        uploaded = await delivery.deliver(
+            artifacts=downloaded.artifacts, status=status, started_at=started_at
         )
-        sent = await delivery.deliver(
-            artifacts=artifacts, status=status, started_at=started_at
-        )
-        if sent:
-            await media_cache.record(stored.parsed_input.source_url, sent)
+        if uploaded:
+            await media_cache.record(stored.parsed_input.source_url, uploaded)
         logger.info(
             "Completed request action | user=%s token=%s files=%s",
             user_id,
             stored.token,
-            len(artifacts),
+            len(downloaded.artifacts),
         )
     except FileTooLargeError as exc:
         logger.warning(
@@ -209,9 +205,11 @@ async def _send_cover_photo(
     cover_path.unlink(missing_ok=True)
 
 
-async def _run_mornye_request(
+async def _finish_music(
     session: Session,
     stored: StoredRequest,
+    downloaded: Downloaded,
+    preferences: UserPreferences,
     *,
     status: StatusSurface,
     source_message: Message,
@@ -219,39 +217,24 @@ async def _run_mornye_request(
     started_at: datetime,
     delivery: ChatDelivery,
 ) -> None:
-    """mornye flow: resolve → download → per-file uploads.
+    """Deliver what the music row downloaded: cover, files, cache, failures.
 
     Failed-tolerance: whatever downloaded gets sent; failures are listed in
     one summary edit. Only single tracks go to MediaCache.
     """
-    work_dir = session.request_store.work_directory(stored.token)
-    await status.edit(text.MUSIC_RESOLVING)
-    target = await session.mornye.resolve_url(stored.parsed_input.source_url)
-    total = len(target.tracks)
-    kind_label = target.kind if target.kind == "track" else "collection"
-    await status.edit(
-        text.MUSIC_DOWNLOAD.format(
-            name=text.esc(target.name), kind=kind_label, count=total
-        )
-    )
-    preferences = session.preferences(user_id)
-    artifacts, cover_path = await session.mornye.download_target(
-        target,
-        work_dir,
-        audio_format=preferences.audio_format,
-        audio_quality=preferences.audio_quality,
-    )
+    target = downloaded.music_target
+    artifacts = downloaded.artifacts
     logger.info(
         "Music download finished | user=%s token=%s files=%s/%s",
         user_id,
         stored.token,
         len(artifacts),
-        total,
+        len(target.tracks),
     )
     if target.kind != "track":
         await _send_cover_photo(
             source_message,
-            cover_path,
+            downloaded.cover_path,
             user_id,
             stored.token,
             caption=_album_caption(target),

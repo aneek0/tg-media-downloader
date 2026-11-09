@@ -9,17 +9,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Added `ty` 0.0.99 type checking for production modules in local, CI, and release checks.
+- Pixiv profile browsing reads the artist's works from Pixiv's OAuth App API with offset pagination. The anonymous
+  web endpoints hid logged-in-only works (an artist with 17 works indexed as 0), and the API offset means a page
+  never re-scans the artist from the newest work. The pager hides ▶ on the last page.
+- Pixiv support. `/artworks/<id>` (and `/i/<id>`, `member_illust.php?illust_id=`,
+  `artworks/unlisted/<token>`) downloads through the existing gallery pipeline, including multi-page works;
+  ugoira is converted to MP4. Artist profiles open a paged browser: a Cover Album of the page plus
+  ◀ / Download / ▶ buttons for both private chat and inline results. A Profile Page holds at most 10 works and
+  50 files and never splits a work; a single work over the limit is rejected with a clear message.
+  Inline Pixiv results are tap-to-download articles because Telegram cannot fetch `i.pximg.net` without a
+  Pixiv Referer; bookmarks, rankings, tags, search, series, and novels are rejected explicitly instead of
+  falling into the unbounded generic gallery path.
+- Pixiv credentials: `gallery-dl oauth:pixiv`, run once on the bot host, caches the refresh token and gallery-dl
+  reuses it on its own — no environment variable needed. `PIXIV_REFRESH_TOKEN` only overrides that cache and
+  reaches gallery-dl through a temporary 0600 config file, never through argv, so it cannot leak into logs or the
+  process list. `PIXIV_COOKIES` optionally supplies a logged-in pixiv.net session for R18 works.
 
 ### Changed
 
-- Replaced pylint with Ruff for local, CI, and release linting; lint configuration now lives in `pyproject.toml`.
+- One download pipeline: `download_artifacts` is the only dispatch table (gallery, mornye, direct, YouTube, yt-dlp) for
+  both private chat and inline, so the inline path no longer re-probes its source. Inline queries persist the plan they
+  already made (the gallery probe result, or "music"/"url"), `DownloadChoice` is the single download contract, and the
+  mornye row returns the resolved target instead of relying on the executor having branched first.
+- One delivery table for Send Types: `media_facts`/`media_item` build both the `InputMedia*` entry and the single send
+  call from either a local file or a `file_id`. Cached resends and cached inline results moved from `MediaCache` into
+  delivery, so `MediaCache` is only a store. Album chunks, caption limits and audio titles now have one definition.
+- Request lifecycle lives on `RequestStore`: `open(...)` rejects a payload that does not belong to the request type,
+  `update_payload(...)` is the only refresh path, and `lifecycle(...)` is the one cleanup context manager.
+  `services/requests.py` is gone; the composite catalogue token (`card.index`) is built and parsed by
+  `utils.callbacks.join_token`/`split_token`.
+- Artist Cards render as data: `present_card` shows one card on an inline message, an existing chat message, or a new
+  one, and the "this is a media message" flag is derived from the card's cover instead of being persisted.
+  A render no longer mints track Requests — a pressed track becomes a Request on demand.
+- The four JSON-backed stores (media cache, user settings, follows, requests) share one atomic `JsonStore`; validation
+  helpers and the catalogue provider set moved to `utils/models.py`.
 
 ### Fixed
+
+- The media cache creates its parent directory before writing. A missing `DOWNLOADS/` used to turn every cache write
+  into a swallowed warning, so the cache silently never persisted.
+- Audio sent in a media group keeps its display title (`audio_title`, falling back to the file name), matching the
+  single-file send; cached video notes resend as notes while album edits degrade them to video, as before.
 
 - Private intake now ignores every message sent via this bot after an inline selection, so status and error text
   cannot be submitted again as a catalogue search or a new download. The existing plain-text placeholder guard remains.
 - Text-only Twitter/X posts now return their text in private chat and as ready inline results instead of falling
   through yt-dlp to the HTML direct-download error. Long posts are split into Telegram-sized messages/results.
+- Pixiv ugoira works no longer arrive as a ZIP of animation frames: the frames archive is excluded from the
+  Telegram URL-send path, so the request always runs the local download that converts it to an MP4 video.
+- External tools are found even when the bot is started as `.venv/bin/python bot.py` without an activated
+  virtualenv: if `gallery-dl`/`yt-dlp` is not on `PATH`, the venv copy next to the running interpreter is used.
+  The example systemd unit also sets `PATH`, since the missing tool used to turn every gallery link into a
+  misleading direct-download fallback.
 
 ## [3.3.0] - 2026-11-08
 

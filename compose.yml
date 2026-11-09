@@ -29,10 +29,14 @@ services:
     volumes:
       - downloads:/app/DOWNLOADS
       - mornye:/home/app/.mornye
+      # gallery-dl OAuth cache (Pixiv login): persists the token written by
+      # `docker compose exec bot gallery-dl oauth:pixiv`.
+      - gallery-dl-cache:/home/app/.cache/gallery-dl
     depends_on:
       - telegram-bot-api
 
 volumes:
   downloads:
   mornye:
+  gallery-dl-cache:
   telegram-bot-api-data:

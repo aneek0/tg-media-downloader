@@ -9,6 +9,7 @@ from aiogram.types import InputMediaAudio
 
 from services.inline_flow import run_inline_download
 from services.mornye import audio_cache_key
+from services.pipeline import Downloaded
 from services.request_store import RequestStore
 from tests.conftest import make_media_cache, make_session, make_settings
 from utils.models import CachedMedia, DownloadArtifact, ParsedInput, StoredRequest
@@ -38,7 +39,8 @@ async def test_inline_audio_edits_with_dm_uploaded_file_id(monkeypatch, tmp_path
         audio_performer="Artist",
     )
     monkeypatch.setattr(
-        "services.inline_flow.download_inline", AsyncMock(return_value=[artifact])
+        "services.inline_flow.download_artifacts",
+        AsyncMock(return_value=Downloaded([artifact])),
     )
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
@@ -88,7 +90,7 @@ async def test_inline_cached_audio_skips_download(
         [CachedMedia(file_id="CACHED_AUDIO", send_type="audio", file_name="song.flac")],
     )
     download = AsyncMock()
-    monkeypatch.setattr("services.inline_flow.download_inline", download)
+    monkeypatch.setattr("services.inline_flow.download_artifacts", download)
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
         edit_message_caption=AsyncMock(),
@@ -142,7 +144,8 @@ async def test_album_get_all_edits_first_track_and_spills_remainder(
             )
         )
     monkeypatch.setattr(
-        "services.inline_flow.download_inline", AsyncMock(return_value=artifacts)
+        "services.inline_flow.download_artifacts",
+        AsyncMock(return_value=Downloaded(artifacts)),
     )
 
     class FakeDelivery:
@@ -222,7 +225,8 @@ async def test_inline_audio_without_bot_chat_falls_back_to_open_bot(
             )
         )
     monkeypatch.setattr(
-        "services.inline_flow.download_inline", AsyncMock(return_value=artifacts)
+        "services.inline_flow.download_artifacts",
+        AsyncMock(return_value=Downloaded(artifacts)),
     )
 
     class ForbiddenDelivery:
@@ -302,8 +306,8 @@ async def test_inline_audio_cache_keeps_flac_and_mp3_apart(monkeypatch, tmp_path
         audio_title="Song",
         audio_performer="Artist",
     )
-    download = AsyncMock(return_value=[artifact])
-    monkeypatch.setattr("services.inline_flow.download_inline", download)
+    download = AsyncMock(return_value=Downloaded([artifact]))
+    monkeypatch.setattr("services.inline_flow.download_artifacts", download)
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
         send_audio=AsyncMock(
@@ -321,7 +325,7 @@ async def test_inline_audio_cache_keeps_flac_and_mp3_apart(monkeypatch, tmp_path
     )
 
     download.assert_awaited_once()
-    assert download.await_args.kwargs["audio_format"] == "mp3"
+    assert download.await_args.args[2].audio_format == "mp3"
     flac_entries = cache.get(audio_cache_key(source_url, "lossless", "flac"))
     assert flac_entries is not None
     assert flac_entries[0].file_id == "FLAC_FILE"

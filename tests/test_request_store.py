@@ -4,8 +4,16 @@ import shutil
 import time
 from pathlib import Path
 
+import pytest
+
 from services.request_store import RequestStore
-from utils.models import ParsedInput, StoredRequest
+from utils.models import (
+    CataloguePayload,
+    DirectPayload,
+    ParsedInput,
+    RequestType,
+    StoredRequest,
+)
 
 
 def make_store(tmp_path: Path) -> RequestStore:
@@ -38,6 +46,71 @@ def test_request_store_roundtrip_save_load_delete(tmp_path: Path):
 
     store.delete("tok1")
     assert store.load("tok1") is None
+
+
+def test_open_persists_the_payload_under_a_new_token(tmp_path: Path):
+    store = make_store(tmp_path)
+
+    stored = store.open(
+        RequestType.CATALOGUE_BROWSE,
+        ParsedInput(source_url="https://www.deezer.com/artist/1"),
+        payload=CataloguePayload(provider="deezer", artist_id="deezer:1"),
+    )
+
+    reloaded = store.load(stored.token)
+    assert reloaded is not None
+    assert reloaded.request_type is RequestType.CATALOGUE_BROWSE
+    payload = reloaded.payload
+    assert isinstance(payload, CataloguePayload)
+    assert payload.provider == "deezer"
+
+
+def test_open_rejects_a_payload_of_the_wrong_shape(tmp_path: Path):
+    """A mismatched payload would decode into the wrong variant later."""
+    store = make_store(tmp_path)
+
+    with pytest.raises(ValueError, match="DirectPayload"):
+        store.open(
+            RequestType.DIRECT_DOWNLOAD,
+            ParsedInput(source_url="https://example.com/a.mp4"),
+            payload=CataloguePayload(provider="deezer", artist_id="deezer:1"),
+        )
+
+
+def test_update_payload_keeps_the_token(tmp_path: Path):
+    """Artist Cards and Pixiv pages refresh state under the token their buttons carry."""
+    store = make_store(tmp_path)
+    stored = store.open(
+        RequestType.DIRECT_DOWNLOAD,
+        ParsedInput(source_url="https://example.com/a.mp4"),
+        payload=DirectPayload(info={"ext": "mp4"}),
+    )
+
+    store.update_payload(stored, DirectPayload(info={"ext": "mkv"}))
+
+    reloaded = store.load(stored.token)
+    assert reloaded is not None
+    assert reloaded.token == stored.token
+    payload = reloaded.payload
+    assert isinstance(payload, DirectPayload)
+    assert payload.ext == "mkv"
+
+
+def test_lifecycle_removes_the_token_and_work_directory(tmp_path: Path):
+    store = make_store(tmp_path)
+    stored = store.open(
+        RequestType.DIRECT_DOWNLOAD,
+        ParsedInput(source_url="https://example.com/a.mp4"),
+        payload=DirectPayload(),
+    )
+    work = store.work_directory(stored.token)
+    (work / "part.bin").write_text("x", encoding="utf-8")
+
+    with store.lifecycle(stored.token) as token:
+        assert token == stored.token
+
+    assert store.load(stored.token) is None
+    assert not work.exists()
 
 
 def test_request_store_delete_removes_work_directory(tmp_path: Path):

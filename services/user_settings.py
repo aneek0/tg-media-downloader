@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import asdict, dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any
 
-_VALID_PROVIDERS = frozenset({"deezer", "spotify-web", "tidal-web"})
+from services.json_store import JsonStore
+from utils.models import CATALOGUE_PROVIDERS, validate_user_id
+
 _VALID_AUDIO_FORMATS = frozenset({"flac", "mp3"})
 _VALID_AUDIO_QUALITIES = frozenset({"lossless", "hires"})
 _DEFAULT_PROVIDER = "deezer"
@@ -24,12 +24,6 @@ class UserPreferences:
     audio_quality: str = _DEFAULT_AUDIO_QUALITY
 
 
-def _validate_user_id(user_id: Any) -> int:
-    if isinstance(user_id, bool) or not isinstance(user_id, int):
-        raise ValueError(f"user_id must be an int, got {user_id!r}")
-    return user_id
-
-
 def _validated_prefs(
     *,
     text_search: Any,
@@ -39,9 +33,9 @@ def _validated_prefs(
 ) -> UserPreferences:
     if not isinstance(text_search, bool):
         raise ValueError(f"text_search must be a bool, got {text_search!r}")
-    if provider not in _VALID_PROVIDERS:
+    if provider not in CATALOGUE_PROVIDERS:
         raise ValueError(
-            f"unsupported provider {provider!r}; expected one of {sorted(_VALID_PROVIDERS)}"
+            f"unsupported provider {provider!r}; expected one of {sorted(CATALOGUE_PROVIDERS)}"
         )
     if audio_format not in _VALID_AUDIO_FORMATS:
         raise ValueError(
@@ -62,13 +56,13 @@ def _validated_prefs(
 class UserSettingsStore:
     """Per-user text-search/audio preferences persisted as JSON.
 
-    Reads and writes are synchronous; writes go through a temp file and
-    ``os.replace`` so a crash never leaves a half-written store. A store file
-    that exists but cannot be understood raises instead of being discarded.
+    A store file that exists but cannot be understood raises instead of being
+    discarded; the atomic write is owned by :class:`JsonStore`.
     """
 
     def __init__(self, path: Path) -> None:
         self._path = path.resolve()
+        self._store = JsonStore(self._path)
         self._entries: dict[int, UserPreferences] = self._load()
 
     @property
@@ -76,12 +70,10 @@ class UserSettingsStore:
         return self._path
 
     def _load(self) -> dict[int, UserPreferences]:
-        if not self._path.exists():
+        payload = self._store.load()
+        if not payload:
             return {}
         try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("top-level value is not an object")
             if payload.get("version") != 1:
                 raise ValueError(f"unsupported version {payload.get('version')!r}")
             unexpected = set(payload) - {"version", "entries"}
@@ -92,10 +84,10 @@ class UserSettingsStore:
                 raise ValueError("'entries' is not an object")
             entries: dict[int, UserPreferences] = {}
             for raw_user_id, raw_record in raw_entries.items():
-                user_id = _validate_user_id(int(raw_user_id))
+                user_id = validate_user_id(int(raw_user_id))
                 entries[user_id] = self._record_to_prefs(raw_record)
             return entries
-        except (OSError, TypeError, ValueError, KeyError) as exc:
+        except (TypeError, ValueError, KeyError) as exc:
             raise RuntimeError(
                 f"User settings store at {self._path} is unreadable: {exc}"
             ) from exc
@@ -122,7 +114,7 @@ class UserSettingsStore:
         default_audio_format: str = _DEFAULT_AUDIO_FORMAT,
         default_audio_quality: str = _DEFAULT_AUDIO_QUALITY,
     ) -> UserPreferences:
-        _validate_user_id(user_id)
+        validate_user_id(user_id)
         stored = self._entries.get(user_id)
         if stored is not None:
             return stored
@@ -142,7 +134,7 @@ class UserSettingsStore:
         default_audio_quality: str = _DEFAULT_AUDIO_QUALITY,
         **values: Any,
     ) -> UserPreferences:
-        _validate_user_id(user_id)
+        validate_user_id(user_id)
         allowed = {field.name for field in dataclass_fields(UserPreferences)}
         unknown = set(values) - allowed
         if unknown:
@@ -166,20 +158,12 @@ class UserSettingsStore:
         return updated
 
     def _persist(self) -> None:
-        payload = json.dumps(
+        self._store.save(
             {
                 "version": 1,
                 "entries": {
                     str(user_id): asdict(prefs)
                     for user_id, prefs in sorted(self._entries.items())
                 },
-            },
-            ensure_ascii=False,
+            }
         )
-        self._write_atomic(payload)
-
-    def _write_atomic(self, payload: str) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._path.with_name(f"{self._path.name}.tmp")
-        temp_path.write_text(payload, encoding="utf-8")
-        os.replace(temp_path, self._path)

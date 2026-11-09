@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
-from aiogram.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo
+from aiogram.types import (
+    FSInputFile,
+    InputMediaDocument,
+    InputMediaPhoto,
+    InputMediaVideo,
+)
 
 from services.delivery import (
     ChatDelivery,
@@ -71,20 +76,36 @@ class _NoAction:
     upload_audio = staticmethod(_no_action)
 
 
-def test_media_item_uses_artifact_send_type_and_file_name(tmp_path):
+@pytest.mark.asyncio
+async def test_media_item_uses_artifact_send_type_and_caption(tmp_path):
     photo = make_artifact(write_media(tmp_path / "a.jpg", "jpg"), "photo")
     video = make_artifact(write_media(tmp_path / "a.mp4", "mp4"), "video")
     document = make_artifact(write_media(tmp_path / "a.zip", "zip"), "document")
-    document.file_name = "Artist — Album.zip"
 
-    document_item = media_item(document, None)[0]
-    assert isinstance(media_item(photo, None)[0], InputMediaPhoto)
-    assert isinstance(media_item(video, None)[0], InputMediaVideo)
+    def local(artifact):
+        return FSInputFile(artifact.path, filename=artifact.file_name)
+
+    document_item = (await media_item(document, None, media=local(document)))[0]
+    photo_item = (await media_item(photo, "cap", media=local(photo)))[0]
+    assert isinstance(photo_item, InputMediaPhoto)
+    assert isinstance(
+        (await media_item(video, None, media=local(video)))[0], InputMediaVideo
+    )
     assert isinstance(document_item, InputMediaDocument)
-    assert document_item.media.filename == "Artist — Album.zip"
+    assert photo_item.caption == "cap"
 
-    assert media_item(photo, None)[0].caption is None
-    assert media_item(photo, "cap")[0].caption == "cap"
+
+@pytest.mark.asyncio
+async def test_media_item_from_a_file_id_never_uploads_a_thumbnail(tmp_path):
+    """An inline edit may only reference an existing file_id."""
+    audio = make_artifact(write_media(tmp_path / "a.flac", "zip"), "audio")
+    audio.audio_title = None
+
+    item, cover = await media_item(audio, "cap", media="FILEID")
+
+    assert cover is None
+    assert item.thumbnail is None
+    assert item.title == "a.flac"
 
 
 @pytest.mark.asyncio
@@ -227,7 +248,8 @@ async def test_deliver_album_returns_cached_media(tmp_path):
     assert all(entry.send_type == "photo" for entry in result)
 
 
-def test_media_item_prefers_artifact_metadata(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_media_item_prefers_artifact_metadata(monkeypatch, tmp_path):
     def fail_metadata(path):  # noqa: ARG001
         raise AssertionError("hachoir should not run when artifact fields are set")
 
@@ -240,19 +262,32 @@ def test_media_item_prefers_artifact_metadata(monkeypatch, tmp_path):
         height=240,
     )
 
-    item = media_item(video, None)[0]
+    item = (
+        await media_item(
+            video,
+            None,
+            media=FSInputFile(video.path, filename=video.file_name),
+        )
+    )[0]
 
     assert isinstance(item, InputMediaVideo)
     assert (item.width, item.height, item.duration) == (320, 240, 61)
 
 
-def test_media_item_falls_back_to_metadata(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_media_item_falls_back_to_metadata(monkeypatch, tmp_path):
     video = make_artifact(write_media(tmp_path / "a.mp4", "mp4"), "video")
     monkeypatch.setattr(
         "services.delivery.video_metadata", lambda path: (1280, 720, 42)
     )
 
-    item = media_item(video, None)[0]
+    item = (
+        await media_item(
+            video,
+            None,
+            media=FSInputFile(video.path, filename=video.file_name),
+        )
+    )[0]
 
     assert isinstance(item, InputMediaVideo)
     assert (item.width, item.height, item.duration) == (1280, 720, 42)

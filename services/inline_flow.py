@@ -7,21 +7,19 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import (
-    InputMediaAudio,
-    InputMediaDocument,
-    InputMediaPhoto,
-    InputMediaVideo,
-)
+from aiogram.types import InputMediaAudio
 
-from services.delivery import DirectDelivery
-from services.media import video_metadata
-from services.media_cache import cached_media_from
+from services.delivery import (
+    DirectDelivery,
+    cached_media_from,
+    media_facts,
+    media_item,
+)
 from services.mornye import audio_cache_key
-from services.pipeline import download_inline
+from services.pipeline import DownloadChoice, download_artifacts
 from services.progress import humanbytes
-from services.requests import lifecycle
 from services.session import Session
+from services.sources import build_direct_options, classify
 from services.status import StatusSurface, inline_caption_status, inline_status
 from services.user_settings import UserPreferences
 from utils import text
@@ -90,21 +88,24 @@ async def _download_artifacts(
     *,
     status: StatusSurface,
     stored: StoredRequest,
-    audio_format: str | None = None,
-    audio_quality: str | None = None,
+    preferences: UserPreferences,
 ) -> list[DownloadArtifact]:
-    """Edit the inline message into the downloading state, then fetch the
-    media through the shared probe ladder."""
+    """Edit the inline message into the downloading state, then run the same
+    downloader table the DM path uses."""
     await status.edit(
         text.DOWNLOAD_START.format(name=text.esc(stored.parsed_input.source_url))
     )
-    return await download_inline(
+    downloaded = await download_artifacts(
         session,
         stored,
+        DownloadChoice(
+            build_direct_options(classify(stored.parsed_input))[0],
+            audio_format=preferences.audio_format,
+            audio_quality=preferences.audio_quality,
+        ),
         status=status,
-        audio_format=audio_format,
-        audio_quality=audio_quality,
     )
+    return downloaded.artifacts
 
 
 async def _fail_inline_message(status: StatusSurface, message: str) -> None:
@@ -187,7 +188,7 @@ async def run_inline_download(
 ) -> None:
     """Own the inline request lifecycle: every terminal path deletes the
     token and its work directory."""
-    with lifecycle(session.request_store, stored.token):
+    with session.request_store.lifecycle(stored.token):
         await _run_inline_download(
             session,
             bot=bot,
@@ -204,8 +205,8 @@ async def _dm_media(
     """Upload the artifact to the user's DM and return its inline media plus
     cache entry. Inline edits cannot upload a new file, so every first
     artifact must reuse the file_id Telegram returns for the DM copy."""
-    if first.send_type in {"video", "video_note"}:
-        width, height, duration = await _video_dimensions(first)
+    # Read the file's metadata before delivery unlinks it.
+    facts = await media_facts(first)
     try:
         uploaded = await DirectDelivery(bot, user_id).deliver(
             [first], started_at=datetime.now()
@@ -216,32 +217,10 @@ async def _dm_media(
     if not uploaded:
         raise RuntimeError("Telegram did not return an uploaded file id")
     dm_entry = uploaded[0]
-    if first.send_type == "photo":
-        return InputMediaPhoto(media=dm_entry.file_id, caption=caption), dm_entry
-    if first.send_type in {"video", "video_note"}:
-        return (
-            InputMediaVideo(
-                media=dm_entry.file_id,
-                caption=caption,
-                width=width,
-                height=height,
-                duration=duration,
-                supports_streaming=True,
-            ),
-            dm_entry,
-        )
-    if first.send_type == "audio":
-        return (
-            InputMediaAudio(
-                media=dm_entry.file_id,
-                caption=caption,
-                duration=first.duration,
-                title=first.audio_title or first.file_name,
-                performer=first.audio_performer,
-            ),
-            dm_entry,
-        )
-    return InputMediaDocument(media=dm_entry.file_id, caption=caption), dm_entry
+    item, _ = await media_item(
+        first, caption, media=dm_entry.file_id, facts=facts
+    )
+    return item, dm_entry
 
 
 async def _deliver_first(
@@ -294,18 +273,6 @@ async def _deliver_first(
     return edited, dm_entries
 
 
-async def _video_dimensions(first: DownloadArtifact) -> tuple[int, int, int]:
-    """Width/height/duration for the DM upload: reuse what the downloader
-    probed, otherwise read the file off the event loop."""
-    if (
-        first.width is not None
-        and first.height is not None
-        and first.duration is not None
-    ):
-        return first.width, first.height, first.duration
-    return await asyncio.to_thread(video_metadata, first.path)
-
-
 
 async def _obtain_artifacts(
     session: Session,
@@ -334,17 +301,15 @@ async def _obtain_artifacts(
                 inline_message_id=inline_message_id,
                 media=InputMediaAudio(
                     media=entry.file_id,
-                    caption=(entry.caption or entry.file_name)[:1000] or None,
+                    caption=text.split_caption(
+                        entry.caption or entry.file_name
+                    )[0],
                 ),
             )
             logger.info("Inline audio cache hit | user=%s token=%s", user_id, token)
             return None
         return await _download_artifacts(
-            session,
-            status=status,
-            stored=stored,
-            audio_format=preferences.audio_format,
-            audio_quality=preferences.audio_quality,
+            session, status=status, stored=stored, preferences=preferences
         )
     except asyncio.CancelledError:
         # user hit Cancel: the cancel callback already edited the message
@@ -428,7 +393,7 @@ async def _run_inline_download(
 
     rest = artifacts[1:]
     first = artifacts[0]
-    base_caption = (first.caption or first.file_name)[:1000]
+    base_caption = (first.caption or first.file_name)[: text.CAPTION_LIMIT]
     mention = session.identity.mention
     expected_dm_note = _spillover_note(len(rest), delivered=True, mention=mention)
     caption = base_caption + expected_dm_note

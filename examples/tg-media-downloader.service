@@ -21,6 +21,11 @@ User=tgmd
 Group=tgmd
 EnvironmentFile=/etc/tgmd/tg-media-downloader.env
 Environment=DOWNLOAD_LOCATION=/var/lib/tg-media-downloader
+# gallery-dl/yt-dlp/ffmpeg live in the venv, so the venv's bin must be on PATH.
+# The gallery-dl cache (Pixiv login) needs a writable HOME; the bot falls back
+# to the venv copy of each tool, but ffmpeg is a system package.
+Environment=PATH=/opt/tg-media-downloader/.venv/bin:/usr/local/bin:/usr/bin
+Environment=HOME=/var/lib/tg-media-downloader
 WorkingDirectory=/opt/tg-media-downloader
 ExecStart=/opt/tg-media-downloader/.venv/bin/python bot.py
 Restart=always

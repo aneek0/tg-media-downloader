@@ -5,6 +5,17 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Union
 
+#: Catalogue providers a Music Request can search. The registry behind them
+#: is the owner's mornye extensions (GLOSSARY: Provider).
+CATALOGUE_PROVIDERS = frozenset({"deezer", "spotify-web", "tidal-web"})
+
+
+def validate_user_id(user_id: Any) -> int:
+    """Telegram user ids are ints; a bool is an int in Python but never an id."""
+    if isinstance(user_id, bool) or not isinstance(user_id, int):
+        raise ValueError(f"user_id must be an int, got {user_id!r}")
+    return user_id
+
 
 class RequestType(StrEnum):
     GALLERY_MEDIA = "gallery_media"
@@ -16,43 +27,78 @@ class RequestType(StrEnum):
     INLINE_MEDIA = "inline_media"
     INLINE_GALLERY = "inline_gallery"
     CATALOGUE_BROWSE = "catalogue_browse"
+    PIXIV_PROFILE = "pixiv_profile"
 
 
 @dataclass(slots=True)
 class GalleryPayload:
-    """Telegram-CDN media list, or the body of a text-only gallery post."""
+    """Telegram-CDN media list, the body of a text-only post, and the probe
+    result so the downloader never has to probe the source twice."""
 
     url_media: list[dict[str, Any]] = field(default_factory=list)
     content: str | None = None
+    file_dicts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_info(self) -> dict[str, Any]:
-        return {"url_media": self.url_media, "content": self.content}
-
+        return {
+            "url_media": self.url_media,
+            "content": self.content,
+            "file_dicts": self.file_dicts,
+        }
 
 @dataclass(slots=True)
 class InlineGalleryPayload:
     photos: list[str] = field(default_factory=list)
     caption: str | None = None
+    file_dicts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_info(self) -> dict[str, Any]:
-        return {"photos": self.photos, "caption": self.caption}
+        return {
+            "photos": self.photos,
+            "caption": self.caption,
+            "file_dicts": self.file_dicts,
+        }
+
+
+@dataclass(slots=True)
+class PixivProfilePayload:
+    """Persisted Pixiv profile browsing state: the App API offset each visited
+    Profile Page starts at, whether another page follows it, and the preview
+    messages to replace on navigation."""
+
+    user_id: str = ""
+    user_name: str = ""
+    offsets: list[int] = field(default_factory=list)
+    more: list[bool] = field(default_factory=list)
+    preview_ids: list[int] = field(default_factory=list)
+
+    def to_info(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "user_name": self.user_name,
+            "offsets": self.offsets,
+            "more": self.more,
+            "preview_ids": self.preview_ids,
+        }
 
 
 @dataclass(slots=True)
 class InlineMediaPayload:
+    #: Which downloader the inline query already decided on: "gallery" (the
+    #: probe found media), "music" (a Music Request), or "" (probe at tap time).
+    plan: str = ""
     preferred_name: str | None = None
     preferred_index: int | None = None
     poster_url: str | None = None
-    # editMessageMedia on an inline message cannot upload a new file, so the
-    # big-video edit reuses the CDN URL (or the DM-uploaded file_id).
-    video_url: str | None = None
+    file_dicts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_info(self) -> dict[str, Any]:
         return {
+            "plan": self.plan,
             "preferred_name": self.preferred_name,
             "preferred_index": self.preferred_index,
             "poster_url": self.poster_url,
-            "video_url": self.video_url,
+            "file_dicts": self.file_dicts,
         }
 
 
@@ -77,7 +123,6 @@ class CataloguePayload:
     listeners: int = 0
     top_tracks: list[dict[str, Any]] = field(default_factory=list)
     albums: list[dict[str, Any]] = field(default_factory=list)
-    media_message: bool = True
     album: dict[str, Any] = field(default_factory=dict)
     album_tracks: list[dict[str, Any]] = field(default_factory=list)
     parent_token: str = ""
@@ -114,6 +159,7 @@ class DirectPayload:
 RequestPayload = Union[
     GalleryPayload,
     InlineGalleryPayload,
+    PixivProfilePayload,
     InlineMediaPayload,
     MusicPayload,
     CataloguePayload,
@@ -129,18 +175,21 @@ def request_payload(request_type: RequestType, info: dict[str, Any]) -> RequestP
         return GalleryPayload(
             url_media=list(info.get("url_media") or []),
             content=info.get("content"),
+            file_dicts=list(info.get("file_dicts") or []),
         )
     if request_type is RequestType.INLINE_GALLERY:
         return InlineGalleryPayload(
             photos=list(info.get("photos") or []),
             caption=info.get("caption"),
+            file_dicts=list(info.get("file_dicts") or []),
         )
     if request_type is RequestType.INLINE_MEDIA:
         return InlineMediaPayload(
+            plan=str(info.get("plan") or ""),
             preferred_name=info.get("preferred_name"),
             preferred_index=info.get("preferred_index"),
             poster_url=info.get("poster_url"),
-            video_url=info.get("video_url"),
+            file_dicts=list(info.get("file_dicts") or []),
         )
     if request_type is RequestType.MORNYE:
         return MusicPayload(
@@ -158,13 +207,20 @@ def request_payload(request_type: RequestType, info: dict[str, Any]) -> RequestP
             listeners=int(info.get("listeners") or 0),
             top_tracks=list(info.get("top_tracks") or []),
             albums=list(info.get("albums") or []),
-            media_message=bool(info.get("media_message", True)),
             album=dict(info.get("album") or {}),
             album_tracks=list(info.get("album_tracks") or []),
             parent_token=info.get("parent_token", ""),
         )
     if request_type is RequestType.DIRECT_DOWNLOAD:
         return DirectPayload(dict(info))
+    if request_type is RequestType.PIXIV_PROFILE:
+        return PixivProfilePayload(
+            user_id=str(info.get("user_id") or ""),
+            user_name=str(info.get("user_name") or ""),
+            offsets=[int(item) for item in info.get("offsets") or []],
+            more=[bool(item) for item in info.get("more") or []],
+            preview_ids=[int(item) for item in info.get("preview_ids") or []],
+        )
     return ProbePayload(dict(info))
 
 

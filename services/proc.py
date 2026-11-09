@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
+import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import cast
@@ -20,6 +22,19 @@ def _kill_process_group(process: asyncio.subprocess.Process) -> None:
     except OSError:
         process.kill()
 
+
+
+def _resolve_program(program: str) -> str:
+    """Use the venv's own copy of a tool when PATH does not have it.
+
+    The bot can be started as `.venv/bin/python bot.py` (a systemd unit, a
+    bare shell) without activating the venv, which leaves `gallery-dl` and
+    `yt-dlp` off PATH even though the bot's dependencies installed them.
+    """
+    if os.sep in program or shutil.which(program):
+        return program
+    candidate = Path(sys.executable).parent / program
+    return str(candidate) if candidate.is_file() else program
 
 
 async def _read_stream(
@@ -56,6 +71,7 @@ async def run_command(
     arrives (progress reporting); the full output is still returned.
     Raises RuntimeError when the command fails or exceeds the timeout.
     """
+    command = [_resolve_program(command[0]), *command[1:]]
     logger.debug("Running command | cwd=%s command=%s", cwd, redact_command(command))
     process = await asyncio.create_subprocess_exec(
         *command,

@@ -20,6 +20,7 @@ from routers.inline import (
 )
 from services.gallery import GalleryProbe
 from services.inline_flow import InlineDmBlocked, run_inline_download
+from services.pipeline import Downloaded
 from services.progress import humanbytes
 from services.request_store import RequestStore
 from tests.conftest import (
@@ -138,6 +139,17 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
+        info={
+            "plan": "gallery",
+            "file_dicts": [
+                {
+                    "_url": "https://cdn/x.mp4",
+                    "extension": "mp4",
+                    "tweet_id": "1",
+                    "num": 1,
+                }
+            ],
+        },
     )
     store.save(stored)
 
@@ -146,20 +158,10 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
     artifact = DownloadArtifact(
         path=media, file_name="v.mp4", send_type="video", caption=None
     )
-    monkeypatch.setattr(
-        "services.pipeline.probe_gallery",
-        AsyncMock(
-            return_value=GalleryProbe(
-                file_dicts=[{"_url": "https://cdn/x.mp4", "extension": "mp4"}],
-                content=None,
-                error=None,
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        "services.pipeline.download_gallery_media",
-        AsyncMock(return_value=[artifact]),
-    )
+    probe_mock = AsyncMock()
+    monkeypatch.setattr("services.pipeline.probe_gallery", probe_mock)
+    gallery_mock = AsyncMock(return_value=[artifact])
+    monkeypatch.setattr("services.pipeline.download_gallery_media", gallery_mock)
 
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(),
@@ -177,6 +179,9 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
         stored=stored,
     )
 
+    gallery_mock.assert_awaited_once()
+    assert gallery_mock.await_args.kwargs["file_dicts"]
+    probe_mock.assert_not_awaited()
     bot.send_video.assert_awaited_once()
     media = bot.edit_message_media.await_args.kwargs["media"]
     assert media.media == "BAAC11"
@@ -731,7 +736,11 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
-        info={"preferred_name": "999_2.mp4"},
+        info={
+            "plan": "gallery",
+            "preferred_name": "999_2.mp4",
+            "file_dicts": [{"_url": "https://cdn/a.mp4", "extension": "mp4"}],
+        },
     )
     store.save(stored)
 
@@ -1069,7 +1078,11 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
-        info={"preferred_index": 1},
+        info={
+            "plan": "gallery",
+            "preferred_index": 1,
+            "file_dicts": [{"_url": "https://cdn/a.jpg", "extension": "jpg"}],
+        },
     )
     store.save(stored)
 
@@ -1146,9 +1159,10 @@ async def test_run_inline_download_poster_flow_keeps_media_and_uploads_by_file_i
         parsed_input=ParsedInput(source_url=url),
         options=[],
         info={
+            "plan": "gallery",
+            "file_dicts": [{"_url": video_cdn, "extension": "mp4"}],
             "preferred_name": "999_1.mp4",
             "poster_url": poster,
-            "video_url": video_cdn,
         },
     )
     store.save(stored)
@@ -1223,7 +1237,11 @@ async def test_run_inline_download_poster_flow_still_reports_failure(
         request_type="inline_media",
         parsed_input=ParsedInput(source_url="https://x.com/a/status/2"),
         options=[],
-        info={"poster_url": "https://pbs.twimg.com/p/1.jpg", "video_url": "https://v/1.mp4"},
+        info={
+            "plan": "gallery",
+            "file_dicts": [{"_url": "https://cdn/v.mp4", "extension": "mp4"}],
+            "poster_url": "https://pbs.twimg.com/p/1.jpg",
+        },
     )
     store.save(stored)
 
@@ -1303,7 +1321,8 @@ async def test_inline_spillover_note_names_the_bot(monkeypatch, tmp_path):
             )
         )
     monkeypatch.setattr(
-        "services.inline_flow.download_inline", AsyncMock(return_value=files)
+        "services.inline_flow.download_artifacts",
+        AsyncMock(return_value=Downloaded(files)),
     )
     audio_calls = 0
 

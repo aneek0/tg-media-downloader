@@ -6,34 +6,118 @@ import asyncio
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Message,
+)
 
 from services.catalogue_search import SearchItem
 from services.delivery import ChatDelivery
 from services.inline_flow import _deliver_first
-from services.requests import catalogue_browse_request, music_request
 from services.session import Session
 from services.status import chat_status, inline_caption_status, inline_status
 from utils import text
-from utils.callbacks import CatalogueCallback
+from utils.callbacks import CatalogueCallback, join_token
 from utils.models import (
     CataloguePayload,
     DownloadArtifact,
     FileTooLargeError,
+    MusicPayload,
     ParsedInput,
+    RequestType,
     StoredRequest,
 )
 
 
 @dataclass(slots=True)
 class CatalogueCard:
+    """What a surface needs to show one card. Rendering it never writes state;
+    track tokens are minted when a track is pressed, not on every render."""
+
     stored: StoredRequest
     caption: str
     keyboard: InlineKeyboardMarkup
+    photo_url: str | None = None
+
+
+class CardSurface(StrEnum):
+    """Where a card is shown: an inline message, the bot's own message, or a
+    brand-new bot message."""
+
+    INLINE = "inline"
+    CHAT = "chat"
+    ANSWER = "answer"
+
+
+async def present_card(
+    card: CatalogueCard,
+    *,
+    surface: CardSurface,
+    bot: Bot | None = None,
+    message: Message | None = None,
+    inline_message_id: str | None = None,
+) -> None:
+    """Show one card on the surface that asked for it.
+
+    Whether the target is a media message follows from the card's cover, so no
+    flag has to travel through the payload. INLINE edits an inline message,
+    CHAT edits the bot's own message (deleting it when the shape must change),
+    ANSWER posts a fresh one.
+    """
+    if surface is CardSurface.INLINE:
+        if bot is None or not inline_message_id:
+            raise ValueError("Artist Cards work only in inline messages")
+        if card.photo_url:
+            await bot.edit_message_media(
+                inline_message_id=inline_message_id,
+                media=InputMediaPhoto(media=card.photo_url, caption=card.caption),
+                reply_markup=card.keyboard,
+            )
+        else:
+            await bot.edit_message_text(
+                inline_message_id=inline_message_id,
+                text=card.caption,
+                reply_markup=card.keyboard,
+            )
+        return
+    if message is None:
+        raise ValueError("a chat surface needs its message")
+    if surface is CardSurface.ANSWER:
+        if card.photo_url:
+            await message.answer_photo(
+                photo=card.photo_url,
+                caption=card.caption,
+                reply_markup=card.keyboard,
+            )
+        else:
+            await message.answer(card.caption, reply_markup=card.keyboard)
+        return
+    on_photo = bool(getattr(message, "photo", None))
+    if card.photo_url:
+        if on_photo:
+            await message.edit_media(
+                media=InputMediaPhoto(media=card.photo_url, caption=card.caption),
+                reply_markup=card.keyboard,
+            )
+        else:
+            await message.delete()
+            await message.answer_photo(
+                photo=card.photo_url,
+                caption=card.caption,
+                reply_markup=card.keyboard,
+            )
+    elif on_photo:
+        await message.delete()
+        await message.answer(card.caption, reply_markup=card.keyboard)
+    else:
+        await message.edit_text(card.caption, reply_markup=card.keyboard)
 
 
 def _duration(milliseconds: int | None) -> str:
@@ -56,25 +140,20 @@ def _artist_caption(payload: CataloguePayload) -> str:
 
 
 def _track_rows(
-    session: Session, items: list[dict], card_token: str
+    items: list[dict], card_token: str
 ) -> list[list[InlineKeyboardButton]]:
+    """One button per track. The token carries the index inside the card, so a
+    render writes nothing and a pressed track becomes a Request on demand."""
     rows: list[list[InlineKeyboardButton]] = []
-    for raw in items:
+    for index, raw in enumerate(items):
         item = SearchItem.from_dict(raw)
-        stored = music_request(
-            session.request_store,
-            ParsedInput(source_url=item.external_url),
-            kind="track",
-            name=item.title,
-            count=1,
-        )
         label = f"{_duration(item.duration_ms)} | {item.artists} - {item.title}"
         rows.append(
             [
                 InlineKeyboardButton(
                     text=_short(label),
                     callback_data=CatalogueCallback(
-                        action="dl", token=f"{card_token}.{stored.token}"
+                        action="dl", token=join_token(card_token, index)
                     ).pack(),
                 )
             ]
@@ -100,12 +179,7 @@ async def artist_card(
     """Fetch and persist one Artist Card; its buttons own track tokens."""
     catalogue = await session.catalogue_search.artist(provider, artist_id)
     stored = session.request_store.load(token) if token else None
-    if stored is None:
-        stored = catalogue_browse_request(
-            session.request_store, ParsedInput(source_url=catalogue.artist.external_url)
-        )
-    stored.parsed_input = ParsedInput(source_url=catalogue.artist.external_url)
-    stored.info = CataloguePayload(
+    payload = CataloguePayload(
         provider=provider,
         artist_id=artist_id,
         name=catalogue.artist.title,
@@ -114,13 +188,19 @@ async def artist_card(
         listeners=catalogue.artist.listeners,
         top_tracks=[item.to_dict() for item in catalogue.top_tracks[:30]],
         albums=[item.to_dict() for item in catalogue.albums[:50]],
-    ).to_info()
-    session.request_store.save(stored)
-    return render_artist_card(session, stored, following=following)
+    )
+    parsed = ParsedInput(source_url=catalogue.artist.external_url)
+    if stored is None:
+        stored = session.request_store.open(
+            RequestType.CATALOGUE_BROWSE, parsed, payload=payload
+        )
+    else:
+        stored.parsed_input = parsed
+        session.request_store.update_payload(stored, payload)
+    return render_artist_card(stored, following=following)
 
 
 def render_artist_card(
-    session: Session,
     stored: StoredRequest,
     *,
     following: bool = False,
@@ -142,7 +222,7 @@ def render_artist_card(
                     InlineKeyboardButton(
                         text=_short(title),
                         callback_data=CatalogueCallback(
-                            action="open", token=f"{stored.token}.{index}"
+                            action="open", token=join_token(stored.token, index)
                         ).pack(),
                     )
                 ]
@@ -169,7 +249,7 @@ def render_artist_card(
                 )
                 rows.extend(single_rows)
         else:
-            rows = _track_rows(session, payload.top_tracks, stored.token)
+            rows = _track_rows(payload.top_tracks, stored.token)
         rows.append(
             [
                 InlineKeyboardButton(
@@ -202,6 +282,7 @@ def render_artist_card(
         stored=stored,
         caption=_artist_caption(payload),
         keyboard=InlineKeyboardMarkup(inline_keyboard=rows),
+        photo_url=payload.cover_url or None,
     )
 
 
@@ -229,25 +310,25 @@ async def album_card(
         ).to_dict()
         for track in target.tracks
     ]
-    stored = catalogue_browse_request(
-        session.request_store, ParsedInput(source_url=album.external_url)
+    stored = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
+        ParsedInput(source_url=album.external_url),
+        payload=CataloguePayload(
+            provider=parent_payload.provider,
+            artist_id=parent_payload.artist_id,
+            name=parent_payload.name,
+            cover_url=album.cover_url or parent_payload.cover_url,
+            artist_url=parent_payload.artist_url,
+            listeners=parent_payload.listeners,
+            album=album.to_dict(),
+            album_tracks=tracks,
+            parent_token=parent.token,
+        ),
     )
-    stored.info = CataloguePayload(
-        provider=parent_payload.provider,
-        artist_id=parent_payload.artist_id,
-        name=parent_payload.name,
-        cover_url=album.cover_url or parent_payload.cover_url,
-        artist_url=parent_payload.artist_url,
-        listeners=parent_payload.listeners,
-        album=album.to_dict(),
-        album_tracks=tracks,
-        parent_token=parent.token,
-    ).to_info()
-    session.request_store.save(stored)
-    return render_album_card(session, stored)
+    return render_album_card(stored)
 
 
-def render_album_card(session: Session, stored: StoredRequest) -> CatalogueCard:
+def render_album_card(stored: StoredRequest) -> CatalogueCard:
     payload = stored.payload
     if not isinstance(payload, CataloguePayload) or not payload.album:
         raise ValueError("not an album token")
@@ -255,13 +336,13 @@ def render_album_card(session: Session, stored: StoredRequest) -> CatalogueCard:
     artist = text.esc(payload.name or album.artists)
     if payload.artist_url:
         artist = f'<a href="{text.esc(payload.artist_url)}">{artist}</a>'
-    caption = (
-        f"💽 Album: {text.esc(album.title)}\n"
-        f"👤 Artist: {artist}\n"
-        f"📅 Date: {text.esc(album.release_date or 'unknown')}\n"
-        f"🎧 Total tracks: {album.total_tracks or len(payload.album_tracks)}"
+    caption = text.ALBUM_CAPTION.format(
+        album=text.esc(album.title),
+        artist=artist,
+        date=text.esc(album.release_date or "unknown"),
+        tracks=album.total_tracks or len(payload.album_tracks),
     )
-    rows = _track_rows(session, payload.album_tracks, stored.token)
+    rows = _track_rows(payload.album_tracks, stored.token)
     controls = []
     if len(payload.album_tracks) > 1:
         controls.append(
@@ -287,7 +368,35 @@ def render_album_card(session: Session, stored: StoredRequest) -> CatalogueCard:
             )
         ]
     )
-    return CatalogueCard(stored, caption, InlineKeyboardMarkup(inline_keyboard=rows))
+    return CatalogueCard(
+        stored,
+        caption,
+        InlineKeyboardMarkup(inline_keyboard=rows),
+        photo_url=payload.cover_url or None,
+    )
+
+
+def track_request(
+    session: Session, card: StoredRequest, index: int
+) -> StoredRequest:
+    """Mint the Music Request for one pressed track.
+
+    The card only carried the index, so a render created nothing and a stale
+    button fails here rather than leaking a token nobody used.
+    """
+    payload = card.payload
+    if not isinstance(payload, CataloguePayload):
+        raise ValueError("not a catalogue token")
+    tracks = payload.album_tracks if payload.album else payload.top_tracks
+    try:
+        item = SearchItem.from_dict(tracks[index])
+    except (IndexError, TypeError) as exc:
+        raise ValueError("unknown track") from exc
+    return session.request_store.open(
+        RequestType.MORNYE,
+        ParsedInput(source_url=item.external_url),
+        payload=MusicPayload(kind="track", name=item.title, count=1),
+    )
 
 
 def album_download_request(session: Session, stored: StoredRequest) -> StoredRequest:
@@ -295,12 +404,12 @@ def album_download_request(session: Session, stored: StoredRequest) -> StoredReq
     if not isinstance(payload, CataloguePayload) or not payload.album:
         raise ValueError("not an album token")
     album = SearchItem.from_dict(payload.album)
-    return music_request(
-        session.request_store,
+    return session.request_store.open(
+        RequestType.MORNYE,
         ParsedInput(source_url=album.external_url),
-        kind="album",
-        name=album.title,
-        count=len(payload.album_tracks),
+        payload=MusicPayload(
+            kind="album", name=album.title, count=len(payload.album_tracks)
+        ),
     )
 
 
@@ -340,10 +449,6 @@ def _write_zip(archive: Path, artifacts: list[DownloadArtifact]) -> None:
         for artifact in artifacts:
             bundle.write(artifact.path, arcname=artifact.path.name)
 
-
-def new_release_caption(artist_name: str, titles: list[str]) -> str:
-    shown = "\n".join(f"• {text.esc(title)}" for title in titles[:5])
-    return f"🎤 {text.esc(artist_name)} released:\n{shown}"
 
 
 async def run_album_zip(

@@ -69,6 +69,8 @@ class Settings:
     max_upload_bytes: int = 1900 * 1024 * 1024
     verify_ssl: bool = True
     twitter_cookies: str = ""
+    pixiv_refresh_token: str = ""
+    pixiv_cookies: str = ""
     telegram_api_url: str = ""
     telegram_proxy: str = ""
     download_threads: int = 16
@@ -130,6 +132,8 @@ class Settings:
                 os.environ.get("VERIFY_SSL"), True, name="VERIFY_SSL"
             ),
             twitter_cookies=_parse_twitter_cookies(os.environ.get("TWITTER_COOKIES")),
+            pixiv_refresh_token=os.environ.get("PIXIV_REFRESH_TOKEN", "").strip(),
+            pixiv_cookies=os.environ.get("PIXIV_COOKIES", "").strip(),
             telegram_api_url=os.environ.get("TELEGRAM_API_URL", "").strip(),
             telegram_proxy=(
                 os.environ.get("TELEGRAM_PROXY", "").strip()

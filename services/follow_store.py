@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-_VALID_PROVIDERS = frozenset({"deezer", "spotify-web", "tidal-web"})
+from services.json_store import JsonStore
+from utils.models import CATALOGUE_PROVIDERS, validate_user_id
 
 
 @dataclass
@@ -19,16 +18,13 @@ class Follow:
     known_album_ids: list[str] = field(default_factory=list)
 
 
-def _validate_user_id(user_id: Any) -> int:
-    if isinstance(user_id, bool) or not isinstance(user_id, int):
-        raise ValueError(f"user_id must be an int, got {user_id!r}")
-    return user_id
+
 
 
 def _validate_provider(provider: Any) -> str:
-    if provider not in _VALID_PROVIDERS:
+    if provider not in CATALOGUE_PROVIDERS:
         raise ValueError(
-            f"unsupported provider {provider!r}; expected one of {sorted(_VALID_PROVIDERS)}"
+            f"unsupported provider {provider!r}; expected one of {sorted(CATALOGUE_PROVIDERS)}"
         )
     return provider
 
@@ -56,7 +52,7 @@ def _validated_follow(
     cover_url: Any = "",
     known_album_ids: Any = (),
 ) -> Follow:
-    _validate_user_id(user_id)
+    validate_user_id(user_id)
     _validate_provider(provider)
     _validate_artist_id(artist_id)
     if not isinstance(artist_name, str):
@@ -76,14 +72,14 @@ def _validated_follow(
 class FollowStore:
     """Telegram-user -> catalogue-artist subscriptions persisted as JSON.
 
-    Synchronous like MediaCache reads; every mutation is written through a
-    temp file and ``os.replace``. A store file that exists but cannot be
-    understood raises instead of being discarded, so records are never
-    silently lost.
+    Every mutation goes through :class:`JsonStore`; a store file that exists
+    but cannot be understood raises instead of being discarded, so records
+    are never silently lost.
     """
 
     def __init__(self, path: Path) -> None:
         self._path = path.resolve()
+        self._store = JsonStore(self._path)
         self._follows: list[Follow] = self._load()
 
     @property
@@ -91,12 +87,10 @@ class FollowStore:
         return self._path
 
     def _load(self) -> list[Follow]:
-        if not self._path.exists():
+        payload = self._store.load()
+        if not payload:
             return []
         try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("top-level value is not an object")
             if payload.get("version") != 1:
                 raise ValueError(f"unsupported version {payload.get('version')!r}")
             unexpected = set(payload) - {"version", "follows"}
@@ -120,7 +114,7 @@ class FollowStore:
                     )
                 )
             return follows
-        except (OSError, TypeError, ValueError, KeyError) as exc:
+        except (TypeError, ValueError, KeyError) as exc:
             raise RuntimeError(
                 f"Follow store at {self._path} is unreadable: {exc}"
             ) from exc
@@ -158,7 +152,7 @@ class FollowStore:
         return True
 
     def list_for_user(self, user_id: int) -> list[Follow]:
-        _validate_user_id(user_id)
+        validate_user_id(user_id)
         return [follow for follow in self._follows if follow.user_id == user_id]
 
     def all_artists(self) -> list[tuple[str, str]]:
@@ -213,7 +207,7 @@ class FollowStore:
         known_ids: list[str],
     ) -> None:
         """Advance one subscriber only after their notification was delivered."""
-        _validate_user_id(user_id)
+        validate_user_id(user_id)
         _validate_provider(provider)
         _validate_artist_id(artist_id)
         album_ids = _validate_album_ids(known_ids)
@@ -232,7 +226,7 @@ class FollowStore:
         self._persist()
 
     def remove(self, user_id: int, provider: str, artist_id: str) -> bool:
-        _validate_user_id(user_id)
+        validate_user_id(user_id)
         _validate_provider(provider)
         _validate_artist_id(artist_id)
         existing_index = self._index_of(user_id, provider, artist_id)
@@ -253,17 +247,9 @@ class FollowStore:
         return None
 
     def _persist(self) -> None:
-        payload = json.dumps(
+        self._store.save(
             {
                 "version": 1,
                 "follows": [asdict(follow) for follow in self._follows],
-            },
-            ensure_ascii=False,
+            }
         )
-        self._write_atomic(payload)
-
-    def _write_atomic(self, payload: str) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._path.with_name(f"{self._path.name}.tmp")
-        temp_path.write_text(payload, encoding="utf-8")
-        os.replace(temp_path, self._path)

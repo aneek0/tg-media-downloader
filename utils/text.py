@@ -179,3 +179,32 @@ SETTINGS_TITLE = "⚙️ <b>Settings</b>"
 SETTINGS_SAVED = "Saved"
 SETTINGS_OPEN_DM = "Open /settings in {bot}"
 SETTINGS_UNCHANGED = "Already selected"
+
+PIXIV_NOT_CONFIGURED = (
+    "Pixiv needs a login for artwork downloads. Run `gallery-dl oauth:pixiv` "
+    "on the machine that runs the bot (gallery-dl then uses the cached token), "
+    "or set PIXIV_REFRESH_TOKEN."
+)
+PIXIV_UNSUPPORTED = (
+    "This Pixiv link is not supported. Send an artwork link "
+    "(pixiv.net/artworks/<id>) or an artist profile (pixiv.net/users/<id>)."
+)
+PIXIV_LOADING = "Reading the artist's works..."
+PIXIV_NO_WORKS = "This artist has no works the bot can read."
+PIXIV_NO_MORE_PAGES = "There are no more works."
+PIXIV_UNKNOWN_ARTIST = "artist"
+PIXIV_PAGE_HEADER = (
+    "🎨 <b>{artist}</b>\n"
+    "Works {first}–{last} · {files} file(s)"
+)
+PIXIV_DOWNLOAD_PAGE = "Download {first}–{last}"
+PIXIV_DOWNLOAD_PAGE_SHORT = "⬇️ Download page"
+PIXIV_DOWNLOADING = "Downloading work {index}/{total}: <b>{title}</b>"
+PIXIV_DOWNLOADING_ALL = "Downloading {total} work(s), {files} file(s)..."
+PIXIV_WORK_TOO_LARGE = (
+    "One work has {pages} pages; a single request is limited to 50 files."
+)
+PIXIV_PARTIAL = "Sent {sent} work(s); {failed} failed: {titles}"
+PIXIV_INLINE_HEADER = "🎨 {artist} — works {first}–{last}"
+PIXIV_INLINE_WORK = "{index}. {title} · {pages} p."
+PIXIV_INLINE_NEXT = "▶ Next page"

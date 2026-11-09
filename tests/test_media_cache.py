@@ -124,3 +124,18 @@ async def test_media_cache_persist_survives_concurrent_use(tmp_path: Path):
 
     reloaded = MediaCache(tmp_path / "media_cache.json")
     assert reloaded.get("https://example.com/24") is not None
+
+
+@pytest.mark.asyncio
+async def test_media_cache_creates_a_missing_parent_directory(tmp_path: Path):
+    """Regression: a missing DOWNLOADS/ turned every cache write into a
+    swallowed warning, so the cache silently never persisted."""
+    cache_file = tmp_path / "DOWNLOADS" / "media_cache.json"
+    cache = MediaCache(cache_file)
+
+    await cache.record(
+        "https://example.com/f.mp4",
+        [CachedMedia(file_id="B1", send_type="video", file_name="f.mp4", caption=None)],
+    )
+
+    assert json.loads(cache_file.read_text(encoding="utf-8"))["entries"]

@@ -13,6 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import aiohttp
 
 from config import Settings
+from services import pixiv
 from services.direct_downloads import download_http_file
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
@@ -47,10 +48,20 @@ def split_tweet_media(file_dicts: list[dict]) -> tuple[list[dict], list[dict]]:
     return photos[:MAX_GALLERY_PHOTOS], videos
 
 
-def _gallery_flags(settings: Settings, source_url: str) -> list[str]:
+def _gallery_flags(
+    settings: Settings, source_url: str, *, download: bool = False
+) -> list[str]:
     flags: list[str] = []
     if settings.http_proxy:
         flags.extend(["--proxy", settings.http_proxy])
+    if pixiv.is_pixiv_url(source_url):
+        pixiv_cookies = pixiv.cookies_file(settings)
+        if pixiv_cookies:
+            flags.extend(["-C", str(pixiv_cookies)])
+        if download:
+            # Ugoira becomes a watchable MP4 instead of a ZIP of frames.
+            flags.extend(["--ugoira", "mp4"])
+        return flags
     cookies_file = _prepare_cookies_file(settings)
     if cookies_file:
         flags.extend(["-C", str(cookies_file)])
@@ -63,17 +74,26 @@ def _gallery_flags(settings: Settings, source_url: str) -> list[str]:
     return flags
 
 
-def _gallery_probe_command(parsed_input: ParsedInput, settings: Settings) -> list[str]:
+def _gallery_probe_command(
+    parsed_input: ParsedInput,
+    settings: Settings,
+    extra_flags: list[str] | None = None,
+) -> list[str]:
+    flags = extra_flags or []
     return [
         "gallery-dl",
         "-j",
         *_gallery_flags(settings, parsed_input.source_url),
+        *flags,
         parsed_input.source_url,
     ]
 
 
 def _gallery_download_command(
-    parsed_input: ParsedInput, settings: Settings, work_dir: Path
+    parsed_input: ParsedInput,
+    settings: Settings,
+    work_dir: Path,
+    extra_flags: list[str] | None = None,
 ) -> list[str]:
     filename_format = (
         GALLERY_FILENAME_FORMAT
@@ -88,7 +108,8 @@ def _gallery_download_command(
         filename_format,
         "--no-part",
         "--no-mtime",
-        *_gallery_flags(settings, parsed_input.source_url),
+        *_gallery_flags(settings, parsed_input.source_url, download=True),
+        *(extra_flags or []),
         parsed_input.source_url,
     ]
 
@@ -134,10 +155,11 @@ async def probe_gallery(parsed_input: ParsedInput, settings: Settings) -> Galler
     if not gallery_supports_url(parsed_input.source_url):
         return GalleryProbe([], None, f"Unsupported URL: {parsed_input.source_url}")
     try:
-        stdout, _ = await run_command(
-            _gallery_probe_command(parsed_input, settings),
-            timeout=settings.gallery_probe_timeout,
-        )
+        with pixiv.gallery_config(settings) as extra_flags:
+            stdout, _ = await run_command(
+                _gallery_probe_command(parsed_input, settings, extra_flags),
+                timeout=settings.gallery_probe_timeout,
+            )
     except RuntimeError as exc:
         return GalleryProbe([], None, str(exc))
     try:
@@ -217,6 +239,10 @@ def gallery_url_items(
         if not url:
             continue
         ext = (media.get("extension") or "").lower()
+        if ext == "zip" and pixiv.is_pixiv_url(parsed_input.source_url):
+            # A Pixiv ugoira lands as a frames archive; only the local
+            # download converts it to MP4, so never send the archive itself.
+            continue
         name = media.get("filename") or "media"
         if ext and not name.lower().endswith(f".{ext}"):
             name = f"{name}.{ext}"
@@ -273,9 +299,12 @@ async def _download_gallery_files(
         headers = (
             {str(key): str(value) for key, value in raw_headers.items()}
             if isinstance(raw_headers, dict)
-            else None
+            else {}
         )
-        targets.append((url, headers, name, extension))
+        if pixiv.is_pixiv_image_url(str(url)):
+            # i.pximg.net answers 403 to any request without this Referer.
+            headers["Referer"] = pixiv.PIXIV_ROOT + "/"
+        targets.append((url, headers or None, name, extension))
 
     request_limiter = asyncio.Semaphore(GALLERY_DOWNLOADS_PER_REQUEST)
     timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
@@ -359,10 +388,11 @@ async def download_gallery_media(
             safe_url_label(parsed_input.source_url),
             work_dir,
         )
-        stdout, _ = await run_command(
-            _gallery_probe_command(parsed_input, settings),
-            timeout=settings.process_max_timeout,
-        )
+        with pixiv.gallery_config(settings) as extra_flags:
+            stdout, _ = await run_command(
+                _gallery_probe_command(parsed_input, settings, extra_flags),
+                timeout=settings.process_max_timeout,
+            )
         file_dicts, content, error = _parse_gallery_probe(stdout)
         if error:
             raise RuntimeError(
@@ -378,17 +408,29 @@ async def download_gallery_media(
         len(file_dicts),
         work_dir,
     )
-    files = await _download_gallery_album(
-        parsed_input=parsed_input,
-        settings=settings,
-        work_dir=work_dir,
-        file_dicts=file_dicts,
-        status=status,
-        download_limiter=download_limiter,
+    ugoira_zip = pixiv.is_pixiv_url(parsed_input.source_url) and any(
+        (media.get("extension") or "").lower() == "zip" for media in file_dicts
+    )
+    files = (
+        []
+        if ugoira_zip
+        else await _download_gallery_album(
+            parsed_input=parsed_input,
+            settings=settings,
+            work_dir=work_dir,
+            file_dicts=file_dicts,
+            status=status,
+            download_limiter=download_limiter,
+        )
     )
     if not files:
-        command = _gallery_download_command(parsed_input, settings, work_dir)
-        await run_command(command, cwd=work_dir, timeout=settings.process_max_timeout)
+        with pixiv.gallery_config(settings) as extra_flags:
+            command = _gallery_download_command(
+                parsed_input, settings, work_dir, extra_flags
+            )
+            await run_command(
+                command, cwd=work_dir, timeout=settings.process_max_timeout
+            )
         files = sorted(path for path in work_dir.iterdir() if path.is_file())
         if not files:
             raise RuntimeError("gallery-dl downloaded no files")

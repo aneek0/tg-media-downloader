@@ -22,11 +22,15 @@ from services.catalogue_search import (
     SearchItem,
     SearchResults,
 )
-from services.requests import catalogue_browse_request, inline_media_request, music_request
 from tests.conftest import make_artist_search_item as _artist
 from tests.conftest import make_session, make_settings
-from utils.callbacks import CatalogueCallback
-from utils.models import CataloguePayload, ParsedInput
+from utils.callbacks import CatalogueCallback, join_token
+from utils.models import (
+    CataloguePayload,
+    InlineMediaPayload,
+    ParsedInput,
+    RequestType,
+)
 
 
 def _query(text: str, chat_type: str | None = None) -> SimpleNamespace:
@@ -106,9 +110,10 @@ async def test_track_chosen_result_reaches_inline_download(monkeypatch, tmp_path
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    stored = inline_media_request(
-        session.request_store,
+    stored = session.request_store.open(
+        RequestType.INLINE_MEDIA,
         ParsedInput(source_url="https://www.deezer.com/track/1"),
+        payload=InlineMediaPayload(),
     )
     runner = AsyncMock()
     monkeypatch.setattr("routers.inline.run_inline_download", runner)
@@ -171,10 +176,10 @@ async def test_top_and_menu_callbacks_switch_artist_views(monkeypatch, tmp_path)
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    stored = catalogue_browse_request(
-        session.request_store,
+    stored = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
         ParsedInput(source_url="https://www.deezer.com/artist/1"),
-        CataloguePayload(
+        payload=CataloguePayload(
             provider="deezer",
             artist_id="deezer:1",
             name="Artist",
@@ -182,7 +187,7 @@ async def test_top_and_menu_callbacks_switch_artist_views(monkeypatch, tmp_path)
         ),
     )
     show_card = AsyncMock()
-    monkeypatch.setattr("routers.catalogue._show_card", show_card)
+    monkeypatch.setattr("routers.catalogue.present_card", show_card)
     query = SimpleNamespace(
         from_user=SimpleNamespace(id=99),
         inline_message_id="inline-id",
@@ -194,7 +199,7 @@ async def test_top_and_menu_callbacks_switch_artist_views(monkeypatch, tmp_path)
         query, CatalogueCallback(action="top", token=stored.token), session
     )
 
-    top_card = show_card.await_args.args[3]
+    top_card = show_card.await_args.args[0]
     assert len(top_card.keyboard.inline_keyboard) == 2
     assert CatalogueCallback.unpack(
         top_card.keyboard.inline_keyboard[0][0].callback_data
@@ -207,7 +212,7 @@ async def test_top_and_menu_callbacks_switch_artist_views(monkeypatch, tmp_path)
         query, CatalogueCallback(action="menu", token=stored.token), session
     )
 
-    menu_card = show_card.await_args.args[3]
+    menu_card = show_card.await_args.args[0]
     assert [
         [button.text for button in row] for row in menu_card.keyboard.inline_keyboard
     ] == [["TOP 30 🔝", "ALBUMS 💽"], ["FOLLOW ➕"]]
@@ -219,13 +224,13 @@ async def test_follow_toggle_rerenders_artist_card(monkeypatch, tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    stored = catalogue_browse_request(
-        session.request_store,
+    stored = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
         ParsedInput(source_url="https://www.deezer.com/artist/1"),
-        CataloguePayload(provider="deezer", artist_id="deezer:1", name="Artist"),
+        payload=CataloguePayload(provider="deezer", artist_id="deezer:1", name="Artist"),
     )
     show_card = AsyncMock()
-    monkeypatch.setattr("routers.catalogue._show_card", show_card)
+    monkeypatch.setattr("routers.catalogue.present_card", show_card)
     query = SimpleNamespace(
         from_user=SimpleNamespace(id=99),
         inline_message_id="inline-id",
@@ -238,7 +243,7 @@ async def test_follow_toggle_rerenders_artist_card(monkeypatch, tmp_path):
     )
 
     show_card.assert_awaited_once()
-    card = show_card.await_args.args[3]
+    card = show_card.await_args.args[0]
     assert any(
         button.text == "FOLLOWING ✓"
         for row in card.keyboard.inline_keyboard
@@ -300,7 +305,9 @@ async def test_public_artist_feedback_keeps_inline_artist_card(monkeypatch, tmp_
     assert result.thumbnail_url == _artist().cover_url
     assert result.reply_markup is not None
     stored = session.request_store.load(result.id.split(":", 1)[1])
-    assert stored.payload.media_message is False
+    payload = stored.payload
+    assert isinstance(payload, CataloguePayload)
+    assert payload.artist_id == "deezer:1"
 
 
 @pytest.mark.asyncio
@@ -309,10 +316,10 @@ async def test_bot_artist_card_callbacks_edit_normal_message(tmp_path):
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    stored = catalogue_browse_request(
-        session.request_store,
+    stored = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
         ParsedInput(source_url=_artist().external_url),
-        CataloguePayload(
+        payload=CataloguePayload(
             provider="deezer",
             artist_id="deezer:1",
             name="Artist",
@@ -343,17 +350,15 @@ async def test_bot_artist_card_download_uses_normal_executor(monkeypatch, tmp_pa
     settings = make_settings(tmp_path)
     settings.ensure_directories()
     session = make_session(settings)
-    card = catalogue_browse_request(
-        session.request_store,
+    card = session.request_store.open(
+        RequestType.CATALOGUE_BROWSE,
         ParsedInput(source_url=_artist().external_url),
-        CataloguePayload(provider="deezer", artist_id="deezer:1", name="Artist"),
-    )
-    music = music_request(
-        session.request_store,
-        ParsedInput(source_url="https://www.deezer.com/track/1"),
-        kind="track",
-        name="Song",
-        count=1,
+        payload=CataloguePayload(
+            provider="deezer",
+            artist_id="deezer:1",
+            name="Artist",
+            top_tracks=[_found().items[0].to_dict()],
+        ),
     )
     status_message = SimpleNamespace(edit_text=AsyncMock())
     message = SimpleNamespace(reply=AsyncMock(return_value=status_message))
@@ -371,7 +376,7 @@ async def test_bot_artist_card_download_uses_normal_executor(monkeypatch, tmp_pa
 
     await catalogue_callback(
         query,
-        CatalogueCallback(action="dl", token=f"{card.token}.{music.token}"),
+        CatalogueCallback(action="dl", token=join_token(card.token, 0)),
         session,
     )
 

@@ -17,6 +17,7 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultPhoto,
+    InlineQueryResultUnion,
     InlineQueryResultVideo,
     InputMediaPhoto,
     InputRichMessage,
@@ -25,7 +26,8 @@ from aiogram.types import (
 )
 
 from config import Settings
-from services.delivery import rich_post_html
+from services import pixiv, pixiv_flow
+from services.delivery import inline_cached_results, rich_post_html
 from services.gallery import (
     _gallery_friendly_error,
     plain_caption,
@@ -34,18 +36,22 @@ from services.gallery import (
     split_tweet_media,
 )
 from services.inline_flow import InlineTaskRegistry, run_inline_download
-from services.media_cache import cached_inline_results
 from services.mornye import audio_cache_key
 from services.parsing import is_twitter_status_url, parse_user_input
-from services.requests import inline_gallery_request, inline_media_request
 from services.session import Session
 from services.sources import VIDEO_EXTENSIONS, SourceKind, classify
 from services.ytdlp import probe_url
 from utils import text
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
-from utils.keyboards import gallery_keyboard
+from utils.keyboards import gallery_keyboard, pixiv_page_keyboard
 from utils.logging_config import safe_url_label
-from utils.models import InlineGalleryPayload, ParsedInput
+from utils.models import (
+    InlineGalleryPayload,
+    InlineMediaPayload,
+    ParsedInput,
+    PixivProfilePayload,
+    RequestType,
+)
 
 router = Router(name="inline")
 logger = logging.getLogger(__name__)
@@ -233,16 +239,15 @@ async def _inline_video_results(
         if tweet_id and num and extension:
             preferred_name = f"{tweet_id}_{num}.{extension}"
         poster = await _video_poster_url(parsed, session.settings)
-        stored = inline_media_request(
-            session.request_store,
+        stored = session.request_store.open(
+            RequestType.INLINE_MEDIA,
             parsed,
-            preferred_name=preferred_name,
-            poster_url=poster,
-            # editMessageMedia on an inline message cannot upload a new
-            # file (Bot API rule) - the media must be a URL or a known
-            # file_id. The CDN URL is kept so the inline edit can hand it
-            # to Telegram to fetch itself.
-            video_url=url,
+            payload=InlineMediaPayload(
+                plan="gallery",
+                preferred_name=preferred_name,
+                poster_url=poster,
+                file_dicts=file_dicts,
+            ),
         )
         token = stored.token
         results.append(
@@ -311,6 +316,115 @@ async def _error_article(message: str) -> InlineQueryResultArticle:
     )
 
 
+
+def _pixiv_work_result(store, work: pixiv.PixivWork) -> InlineQueryResultArticle:
+    """One Work as a tap-to-download article: Telegram cannot fetch its cover
+    (i.pximg.net answers 403 without a Referer), so no photo result."""
+    stored = store.open(
+        RequestType.INLINE_MEDIA,
+        ParsedInput(source_url=work.url),
+        payload=InlineMediaPayload(plan="gallery"),
+    )
+    return InlineQueryResultArticle(
+        id=stored.token,
+        title=(work.title or work.work_id)[:64],
+        description=f"{work.artist} · {work.pages} p."[:120],
+        input_message_content=InputTextMessageContent(message_text=text.PROCESSING),
+        reply_markup=_cancel_keyboard(stored.token),
+    )
+
+
+async def _pixiv_profile_results(
+    store, settings: Settings, parsed: ParsedInput
+) -> list[InlineQueryResultUnion]:
+    user_id = await pixiv.resolve_profile_user_id(parsed.source_url, settings)
+    works, next_offset = await pixiv.user_works(settings, user_id, 0)
+    taken = pixiv.page_works(works)
+    if not taken:
+        raise pixiv.PixivError(text.PIXIV_NO_WORKS)
+    payload = PixivProfilePayload(
+        user_id=user_id,
+        user_name=taken[0].artist,
+        offsets=[0, len(taken)],
+        more=[next_offset is not None or len(taken) < len(works), True],
+    )
+    stored = store.open(RequestType.PIXIV_PROFILE, parsed, payload=payload)
+    results: list[InlineQueryResultUnion] = [
+        _pixiv_work_result(store, work) for work in taken
+    ]
+    results.append(
+        InlineQueryResultArticle(
+            id=f"pxv:{stored.token}",
+            title=text.PIXIV_INLINE_NEXT,
+            description=f"{len(taken)} work(s) on this page",
+            input_message_content=InputTextMessageContent(
+                message_text=pixiv_flow.page_text(payload, 0, taken, escape=False),
+                parse_mode=None,
+            ),
+            reply_markup=pixiv_page_keyboard(
+                token=stored.token,
+                page=0,
+                download_label=text.PIXIV_DOWNLOAD_PAGE_SHORT,
+                has_next=payload.more[0],
+            ),
+        )
+    )
+    return results
+
+
+async def _answer_pixiv(
+    query: InlineQuery, parsed: ParsedInput, session: Session
+) -> bool:
+    """Pixiv results: tap-to-download articles, never URL photos."""
+    settings = session.settings
+    kind = pixiv.pixiv_kind(parsed.source_url)
+    if kind is None:
+        return False
+    if kind == "work" and not pixiv.credentials_available(settings):
+        await query.answer(
+            [await _error_article(text.PIXIV_NOT_CONFIGURED)],
+            cache_time=0,
+            is_personal=True,
+        )
+        return True
+    if kind == "unsupported":
+        await query.answer(
+            [await _error_article(text.PIXIV_UNSUPPORTED)],
+            cache_time=0,
+            is_personal=True,
+        )
+        return True
+    try:
+        if kind == "work":
+            identifier = pixiv.work_id(parsed.source_url)
+            if not identifier:
+                raise pixiv.PixivError(text.PIXIV_UNSUPPORTED)
+            results: list[InlineQueryResultUnion] = [
+                _pixiv_work_result(
+                    session.request_store,
+                    await pixiv.work(settings, identifier),
+                )
+            ]
+        else:
+            results = await _pixiv_profile_results(
+                session.request_store, settings, parsed
+            )
+    except Exception as exc:  # noqa: BLE001 - user-facing boundary
+        logger.info(
+            "Pixiv inline lookup failed | user=%s source=%s error=%s",
+            query.from_user.id,
+            safe_url_label(parsed.source_url),
+            exc,
+        )
+        await query.answer(
+            [await _error_article(pixiv.friendly_error(exc))],
+            cache_time=0,
+            is_personal=True,
+        )
+        return True
+    await query.answer(results, cache_time=0, is_personal=True)
+    return True
+
 async def _answer_gallery_media(
     query: InlineQuery,
     parsed: ParsedInput,
@@ -372,8 +486,14 @@ async def _answer_gallery_media(
         gallery_photos = [m["_url"] for m in photos if m.get("_url")]
         results.extend(_rich_results(full_caption, gallery_photos))
         if len(gallery_photos) >= 2:
-            stored = inline_gallery_request(
-                request_store, parsed, gallery_photos, caption
+            stored = request_store.open(
+                RequestType.INLINE_GALLERY,
+                parsed,
+                payload=InlineGalleryPayload(
+                    photos=gallery_photos,
+                    caption=caption,
+                    file_dicts=probe.file_dicts,
+                ),
             )
             token = stored.token
             results.append(_gallery_result(token, gallery_photos, caption))
@@ -410,8 +530,12 @@ async def _answer_gallery_media(
     if len(preview_urls) >= 2:
         # Preview pager over thumbnails (Telegram CAN fetch the thumbnail
         # CDN even when the full files sit behind DDoS-Guard).
-        stored = inline_gallery_request(
-            request_store, parsed, preview_urls, caption
+        stored = request_store.open(
+            RequestType.INLINE_GALLERY,
+            parsed,
+            payload=InlineGalleryPayload(
+                photos=preview_urls, caption=caption, file_dicts=probe.file_dicts
+            ),
         )
         token = stored.token
         results.append(_gallery_result(token, preview_urls, caption))
@@ -420,8 +544,14 @@ async def _answer_gallery_media(
         # download that swaps the small preview for the full-size file.
         # preferred_index puts the tapped photo into the message, the
         # remaining files go to the DM spillover.
-        stored = inline_media_request(
-            request_store, parsed, preferred_index=index
+        stored = request_store.open(
+            RequestType.INLINE_MEDIA,
+            parsed,
+            payload=InlineMediaPayload(
+                plan="gallery",
+                preferred_index=index,
+                file_dicts=probe.file_dicts,
+            ),
         )
         token = stored.token
         results.append(
@@ -486,23 +616,25 @@ async def inline_query_handler(  # noqa: C901
     )
     cached = media_cache.get(cache_key)
     if cached:
-        results = cached_inline_results(cached)
+        results = inline_cached_results(cached)
         if results:
             cached_photos = [entry for entry in cached if entry.send_type == "photo"]
             if len(cached_photos) >= 2:
                 # Same pager as the fresh-probe path, but over cached
                 # file_ids (edit_message_media accepts file_id media).
-                raw_caption = (cached_photos[0].caption or "")[:1000]
+                raw_caption = (cached_photos[0].caption or "")[: text.CAPTION_LIMIT]
                 caption = (
                     raw_caption
                     if parsed.source_url in raw_caption
                     else (f"{parsed.source_url}\n{raw_caption}" if raw_caption else parsed.source_url)
-                )[:1024]
-                stored = inline_gallery_request(
-                    request_store,
+                )[: text.CAPTION_LIMIT]
+                stored = request_store.open(
+                    RequestType.INLINE_GALLERY,
                     parsed,
-                    [entry.file_id for entry in cached_photos],
-                    caption,
+                    payload=InlineGalleryPayload(
+                        photos=[entry.file_id for entry in cached_photos],
+                        caption=caption,
+                    ),
                 )
                 token = stored.token
                 results.insert(
@@ -519,7 +651,11 @@ async def inline_query_handler(  # noqa: C901
             await query.answer(results, cache_time=0, is_personal=True)
             return
 
-    if source.kind is SourceKind.IMAGE and not source.is_twitter:
+    if (
+        source.kind is SourceKind.IMAGE
+        and not source.is_twitter
+        and not pixiv.is_pixiv_image_url(parsed.source_url)
+    ):
         await query.answer(
             [
                 InlineQueryResultPhoto(
@@ -552,7 +688,11 @@ async def inline_query_handler(  # noqa: C901
             if target.kind == "track"
             else f"Music {target.kind} — {len(target.tracks)} track(s), tap to download"
         )
-        stored = inline_media_request(request_store, parsed)
+        stored = request_store.open(
+            RequestType.INLINE_MEDIA,
+            parsed,
+            payload=InlineMediaPayload(plan="music"),
+        )
         token = stored.token
         await query.answer(
             [
@@ -572,11 +712,18 @@ async def inline_query_handler(  # noqa: C901
         )
         return
 
+    if await _answer_pixiv(query, parsed, session):
+        return
+
     if await _answer_gallery_media(query, parsed, session):
         return
 
     # result_id doubles as the request token: ChosenInlineResult carries it back
-    stored = inline_media_request(request_store, parsed)
+    stored = request_store.open(
+        RequestType.INLINE_MEDIA,
+        parsed,
+        payload=InlineMediaPayload(plan="url"),
+    )
     token = stored.token
     logger.info(
         "Prepared inline request | user=%s token=%s source=%s",
@@ -604,7 +751,7 @@ async def inline_query_handler(  # noqa: C901
 def _result_needs_no_download(token: str) -> bool:
     """True for ready results that must never start a background download."""
     return token in {"help", "rich"} or token.startswith(
-        ("cached", "gallery:", "video", "text:")
+        ("cached", "gallery:", "video", "text:", "pxv:")
     )
 
 

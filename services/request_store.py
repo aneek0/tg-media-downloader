@@ -1,23 +1,111 @@
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import time
 import uuid
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
-from utils.models import StoredRequest
+from services.json_store import JsonStore
+from utils.models import (
+    CataloguePayload,
+    DirectPayload,
+    DownloadOption,
+    GalleryPayload,
+    InlineGalleryPayload,
+    InlineMediaPayload,
+    MusicPayload,
+    ParsedInput,
+    PixivProfilePayload,
+    ProbePayload,
+    RequestPayload,
+    RequestType,
+    StoredRequest,
+)
 
 logger = logging.getLogger(__name__)
 
+#: Every Request type is persisted by exactly one payload shape, so a caller
+#: cannot store an artist card where a probe result is decoded later.
+_PAYLOAD_TYPES: dict[RequestType, type] = {
+    RequestType.GALLERY_MEDIA: GalleryPayload,
+    RequestType.MORNYE: MusicPayload,
+    RequestType.YOUTUBE_QUICK: ProbePayload,
+    RequestType.YTDLP_SELECTION: ProbePayload,
+    RequestType.YTDLP_AUTO: ProbePayload,
+    RequestType.DIRECT_DOWNLOAD: DirectPayload,
+    RequestType.INLINE_MEDIA: InlineMediaPayload,
+    RequestType.INLINE_GALLERY: InlineGalleryPayload,
+    RequestType.CATALOGUE_BROWSE: CataloguePayload,
+    RequestType.PIXIV_PROFILE: PixivProfilePayload,
+}
+
+
+def _checked_payload(
+    request_type: RequestType, payload: RequestPayload
+) -> dict[str, Any]:
+    expected = _PAYLOAD_TYPES[request_type]
+    if not isinstance(payload, expected):
+        raise ValueError(
+            f"{request_type} needs {expected.__name__}, got {type(payload).__name__}"
+        )
+    return payload.to_info()
+
 
 class RequestStore:
+    """Token -> Request on disk, plus the lifecycle every flow must run.
+
+    A Request is opened with the payload shape its type requires and closed on
+    every terminal path; the work directory belongs to the token.
+    """
+
     def __init__(self, requests_dir: Path, work_root: Path) -> None:
         self.requests_dir = requests_dir.resolve()
         self.work_root = work_root.resolve()
         self.requests_dir.mkdir(parents=True, exist_ok=True)
         self.work_root.mkdir(parents=True, exist_ok=True)
+
+    def open(
+        self,
+        request_type: RequestType,
+        parsed_input: ParsedInput,
+        *,
+        payload: RequestPayload,
+        options: Sequence[DownloadOption] = (),
+    ) -> StoredRequest:
+        """Persist one new Request; the token is the returned handle."""
+        stored = StoredRequest(
+            token=self.create_token(),
+            request_type=request_type,
+            parsed_input=parsed_input,
+            options=list(options),
+            info=_checked_payload(request_type, payload),
+        )
+        self.save(stored)
+        return stored
+
+    def update_payload(
+        self, stored: StoredRequest, payload: RequestPayload
+    ) -> None:
+        """Replace a persisted payload under the same token.
+
+        Artist Cards and Pixiv profile browsers keep one token across pages and
+        refreshes; their buttons already point at it, so a new Request would
+        orphan them.
+        """
+        stored.info = _checked_payload(RequestType(stored.request_type), payload)
+        self.save(stored)
+
+    @contextmanager
+    def lifecycle(self, token: str) -> Generator[str, None, None]:
+        """Guarantee token and work-directory cleanup on every terminal path."""
+        try:
+            yield token
+        finally:
+            self.delete(token)
 
     def create_token(self) -> str:
         return uuid.uuid4().hex[:10]
@@ -31,16 +119,15 @@ class RequestStore:
         return path
 
     def save(self, stored_request: StoredRequest) -> None:
-        self._request_path(stored_request.token).write_text(
-            json.dumps(stored_request.to_dict()),
-            encoding="utf-8",
+        JsonStore(self._request_path(stored_request.token), strict=False).save(
+            stored_request.to_dict()
         )
 
     def load(self, token: str) -> StoredRequest | None:
         path = self._request_path(token)
         if not path.exists():
             return None
-        return StoredRequest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        return StoredRequest.from_dict(JsonStore(path, strict=False).load())
 
     def delete(self, token: str) -> None:
         path = self._request_path(token)
