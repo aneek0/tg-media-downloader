@@ -126,6 +126,27 @@ def _keyboard(
     )
 
 
+async def _show_panel(
+    bot: Bot,
+    status: StatusSurface,
+    *,
+    chat_id: int,
+    caption: str,
+    keyboard,
+    relocatable: bool,
+) -> None:
+    """Put the page panel under the content it controls.
+
+    A chat message cannot be moved, so the old panel is deleted and a new one
+    posted after the media. Inline surfaces keep editing their own message -
+    they have nowhere else to put it."""
+    if not relocatable:
+        await status.edit(caption, reply_markup=keyboard)
+        return
+    await status.retire()
+    await bot.send_message(chat_id, caption, reply_markup=keyboard)
+
+
 async def _send_cover_album(bot: Bot, chat_id: int, covers: list) -> list[int]:
     """Covers travel as files: Telegram cannot fetch i.pximg.net URLs."""
     if not covers:
@@ -225,7 +246,12 @@ async def render_page(
     payload.preview_ids = message_ids
     _record_page(payload, page, start, taken, more)
     _persist(session, stored, payload)
-    await status.edit(
+    # The Work buttons belong under the previews, and an edited message cannot
+    # move: drop the previous page message and post the new one after the
+    # album. Inline surfaces keep their own message (see _pixiv_inline).
+    await status.retire()
+    await bot.send_message(
+        chat_id,
         _header(payload, start, taken),
         reply_markup=_keyboard(stored, payload, page, start, taken),
     )
@@ -304,10 +330,16 @@ async def download_work(
     logger.info(
         "Pixiv work downloaded | token=%s work=%s", stored.token, work.work_id
     )
-    await status.edit(
-        _header(payload, start, taken),
-        reply_markup=_keyboard(stored, payload, page, start, taken),
+    await _show_panel(
+        bot,
+        status,
+        chat_id=chat_id,
+        caption=_header(payload, start, taken),
+        keyboard=_keyboard(stored, payload, page, start, taken),
+        relocatable=reply is not None,
     )
+
+
 
 async def download_page(
     session: Session,
@@ -377,8 +409,13 @@ async def download_page(
         if failed
         else _header(payload, start, taken)
     )
-    await status.edit(
-        caption, reply_markup=_keyboard(stored, payload, page, start, taken)
+    await _show_panel(
+        bot,
+        status,
+        chat_id=chat_id,
+        caption=caption,
+        keyboard=_keyboard(stored, payload, page, start, taken),
+        relocatable=reply is not None,
     )
 
 

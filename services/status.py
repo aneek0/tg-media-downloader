@@ -53,13 +53,25 @@ class StatusSurface:
         name: str = "",
         min_interval: float = 2.5,
         muted: bool = False,
+        retire: EditCallable | None = None,
     ) -> None:
         self._edit = edit
         self._name = name
         self._min_interval = min_interval
         self._muted = muted
+        self._retire = retire
         self._last_update: float | None = None
         self._last_text: str | None = None
+
+    async def retire(self) -> None:
+        """Drop the status message once something else has replaced it.
+
+        Chat surfaces delete it; inline surfaces have nothing they own to
+        delete, and a gone message must not fail the request."""
+        if self._retire is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._retire()
 
     async def edit(self, message: str, **kwargs: Any) -> None:
         """Replace the status text; Telegram errors propagate. A muted
@@ -138,12 +150,16 @@ class StatusSurface:
 
 
 def chat_status(message: Message, *, name: str = "") -> StatusSurface:
-    """Status surface over a chat message the bot can edit."""
+    """Status surface over a chat message the bot can edit and, once another
+    message replaces it, delete."""
 
     async def edit(message_text: str, **kwargs: Any) -> None:
         await message.edit_text(message_text, **kwargs)
 
-    return StatusSurface(edit, name=name)
+    async def retire() -> None:
+        await message.delete()
+
+    return StatusSurface(edit, name=name, retire=retire)
 
 
 def inline_status(

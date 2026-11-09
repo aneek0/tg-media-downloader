@@ -228,7 +228,7 @@ def test_profile_payload_round_trips_through_the_store(tmp_path: Path) -> None:
 
 
 def make_status():
-    return SimpleNamespace(fail=AsyncMock(), edit=AsyncMock())
+    return SimpleNamespace(fail=AsyncMock(), edit=AsyncMock(), retire=AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -503,6 +503,7 @@ def make_rendering_bot(tmp_path: Path):
             return_value=[SimpleNamespace(message_id=21), SimpleNamespace(message_id=22)]
         ),
         send_photo=AsyncMock(return_value=SimpleNamespace(message_id=21)),
+        send_message=AsyncMock(),
         delete_message=AsyncMock(),
     )
     return bot, fake_covers
@@ -543,12 +544,20 @@ async def test_render_page_persists_state_replaces_previews_and_shows_buttons(
     # The next page starts where this one stopped, so works are never split.
     assert payload.offsets == [0, 2]
     assert payload.more == [False, True]
-    keyboard = status.edit.await_args.kwargs["reply_markup"]
-    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+    # The page message is posted after the album (so the Work buttons sit under
+    # the previews), and the loading message is dropped.
+    status.retire.assert_awaited_once()
+    header = bot.send_message.await_args
+    assert header.args[0] == 500
+    assert "Works 1–2" in header.args[1]
+    labels = [
+        button.text
+        for row in header.kwargs["reply_markup"].inline_keyboard
+        for button in row
+    ]
     # One button per Work picks that Work; the artist has no further work, so
     # the next-page arrow is gone.
     assert labels == ["1. work 5", "2. work 4", "◀", "Download 1–2"]
-    assert "Works 1–2" in status.edit.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -583,9 +592,10 @@ async def test_download_page_delivers_every_work_and_keeps_the_token(
     monkeypatch.setattr("services.pixiv_flow.ChatDelivery", FakeDelivery)
     status = make_status()
 
+    bot = SimpleNamespace(send_message=AsyncMock())
     await pixiv_flow.download_page(
         session,
-        bot=SimpleNamespace(),
+        bot=bot,
         stored=stored,
         page=0,
         status=status,
@@ -644,7 +654,7 @@ async def test_work_button_downloads_only_the_chosen_work(
         message=message,
         inline_message_id=None,
         answer=AsyncMock(),
-        bot=SimpleNamespace(),
+        bot=SimpleNamespace(send_message=AsyncMock()),
     )
 
     await pixiv_callback(
@@ -655,7 +665,7 @@ async def test_work_button_downloads_only_the_chosen_work(
 
     assert downloaded == ["https://www.pixiv.net/artworks/4"]
     assert len(delivered) == 1
-    keyboard = message.edit_text.await_args.kwargs["reply_markup"]
+    keyboard = query.bot.send_message.await_args.kwargs["reply_markup"]
     labels = [button.text for row in keyboard.inline_keyboard for button in row]
     assert labels == ["1. work 5", "2. work 4", "◀", "Download 1–2"]
 
@@ -676,9 +686,10 @@ async def test_download_page_rejects_a_work_over_the_file_limit(
     )
     status = make_status()
 
+    bot = SimpleNamespace(send_message=AsyncMock())
     await pixiv_flow.download_page(
         session,
-        bot=SimpleNamespace(),
+        bot=bot,
         stored=stored,
         page=0,
         status=status,
@@ -1141,7 +1152,7 @@ async def test_profile_page_downloads_works_concurrently_in_page_order(
 
     await pixiv_flow.download_page(
         session,
-        bot=SimpleNamespace(),
+        bot=SimpleNamespace(send_message=AsyncMock()),
         stored=stored,
         page=0,
         status=make_status(),
