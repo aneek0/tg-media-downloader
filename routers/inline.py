@@ -366,6 +366,7 @@ async def _pixiv_profile_results(
                 page=0,
                 download_label=text.PIXIV_DOWNLOAD_PAGE_SHORT,
                 has_next=payload.more[0],
+                works=pixiv_flow.work_labels(0, taken),
             ),
         )
     )

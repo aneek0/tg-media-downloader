@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 
 from aiogram import Bot
@@ -97,13 +98,31 @@ async def _load_page(
     return start, taken, next_offset is not None or len(taken) < len(works)
 
 
-def _keyboard(stored: StoredRequest, payload: PixivProfilePayload, page: int, start: int, taken: list):
+def work_labels(start: int, taken: list[pixiv.PixivWork]) -> list[str]:
+    """Button per Work, labelled with its number and title (button text is
+    plain, so no HTML escaping here)."""
+    return [
+        text.PIXIV_WORK_BUTTON.format(
+            index=start + offset, title=work.title or work.work_id
+        )[:64]
+        for offset, work in enumerate(taken, 1)
+    ]
+
+
+def _keyboard(
+    stored: StoredRequest,
+    payload: PixivProfilePayload,
+    page: int,
+    start: int,
+    taken: list,
+):
     has_next = payload.more[page] if page < len(payload.more) else True
     return pixiv_page_keyboard(
         token=stored.token,
         page=page,
         download_label=_download_label(start, taken),
         has_next=has_next,
+        works=work_labels(start, taken),
     )
 
 
@@ -212,6 +231,84 @@ async def render_page(
     )
 
 
+
+async def _fetch_work(
+    session: Session,
+    stored: StoredRequest,
+    work: pixiv.PixivWork,
+    status: StatusSurface,
+) -> list | None:
+    """One Work through the generic gallery downloader, in its own folder.
+    None when that Work failed; a page download keeps going."""
+    work_dir = session.request_store.work_directory(stored.token) / work.work_id
+    try:
+        return await download_gallery_media(
+            parsed_input=ParsedInput(source_url=work.url),
+            settings=session.settings,
+            work_dir=work_dir,
+            status=status,
+            download_limiter=session.gallery_download_limiter,
+        )
+    except Exception as exc:  # noqa: BLE001 - one Work must not stop the page
+        logger.warning(
+            "Pixiv work download failed | work=%s error=%s",
+            work.work_id,
+            exc,
+        )
+        return None
+
+
+async def download_work(
+    session: Session,
+    *,
+    bot: Bot,
+    stored: StoredRequest,
+    page: int,
+    index: int,
+    status: StatusSurface,
+    reply: Message | None,
+    chat_id: int,
+) -> None:
+    """Download the one Work a page button chose, then keep the page pager."""
+    payload = payload_of(stored)
+    try:
+        start, taken, more = await _load_page(session.settings, payload, page)
+    except pixiv.PixivError as exc:
+        await status.fail(text.esc(str(exc)))
+        return
+    if index < 0 or index >= len(taken):
+        await status.fail(text.PIXIV_WORK_GONE)
+        return
+    work = taken[index]
+    await status.edit(
+        text.PIXIV_DOWNLOADING_ALL.format(total=1, files=pixiv.page_file_count([work]))
+    )
+    artifacts = await _fetch_work(session, stored, work, status)
+    if not artifacts:
+        await status.fail(
+            text.PIXIV_PARTIAL.format(
+                sent=0, failed=1, titles=text.esc(work.title or work.work_id)
+            )
+        )
+        return
+    if reply is None:
+        await DirectDelivery(bot, chat_id).deliver(
+            artifacts=artifacts, started_at=datetime.now()
+        )
+    else:
+        await ChatDelivery(bot, reply).deliver(
+            artifacts=artifacts, status=status, started_at=datetime.now()
+        )
+    _record_page(payload, page, start, taken, more)
+    _persist(session, stored, payload)
+    logger.info(
+        "Pixiv work downloaded | token=%s work=%s", stored.token, work.work_id
+    )
+    await status.edit(
+        _header(payload, start, taken),
+        reply_markup=_keyboard(stored, payload, page, start, taken),
+    )
+
 async def download_page(
     session: Session,
     *,
@@ -245,24 +342,7 @@ async def download_page(
 
     async def fetch(work: pixiv.PixivWork) -> list | None:
         async with works:
-            work_dir = (
-                session.request_store.work_directory(stored.token) / work.work_id
-            )
-            try:
-                return await download_gallery_media(
-                    parsed_input=ParsedInput(source_url=work.url),
-                    settings=session.settings,
-                    work_dir=work_dir,
-                    status=status,
-                    download_limiter=session.gallery_download_limiter,
-                )
-            except Exception as exc:  # noqa: BLE001 - one Work must not stop the page
-                logger.warning(
-                    "Pixiv work download failed | work=%s error=%s",
-                    work.work_id,
-                    exc,
-                )
-                return None
+            return await _fetch_work(session, stored, work, status)
 
     chat_delivery = ChatDelivery(bot, reply) if reply is not None else None
     failed: list[str] = []
@@ -328,13 +408,19 @@ def page_text(
     return "\n".join(lines)
 
 
-async def page_summary(
-    session: Session, stored: StoredRequest, page: int
-) -> tuple[str, bool]:
-    """Plain-text page for inline navigation (Telegram cannot show covers),
-    plus whether another page follows it."""
+@dataclass(frozen=True, slots=True)
+class PageView:
+    """What an inline Profile Page shows: the text list of Works, the titles
+    its buttons carry, and whether another page follows."""
+
+    text: str
+    titles: list[str]
+    has_next: bool
+
+
+async def page_view(session: Session, stored: StoredRequest, page: int) -> PageView:
     payload = payload_of(stored)
     start, taken, more = await _load_page(session.settings, payload, page)
     _record_page(payload, page, start, taken, more)
     _persist(session, stored, payload)
-    return page_text(payload, start, taken), more
+    return PageView(page_text(payload, start, taken), work_labels(start, taken), more)

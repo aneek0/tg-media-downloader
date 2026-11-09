@@ -545,8 +545,9 @@ async def test_render_page_persists_state_replaces_previews_and_shows_buttons(
     assert payload.more == [False, True]
     keyboard = status.edit.await_args.kwargs["reply_markup"]
     labels = [button.text for row in keyboard.inline_keyboard for button in row]
-    # The artist has no further work: the next-page arrow is gone.
-    assert labels == ["◀", "Download 1–2"]
+    # One button per Work picks that Work; the artist has no further work, so
+    # the next-page arrow is gone.
+    assert labels == ["1. work 5", "2. work 4", "◀", "Download 1–2"]
     assert "Works 1–2" in status.edit.await_args.args[0]
 
 
@@ -594,6 +595,69 @@ async def test_download_page_delivers_every_work_and_keeps_the_token(
 
     assert len(delivered) == 2
     assert session.request_store.load(stored.token) is not None
+
+
+@pytest.mark.asyncio
+async def test_work_button_downloads_only_the_chosen_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title button under the previews picks that one Work, not the page."""
+    from routers.callbacks import pixiv_callback
+    from utils.callbacks import PixivNavCallback
+
+    session = make_session(make_pixiv_settings(tmp_path))
+    stored = session.request_store.open(
+        RequestType.PIXIV_PROFILE,
+        ParsedInput(source_url="https://www.pixiv.net/users/456"),
+        payload=PixivProfilePayload(
+            user_id="456", user_name="artist", offsets=[0], more=[False]
+        ),
+    )
+    monkeypatch.setattr(
+        "services.pixiv.user_works",
+        AsyncMock(return_value=([make_work("5"), make_work("4")], None)),
+    )
+    downloaded: list[str] = []
+
+    async def fake_download(**kwargs):
+        downloaded.append(kwargs["parsed_input"].source_url)
+        return [SimpleNamespace(path=tmp_path / "a.jpg", file_name="a.jpg")]
+
+    delivered: list[list] = []
+
+    class FakeDelivery:
+        def __init__(self, _bot, reply):
+            self.reply = reply
+
+        async def deliver(self, artifacts, *, status, started_at):
+            del status, started_at
+            delivered.append(list(artifacts))
+            return []
+
+    monkeypatch.setattr("services.pixiv_flow.download_gallery_media", fake_download)
+    monkeypatch.setattr("services.pixiv_flow.ChatDelivery", FakeDelivery)
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=500), edit_text=AsyncMock()
+    )
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=99),
+        message=message,
+        inline_message_id=None,
+        answer=AsyncMock(),
+        bot=SimpleNamespace(),
+    )
+
+    await pixiv_callback(
+        query,
+        PixivNavCallback(token=stored.token, page=0, action="w1"),
+        session,
+    )
+
+    assert downloaded == ["https://www.pixiv.net/artworks/4"]
+    assert len(delivered) == 1
+    keyboard = message.edit_text.await_args.kwargs["reply_markup"]
+    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert labels == ["1. work 5", "2. work 4", "◀", "Download 1–2"]
 
 
 @pytest.mark.asyncio

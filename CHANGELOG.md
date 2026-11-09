@@ -15,7 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Pixiv support. `/artworks/<id>` (and `/i/<id>`, `member_illust.php?illust_id=`,
   `artworks/unlisted/<token>`) downloads through the existing gallery pipeline, including multi-page works;
   ugoira is converted to MP4. Artist profiles open a paged browser: a Cover Album of the page plus
-  ◀ / Download / ▶ buttons for both private chat and inline results. A Profile Page holds at most 10 works and
+  ◀ / Download / ▶ buttons for both private chat and inline results, plus one button per Work on the page (labelled
+  with its number and title) that downloads just that Work. A Profile Page holds at most 10 works and
   50 files and never splits a work; a single work over the limit is rejected with a clear message.
   Inline Pixiv results are tap-to-download articles because Telegram cannot fetch `i.pximg.net` without a
   Pixiv Referer; bookmarks, rankings, tags, search, series, and novels are rejected explicitly instead of

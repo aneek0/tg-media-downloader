@@ -44,6 +44,9 @@ class FollowCallback(CallbackData, prefix="fol"):
 
 
 class PixivNavCallback(CallbackData, prefix="pxv"):
+    #: ``action`` is ``prev``/``next``/``dl`` for the pager and ``w<index>``
+    #: for a Work button. Encoding the Work here keeps the field list unchanged,
+    #: so pager buttons already sitting in chats still parse.
     token: str
     page: int
     action: str

@@ -97,17 +97,28 @@ async def pixiv_callback(
     # aiogram binds a bot to every dispatched update.
     bot = cast(Bot, query.bot)
     page = max(callback_data.page, 0)
+    action = callback_data.action
+    work = int(action[1:]) if action.startswith("w") and action[1:].isdigit() else None
     if query.inline_message_id:
-        await _pixiv_inline(
-            query, bot, session, stored, page, callback_data.action
-        )
+        await _pixiv_inline(query, bot, session, stored, page, action, work)
         return
     message = query.message
     if not message or isinstance(message, InaccessibleMessage):
         await query.answer()
         return
     status = chat_status(message)
-    if callback_data.action == "dl":
+    if work is not None:
+        await pixiv_flow.download_work(
+            session,
+            bot=bot,
+            stored=stored,
+            page=page,
+            index=work,
+            status=status,
+            reply=message,
+            chat_id=message.chat.id,
+        )
+    elif action == "dl":
         await pixiv_flow.download_page(
             session,
             bot=bot,
@@ -136,34 +147,50 @@ async def _pixiv_inline(
     stored: StoredRequest,
     page: int,
     action: str,
+    work: int | None,
 ) -> None:
     inline_message_id = query.inline_message_id or ""
+    status = inline_status(bot, inline_message_id, name="Pixiv")
+    if work is not None:
+        await pixiv_flow.download_work(
+            session,
+            bot=bot,
+            stored=stored,
+            page=page,
+            index=work,
+            status=status,
+            reply=None,
+            chat_id=query.from_user.id,
+        )
+        await query.answer()
+        return
     if action == "dl":
         await pixiv_flow.download_page(
             session,
             bot=bot,
             stored=stored,
             page=page,
-            status=inline_status(bot, inline_message_id, name="Pixiv"),
+            status=status,
             reply=None,
             chat_id=query.from_user.id,
         )
         await query.answer()
         return
     try:
-        summary, has_next = await pixiv_flow.page_summary(session, stored, page)
+        view = await pixiv_flow.page_view(session, stored, page)
     except pixiv.PixivError as exc:
         await query.answer(text.esc(str(exc)), show_alert=True)
         return
     try:
         await bot.edit_message_text(
             inline_message_id=inline_message_id,
-            text=summary,
+            text=view.text,
             reply_markup=pixiv_page_keyboard(
                 token=stored.token,
                 page=page,
                 download_label=text.PIXIV_DOWNLOAD_PAGE_SHORT,
-                has_next=has_next,
+                has_next=view.has_next,
+                works=view.titles,
             ),
         )
     except TelegramAPIError:

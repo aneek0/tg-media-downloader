@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -100,11 +102,25 @@ def gallery_keyboard(token: str, count: int, index: int) -> InlineKeyboardMarkup
 
 
 def pixiv_page_keyboard(
-    *, token: str, page: int, download_label: str, has_next: bool = True
+    *,
+    token: str,
+    page: int,
+    download_label: str,
+    has_next: bool = True,
+    works: Sequence[str] = (),
 ) -> InlineKeyboardMarkup:
-    """Profile Page switcher: previous, download this page, next (hidden on
-    the last page)."""
+    """Profile Page switcher: one button per Work on the page (its title picks
+    the Work), then previous, download this page, next (hidden on the last)."""
     builder = InlineKeyboardBuilder()
+    for index, title in enumerate(works):
+        builder.row(
+            InlineKeyboardButton(
+                text=title,
+                callback_data=PixivNavCallback(
+                    token=token, page=page, action=f"w{index}"
+                ).pack(),
+            )
+        )
     buttons = [
         InlineKeyboardButton(
             text="◀",
