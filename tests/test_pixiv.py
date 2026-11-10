@@ -32,6 +32,7 @@ def isolated_gallery_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     cache_home.mkdir()
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
     pixiv_flow._PAGES.clear()
+    pixiv_flow._PHOTO_IDS.clear()
     return cache_home
 
 
@@ -1262,3 +1263,29 @@ async def test_visited_page_is_served_from_memory_on_the_way_back(
     await pixiv_flow._load_page(settings, payload, 0)
 
     assert calls == [0, 10]
+
+
+@pytest.mark.asyncio
+async def test_second_album_reuses_the_photo_file_ids(tmp_path: Path) -> None:
+    """A revisited page resends Telegram's own photos instead of uploading."""
+    covers = []
+    for work_id in ("11", "12"):
+        path = tmp_path / f"{work_id}.jpg"
+        path.write_bytes(b"jpg")
+        covers.append(path)
+    bot = SimpleNamespace(
+        send_media_group=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    message_id=1, photo=[SimpleNamespace(file_id=f"file-{work_id}")]
+                )
+                for work_id in ("11", "12")
+            ]
+        )
+    )
+
+    await pixiv_flow._send_cover_album(bot, 500, covers)
+    await pixiv_flow._send_cover_album(bot, 500, covers)
+
+    media = bot.send_media_group.await_args.kwargs["media"]
+    assert [item.media for item in media] == ["file-11", "file-12"]

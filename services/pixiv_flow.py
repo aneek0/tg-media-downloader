@@ -93,6 +93,10 @@ def _record_page(
 _PAGES: dict[tuple[str, int], tuple[list[pixiv.PixivWork], bool]] = {}
 _PAGES_KEPT = 16
 _prefetch_tasks: set[asyncio.Task] = set()
+# work_id -> the photo Telegram already holds for this chat, so a revisit
+# re-sends it by file_id instead of uploading the file again.
+_PHOTO_IDS: dict[str, str] = {}
+_PHOTOS_KEPT = 200
 
 
 def _remember(
@@ -212,26 +216,51 @@ async def _show_panel(
     await bot.send_message(chat_id, caption, reply_markup=keyboard)
 
 
-async def _send_cover_album(bot: Bot, chat_id: int, covers: list) -> list[int]:
+def _photo_file_id(message) -> str | None:
+    photos = getattr(message, "photo", None)
+    return photos[-1].file_id if photos else None
+
+
+def _photo_media(path: Path):
+    """A cover already sent to this chat travels as its file_id: Telegram
+    skips the upload entirely."""
+    file_id = _PHOTO_IDS.get(path.stem)
+    return file_id if file_id else FSInputFile(path)
+
+
+async def _send_cover_album(bot: Bot, chat_id: int, covers: list[Path]) -> list[int]:
     """Covers travel as files: Telegram cannot fetch i.pximg.net URLs."""
     if not covers:
         return []
+    media = [_photo_media(path) for path in covers]
     if len(covers) == 1:
-        sent = await bot.send_photo(chat_id=chat_id, photo=FSInputFile(covers[0]))
-        return [sent.message_id]
-    group = await bot.send_media_group(
-        chat_id=chat_id,
-        media=[InputMediaPhoto(media=FSInputFile(path)) for path in covers],
-    )
-    return [message.message_id for message in group]
+        sent = await bot.send_photo(chat_id=chat_id, photo=media[0])
+        sent_messages = [sent]
+    else:
+        sent_messages = await bot.send_media_group(
+            chat_id=chat_id,
+            media=[InputMediaPhoto(media=item) for item in media],
+        )
+    for path, message in zip(covers, sent_messages, strict=False):
+        file_id = _photo_file_id(message)
+        if file_id:
+            while len(_PHOTO_IDS) >= _PHOTOS_KEPT:
+                _PHOTO_IDS.pop(next(iter(_PHOTO_IDS)))
+            _PHOTO_IDS[path.stem] = file_id
+    return [message.message_id for message in sent_messages]
 
 
 async def _delete_previews(bot: Bot, chat_id: int, message_ids: list[int]) -> None:
-    for message_id in message_ids:
+    """Drop the previous page's album; concurrent, because ten sequential
+    deletes cost more than the upload they replace."""
+
+    async def drop(message_id: int) -> None:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
         except TelegramAPIError:
-            continue
+            return
+
+    await asyncio.gather(*(drop(message_id) for message_id in message_ids))
 
 
 async def open_profile(
@@ -304,12 +333,21 @@ async def render_page(
     # no Pixiv round trip; the work directory clears them with the token.
     covers = await pixiv.download_covers(settings, taken, work_dir / str(start))
     fetched_covers = time.monotonic()
-    await _delete_previews(bot, chat_id, payload.preview_ids)
+    # The old album and the old panel go away while the new album uploads;
+    # waiting for ten deletes first is what made a page switch feel slow.
+    async def drop_old() -> None:
+        await asyncio.gather(
+            _delete_previews(bot, chat_id, payload.preview_ids), status.retire()
+        )
+
+    dropped = asyncio.create_task(drop_old())
     try:
         message_ids = await _send_cover_album(bot, chat_id, covers)
     except TelegramAPIError as exc:
         logger.warning("Pixiv cover album failed | token=%s error=%s", stored.token, exc)
         message_ids = []
+    album_done = time.monotonic()
+    await dropped
     logger.info(
         "Pixiv page rendered | token=%s page=%s works=%s covers=%s api=%.2fs"
         " covers=%.2fs album=%.2fs",
@@ -319,16 +357,14 @@ async def render_page(
         len(covers),
         fetched - started,
         fetched_covers - fetched,
-        time.monotonic() - fetched_covers,
+        album_done - fetched_covers,
     )
     payload.preview_ids = message_ids
     _record_page(payload, page, start, taken, more)
     _persist(session, stored, payload)
     _start_prefetch(settings, payload, page, work_dir)
-    # The Work buttons belong under the previews, and an edited message cannot
-    # move: drop the previous page message and post the new one after the
-    # album. Inline surfaces keep their own message (see _pixiv_inline).
-    await status.retire()
+    # The Work buttons belong under the previews; the previous panel was
+    # already retired above, so this one lands after the album.
     await bot.send_message(
         chat_id,
         _header(payload, start, taken),
