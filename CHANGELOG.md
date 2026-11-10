@@ -47,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- An image over Telegram's 10 MB photo limit is delivered as a document instead of failing the request with
+  `file of size … is too big for a photo`; the downgrade is recorded on the artifact so the inline edit reuses the
+  document `file_id` rather than asking for a photo.
 - The media cache creates its parent directory before writing. A missing `DOWNLOADS/` used to turn every cache write
   into a swallowed warning, so the cache silently never persisted.
 - Audio sent in a media group keeps its display title (`audio_title`, falling back to the file name), matching the

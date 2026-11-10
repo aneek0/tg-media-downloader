@@ -308,6 +308,24 @@ async def media_facts(artifact: DownloadArtifact) -> MediaFacts:
     return MediaFacts(width=width, height=height, duration=duration)
 
 
+_PHOTO_MAX_BYTES = 10 * 1024 * 1024  # Bot API sendPhoto ceiling
+
+
+def send_kind(artifact: DownloadArtifact) -> str:
+    """Telegram refuses photos over 10 MB, so such a photo travels as a file.
+
+    The downgrade is recorded on the artifact: an inline edit reuses the DM
+    file_id after the upload unlinked the file, and must send the same type.
+    """
+    if artifact.send_type == "photo":
+        try:
+            if artifact.path.stat().st_size > _PHOTO_MAX_BYTES:
+                artifact.send_type = "document"
+        except OSError:
+            pass
+    return artifact.send_type
+
+
 async def media_item(
     artifact: DownloadArtifact,
     caption: str | None,
@@ -325,9 +343,10 @@ async def media_item(
     """
     facts = facts if facts is not None else await media_facts(artifact)
     local = isinstance(media, FSInputFile)
-    if artifact.send_type == "photo":
+    send_type = send_kind(artifact)
+    if send_type == "photo":
         return InputMediaPhoto(media=media, caption=caption), None
-    if artifact.send_type == "video":
+    if send_type == "video":
         return (
             InputMediaVideo(
                 media=media,
@@ -339,7 +358,7 @@ async def media_item(
             ),
             None,
         )
-    if artifact.send_type == "audio":
+    if send_type == "audio":
         cover = await asyncio.to_thread(_extract_cover, artifact.path) if local else None
         return (
             InputMediaAudio(
@@ -352,7 +371,7 @@ async def media_item(
             ),
             cover,
         )
-    if artifact.send_type == "video_note":
+    if send_type == "video_note":
         # A video note cannot travel in a media group or an inline edit, so it
         # degrades to a regular video of the same length.
         return (
@@ -412,7 +431,7 @@ async def _send_single(
             return await getattr(reply, f"reply_{method}")(**kwargs)
         return await getattr(bot, f"send_{method}")(chat_id=chat_id, **kwargs)
 
-    send_type = artifact.send_type
+    send_type = send_kind(artifact)
     caption, overflow = text.split_caption(artifact.caption)
     facts = await media_facts(artifact)
     extracted_cover: Path | None = None
@@ -509,7 +528,7 @@ async def _send_group(
     for (artifact, _), sent in zip(entries, sent_group, strict=False):
         entry = cached_media_from(
             sent,
-            send_type=artifact.send_type,
+            send_type=send_kind(artifact),
             file_name=artifact.file_name,
             caption=artifact.caption,
         )

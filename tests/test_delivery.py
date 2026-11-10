@@ -126,6 +126,31 @@ async def test_direct_delivery_uses_artifact_file_name(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_photo_over_ten_megabytes_is_sent_as_a_file(tmp_path):
+    """Telegram rejects photos over 10 MB, so such a photo goes out as a document."""
+    path = write_media(tmp_path / "huge.jpg", "jpg")
+    with path.open("ab") as handle:
+        handle.truncate(10 * 1024 * 1024 + 1)
+    artifact = make_artifact(path, "photo")
+    bot = SimpleNamespace(
+        send_document=AsyncMock(
+            return_value=SimpleNamespace(document=SimpleNamespace(file_id="D1"))
+        ),
+        send_photo=AsyncMock(),
+    )
+
+    entries = await DirectDelivery(bot, 99).deliver(
+        [artifact], started_at=datetime.now()
+    )
+    item, _ = await media_item(artifact, None, media="FILEID")
+
+    assert bot.send_photo.await_count == 0
+    assert bot.send_document.await_args.kwargs["document"].filename == "huge.jpg"
+    assert isinstance(item, InputMediaDocument)
+    assert entries[0].send_type == "document"
+
+
+@pytest.mark.asyncio
 async def test_deliver_single_delegates(monkeypatch, tmp_path):
     artifact = make_artifact(write_media(tmp_path / "a.jpg", "jpg"), "photo")
     single_mock = AsyncMock(return_value=None)
