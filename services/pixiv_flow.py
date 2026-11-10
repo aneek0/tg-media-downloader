@@ -24,12 +24,14 @@ from config import Settings
 from services import pixiv
 from services.delivery import ChatDelivery, DirectDelivery
 from services.gallery import download_gallery_media
+from services.media_cache import MediaCache
 from services.session import Session
 from services.status import StatusSurface
 from utils import text
 from utils.keyboards import pixiv_page_keyboard
 from utils.logging_config import safe_url_label
 from utils.models import (
+    CachedMedia,
     ParsedInput,
     PixivProfilePayload,
     RequestType,
@@ -93,10 +95,6 @@ def _record_page(
 _PAGES: dict[tuple[str, int], tuple[list[pixiv.PixivWork], bool]] = {}
 _PAGES_KEPT = 16
 _prefetch_tasks: set[asyncio.Task] = set()
-# work_id -> the photo Telegram already holds for this chat, so a revisit
-# re-sends it by file_id instead of uploading the file again.
-_PHOTO_IDS: dict[str, str] = {}
-_PHOTOS_KEPT = 200
 
 
 def _remember(
@@ -129,7 +127,7 @@ async def _load_page(
 
 
 async def _prefetch_next(
-    settings: Settings,
+    session: Session,
     payload: PixivProfilePayload,
     page: int,
     work_dir: Path,
@@ -141,11 +139,18 @@ async def _prefetch_next(
     if (payload.user_id, start) in _PAGES:
         return
     try:
-        works, next_offset = await pixiv.user_works(settings, payload.user_id, start)
+        works, next_offset = await pixiv.user_works(
+            session.settings, payload.user_id, start
+        )
         taken = pixiv.page_works(works)
         if not taken:
             return
-        await pixiv.download_covers(settings, taken, work_dir / str(start))
+        known = _cached_cover_ids(session.media_cache, taken)
+        await pixiv.download_covers(
+            session.settings,
+            [work for work in taken if work.work_id not in known],
+            work_dir / str(start),
+        )
     except (pixiv.PixivError, aiohttp.ClientError, OSError) as exc:  # warm-up only
         logger.info(
             "Pixiv page prefetch failed | user=%s start=%s error=%s",
@@ -160,9 +165,9 @@ async def _prefetch_next(
 
 
 def _start_prefetch(
-    settings: Settings, payload: PixivProfilePayload, page: int, work_dir: Path
+    session: Session, payload: PixivProfilePayload, page: int, work_dir: Path
 ) -> None:
-    task = asyncio.create_task(_prefetch_next(settings, payload, page, work_dir))
+    task = asyncio.create_task(_prefetch_next(session, payload, page, work_dir))
     _prefetch_tasks.add(task)
     task.add_done_callback(_prefetch_tasks.discard)
 
@@ -221,32 +226,62 @@ def _photo_file_id(message) -> str | None:
     return photos[-1].file_id if photos else None
 
 
-def _photo_media(path: Path):
-    """A cover already sent to this chat travels as its file_id: Telegram
-    skips the upload entirely."""
-    file_id = _PHOTO_IDS.get(path.stem)
-    return file_id if file_id else FSInputFile(path)
+def _cover_path(page_dir: Path, work: pixiv.PixivWork) -> Path | None:
+    path = page_dir / f"{work.work_id}.jpg"
+    return path if path.exists() else None
 
 
-async def _send_cover_album(bot: Bot, chat_id: int, covers: list[Path]) -> list[int]:
-    """Covers travel as files: Telegram cannot fetch i.pximg.net URLs."""
-    if not covers:
+def _cached_cover_ids(
+    media_cache: MediaCache, works: list[pixiv.PixivWork]
+) -> dict[str, str]:
+    """work_id -> file_id for covers this chat already sent."""
+    known: dict[str, str] = {}
+    for work in works:
+        cached = media_cache.get(work.cover_url) if work.cover_url else None
+        if cached:
+            known[work.work_id] = cached[0].file_id
+    return known
+
+
+async def _send_cover_album(
+    media_cache: MediaCache,
+    bot: Bot,
+    chat_id: int,
+    items: list[tuple[str, str | None, Path | None]],
+) -> list[int]:
+    """Covers travel as files: Telegram cannot fetch i.pximg.net URLs.
+
+    ``items`` is ``(cover_url, file_id, path)`` per Work in page order; a
+    file_id means Telegram already holds the photo, so nothing is uploaded."""
+    used: list[tuple[str, str | None, Path | None]] = []
+    media: list[str | FSInputFile] = []
+    for item in items:
+        if item[1]:
+            media.append(item[1])
+        elif item[2] is not None:
+            media.append(FSInputFile(item[2]))
+        else:
+            continue
+        used.append(item)
+    if not media:
         return []
-    media = [_photo_media(path) for path in covers]
-    if len(covers) == 1:
-        sent = await bot.send_photo(chat_id=chat_id, photo=media[0])
-        sent_messages = [sent]
+    if len(media) == 1:
+        sent_messages = [await bot.send_photo(chat_id=chat_id, photo=media[0])]
     else:
         sent_messages = await bot.send_media_group(
             chat_id=chat_id,
             media=[InputMediaPhoto(media=item) for item in media],
         )
-    for path, message in zip(covers, sent_messages, strict=False):
-        file_id = _photo_file_id(message)
-        if file_id:
-            while len(_PHOTO_IDS) >= _PHOTOS_KEPT:
-                _PHOTO_IDS.pop(next(iter(_PHOTO_IDS)))
-            _PHOTO_IDS[path.stem] = file_id
+    await asyncio.gather(
+        *(
+            media_cache.record(
+                url,
+                [CachedMedia(file_id=new_id, send_type="photo", file_name="cover")],
+            )
+            for (url, uploaded, _path), message in zip(used, sent_messages, strict=False)
+            if not uploaded and (new_id := _photo_file_id(message))
+        )
+    )
     return [message.message_id for message in sent_messages]
 
 
@@ -329,20 +364,31 @@ async def render_page(
         return
     fetched = time.monotonic()
     work_dir = session.request_store.work_directory(stored.token) / "previews"
-    # Covers are cached on disk per Work, so a page the user returns to costs
-    # no Pixiv round trip; the work directory clears them with the token.
-    covers = await pixiv.download_covers(settings, taken, work_dir / str(start))
+    page_dir = work_dir / str(start)
+    # Cover photos this chat already holds come from the media cache: no
+    # download, no upload. The rest are fetched once and kept on disk under
+    # the token's work directory until browsing ends.
+    known = _cached_cover_ids(session.media_cache, taken)
+    await pixiv.download_covers(
+        settings, [work for work in taken if work.work_id not in known], page_dir
+    )
     fetched_covers = time.monotonic()
+    items = [
+        (work.cover_url, known.get(work.work_id), _cover_path(page_dir, work))
+        for work in taken
+    ]
     # The old album and the old panel go away while the new album uploads;
     # waiting for ten deletes first is what made a page switch feel slow.
+    old_ids = list(payload.preview_ids)
+
     async def drop_old() -> None:
         await asyncio.gather(
-            _delete_previews(bot, chat_id, payload.preview_ids), status.retire()
+            _delete_previews(bot, chat_id, old_ids), status.retire()
         )
 
     dropped = asyncio.create_task(drop_old())
     try:
-        message_ids = await _send_cover_album(bot, chat_id, covers)
+        message_ids = await _send_cover_album(session.media_cache, bot, chat_id, items)
     except TelegramAPIError as exc:
         logger.warning("Pixiv cover album failed | token=%s error=%s", stored.token, exc)
         message_ids = []
@@ -354,7 +400,7 @@ async def render_page(
         stored.token,
         page,
         len(taken),
-        len(covers),
+        len(items),
         fetched - started,
         fetched_covers - fetched,
         album_done - fetched_covers,
@@ -362,7 +408,7 @@ async def render_page(
     payload.preview_ids = message_ids
     _record_page(payload, page, start, taken, more)
     _persist(session, stored, payload)
-    _start_prefetch(settings, payload, page, work_dir)
+    _start_prefetch(session, payload, page, work_dir)
     # The Work buttons belong under the previews; the previous panel was
     # already retired above, so this one lands after the album.
     await bot.send_message(

@@ -32,7 +32,6 @@ def isolated_gallery_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     cache_home.mkdir()
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
     pixiv_flow._PAGES.clear()
-    pixiv_flow._PHOTO_IDS.clear()
     return cache_home
 
 
@@ -492,19 +491,22 @@ def test_inline_cookie_file_content_is_written_out(tmp_path: Path) -> None:
     assert os.stat(path).st_size > 0
 
 
-def make_rendering_bot(tmp_path: Path):
-    covers = [tmp_path / f"cover{index}.jpg" for index in range(2)]
-
-    async def fake_covers(_settings, _works, _directory):
-        for path in covers:
+def make_rendering_bot():
+    async def fake_covers(_settings, works, directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = [directory / f"{work.work_id}.jpg" for work in works]
+        for path in paths:
             path.write_bytes(b"jpg")
-        return covers
+        return paths
 
     bot = SimpleNamespace(
         send_media_group=AsyncMock(
-            return_value=[SimpleNamespace(message_id=21), SimpleNamespace(message_id=22)]
+            return_value=[
+                SimpleNamespace(message_id=21, photo=[]),
+                SimpleNamespace(message_id=22, photo=[]),
+            ]
         ),
-        send_photo=AsyncMock(return_value=SimpleNamespace(message_id=21)),
+        send_photo=AsyncMock(return_value=SimpleNamespace(message_id=21, photo=[])),
         send_message=AsyncMock(),
         delete_message=AsyncMock(),
     )
@@ -527,7 +529,7 @@ async def test_render_page_persists_state_replaces_previews_and_shows_buttons(
             preview_ids=[7],
         ),
     )
-    bot, fake_covers = make_rendering_bot(tmp_path)
+    bot, fake_covers = make_rendering_bot()
     monkeypatch.setattr(
         "services.pixiv.user_works",
         AsyncMock(return_value=([make_work("5"), make_work("4")], None)),
@@ -1266,8 +1268,13 @@ async def test_visited_page_is_served_from_memory_on_the_way_back(
 
 
 @pytest.mark.asyncio
-async def test_second_album_reuses_the_photo_file_ids(tmp_path: Path) -> None:
-    """A revisited page resends Telegram's own photos instead of uploading."""
+async def test_album_records_cover_file_ids_and_resends_them(
+    tmp_path: Path,
+) -> None:
+    """A visited page resends Telegram's own photos instead of uploading."""
+    from services.media_cache import MediaCache
+
+    media_cache = MediaCache(tmp_path / "media_cache.json")
     covers = []
     for work_id in ("11", "12"):
         path = tmp_path / f"{work_id}.jpg"
@@ -1283,9 +1290,21 @@ async def test_second_album_reuses_the_photo_file_ids(tmp_path: Path) -> None:
             ]
         )
     )
+    items = [
+        (f"https://i/c{work_id}.jpg", None, path)
+        for work_id, path in zip(("11", "12"), covers, strict=True)
+    ]
 
-    await pixiv_flow._send_cover_album(bot, 500, covers)
-    await pixiv_flow._send_cover_album(bot, 500, covers)
+    await pixiv_flow._send_cover_album(media_cache, bot, 500, items)
+    known = pixiv_flow._cached_cover_ids(
+        media_cache,
+        [pixiv.PixivWork(work_id, "t", "a", 1, f"https://i/c{work_id}.jpg", False)
+         for work_id in ("11", "12")],
+    )
+    await pixiv_flow._send_cover_album(
+        media_cache, bot, 500, [(url, known[work], path) for (url, _, path), work in
+                                zip(items, ("11", "12"), strict=True)]
+    )
 
     media = bot.send_media_group.await_args.kwargs["media"]
     assert [item.media for item in media] == ["file-11", "file-12"]
