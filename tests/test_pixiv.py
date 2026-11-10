@@ -31,7 +31,7 @@ def isolated_gallery_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     cache_home = tmp_path / "xdg-cache"
     cache_home.mkdir()
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
-    pixiv_flow._PREFETCHED.clear()
+    pixiv_flow._PAGES.clear()
     return cache_home
 
 
@@ -1229,7 +1229,7 @@ async def test_prefetched_page_is_served_without_another_pixiv_call(
     settings = make_pixiv_settings(tmp_path)
     payload = PixivProfilePayload(user_id="456", offsets=[0, 10], more=[True, True])
     taken = [pixiv.PixivWork("3", "three", "artist", 1, "https://i/c3.jpg", False)]
-    pixiv_flow._PREFETCHED[("456", 10)] = (taken, False)
+    pixiv_flow._PAGES[("456", 10)] = (taken, False)
 
     async def fail(*_args, **_kwargs):
         raise AssertionError("prefetched page must not hit the API")
@@ -1239,4 +1239,26 @@ async def test_prefetched_page_is_served_without_another_pixiv_call(
     start, works, more = await pixiv_flow._load_page(settings, payload, 1)
 
     assert (start, works, more) == (10, taken, False)
-    assert ("456", 10) not in pixiv_flow._PREFETCHED
+    assert ("456", 10) in pixiv_flow._PAGES
+
+
+@pytest.mark.asyncio
+async def test_visited_page_is_served_from_memory_on_the_way_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paging back to a page already shown must not re-ask Pixiv for it."""
+    settings = make_pixiv_settings(tmp_path)
+    payload = PixivProfilePayload(user_id="789", offsets=[0, 10], more=[True, True])
+    calls: list[int] = []
+
+    async def fake_works(_settings, _user_id, offset):
+        calls.append(offset)
+        return [pixiv.PixivWork(str(offset), f"w{offset}", "a", 1, "", False)], None
+
+    monkeypatch.setattr("services.pixiv.user_works", fake_works)
+
+    await pixiv_flow._load_page(settings, payload, 0)
+    await pixiv_flow._load_page(settings, payload, 1)
+    await pixiv_flow._load_page(settings, payload, 0)
+
+    assert calls == [0, 10]

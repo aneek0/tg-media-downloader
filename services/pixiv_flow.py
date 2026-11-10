@@ -86,13 +86,21 @@ def _record_page(
         payload.more.append(True)
 
 
-# One artist page is a Pixiv API round trip (~2 s behind the proxy) plus its
-# covers (~2 s), so the next page is fetched while the user looks at this one:
-# (user_id, start) -> the page _load_page would otherwise fetch.
-# shortcut: in-memory only and capped; a restart or a third artist drops it.
-_PREFETCHED: dict[tuple[str, int], tuple[list[pixiv.PixivWork], bool]] = {}
-_PREFETCH_PAGES = 16
+# One artist page is a Pixiv API round trip (~2-4 s behind the proxy) plus its
+# covers (~2 s), so every page is remembered once fetched and the next one is
+# warmed while the user looks at this one: (user_id, start) -> Works, more.
+# shortcut: in-memory only and capped; a restart or a 17th page drops it.
+_PAGES: dict[tuple[str, int], tuple[list[pixiv.PixivWork], bool]] = {}
+_PAGES_KEPT = 16
 _prefetch_tasks: set[asyncio.Task] = set()
+
+
+def _remember(
+    user_id: str, start: int, taken: list[pixiv.PixivWork], more: bool
+) -> None:
+    while len(_PAGES) >= _PAGES_KEPT:
+        _PAGES.pop(next(iter(_PAGES)))
+    _PAGES[(user_id, start)] = (taken, more)
 
 
 async def _load_page(
@@ -103,7 +111,7 @@ async def _load_page(
     if page < 0 or page >= len(payload.offsets):
         raise pixiv.PixivError(text.PIXIV_NO_MORE_PAGES)
     start = payload.offsets[page]
-    cached = _PREFETCHED.pop((payload.user_id, start), None)
+    cached = _PAGES.get((payload.user_id, start))
     if cached is not None:
         taken, more = cached
         return start, taken, more
@@ -111,7 +119,9 @@ async def _load_page(
     taken = pixiv.page_works(works)
     if not taken:
         raise pixiv.PixivError(text.PIXIV_NO_MORE_PAGES)
-    return start, taken, next_offset is not None or len(taken) < len(works)
+    more = next_offset is not None or len(taken) < len(works)
+    _remember(payload.user_id, start, taken, more)
+    return start, taken, more
 
 
 async def _prefetch_next(
@@ -124,7 +134,7 @@ async def _prefetch_next(
     if page + 1 >= len(payload.offsets) or not payload.more[page]:
         return
     start = payload.offsets[page + 1]
-    if (payload.user_id, start) in _PREFETCHED:
+    if (payload.user_id, start) in _PAGES:
         return
     try:
         works, next_offset = await pixiv.user_works(settings, payload.user_id, start)
@@ -140,11 +150,8 @@ async def _prefetch_next(
             exc,
         )
         return
-    while len(_PREFETCHED) >= _PREFETCH_PAGES:
-        _PREFETCHED.pop(next(iter(_PREFETCHED)))
-    _PREFETCHED[(payload.user_id, start)] = (
-        taken,
-        next_offset is not None or len(taken) < len(works),
+    _remember(
+        payload.user_id, start, taken, next_offset is not None or len(taken) < len(works)
     )
 
 
