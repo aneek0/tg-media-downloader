@@ -286,16 +286,15 @@ async def _send_cover_album(
 
 
 async def _delete_previews(bot: Bot, chat_id: int, message_ids: list[int]) -> None:
-    """Drop the previous page's album; concurrent, because ten sequential
-    deletes cost more than the upload they replace."""
-
-    async def drop(message_id: int) -> None:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except TelegramAPIError:
-            return
-
-    await asyncio.gather(*(drop(message_id) for message_id in message_ids))
+    """Drop the previous page's album in one call: a media group is a set of
+    separate messages, so Telegram has no album-level delete, but
+    deleteMessages takes them all at once."""
+    if not message_ids:
+        return
+    try:
+        await bot.delete_messages(chat_id=chat_id, message_ids=message_ids)
+    except TelegramAPIError as exc:
+        logger.info("Pixiv preview delete failed | chat=%s error=%s", chat_id, exc)
 
 
 async def open_profile(
@@ -311,7 +310,7 @@ async def open_profile(
     await status.edit(text.PIXIV_LOADING)
     try:
         user_id = await pixiv.resolve_profile_user_id(source_url, settings)
-        works, _ = await pixiv.user_works(settings, user_id, 0)
+        works, next_offset = await pixiv.user_works(settings, user_id, 0)
     except Exception as exc:  # noqa: BLE001 - user-facing boundary
         logger.warning(
             "Pixiv profile lookup failed | source=%s error=%s",
@@ -322,9 +321,13 @@ async def open_profile(
             f"{text.DOWNLOAD_FAILED}\n<code>{text.esc(pixiv.friendly_error(exc))}</code>"
         )
         return
-    if not works:
+    taken = pixiv.page_works(works)
+    if not taken:
         await status.fail(text.PIXIV_NO_WORKS)
         return
+    # The first page was just fetched; hand it to render_page instead of
+    # asking Pixiv for the same window a second time.
+    _remember(user_id, 0, taken, next_offset is not None or len(taken) < len(works))
     stored = session.request_store.open(
         RequestType.PIXIV_PROFILE,
         ParsedInput(source_url=source_url),
@@ -386,6 +389,7 @@ async def render_page(
             _delete_previews(bot, chat_id, old_ids), status.retire()
         )
 
+    started_drop = time.monotonic()
     dropped = asyncio.create_task(drop_old())
     try:
         message_ids = await _send_cover_album(session.media_cache, bot, chat_id, items)
@@ -396,7 +400,7 @@ async def render_page(
     await dropped
     logger.info(
         "Pixiv page rendered | token=%s page=%s works=%s covers=%s api=%.2fs"
-        " covers=%.2fs album=%.2fs",
+        " covers=%.2fs album=%.2fs drop=%.2fs",
         stored.token,
         page,
         len(taken),
@@ -404,6 +408,7 @@ async def render_page(
         fetched - started,
         fetched_covers - fetched,
         album_done - fetched_covers,
+        time.monotonic() - started_drop,
     )
     payload.preview_ids = message_ids
     _record_page(payload, page, start, taken, more)

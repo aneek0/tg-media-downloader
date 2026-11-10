@@ -508,7 +508,7 @@ def make_rendering_bot():
         ),
         send_photo=AsyncMock(return_value=SimpleNamespace(message_id=21, photo=[])),
         send_message=AsyncMock(),
-        delete_message=AsyncMock(),
+        delete_messages=AsyncMock(),
     )
     return bot, fake_covers
 
@@ -541,7 +541,7 @@ async def test_render_page_persists_state_replaces_previews_and_shows_buttons(
         session, bot=bot, stored=stored, page=0, chat_id=500, status=status
     )
 
-    bot.delete_message.assert_awaited_once_with(chat_id=500, message_id=7)
+    bot.delete_messages.assert_awaited_once_with(chat_id=500, message_ids=[7])
     bot.send_media_group.assert_awaited_once()
     payload = session.request_store.load(stored.token).payload
     assert payload.preview_ids == [21, 22]
