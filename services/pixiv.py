@@ -433,11 +433,15 @@ async def download_covers(
     connector = _connector(settings)
 
     async def cover(
-        client: aiohttp.ClientSession, index: int, item: PixivWork
+        client: aiohttp.ClientSession, item: PixivWork
     ) -> Path | None:
         if not item.cover_url:
             return None
-        target = directory / f"{index:02d}_{item.work_id}.jpg"
+        # Keyed by Work so a page the user returns to reuses the same files;
+        # the request's work directory removes them when browsing ends.
+        target = directory / f"{item.work_id}.jpg"
+        if target.exists() and target.stat().st_size:
+            return target
         async with limiter:
             try:
                 async with client.get(
@@ -446,7 +450,9 @@ async def download_covers(
                     proxy=settings.http_proxy or None,
                 ) as response:
                     response.raise_for_status()
-                    target.write_bytes(await response.read())
+                    partial = target.with_name(f"{target.name}.part")
+                    partial.write_bytes(await response.read())
+                    partial.replace(target)
             except (aiohttp.ClientError, OSError) as exc:
                 logger.info(
                     "Pixiv cover download failed | work=%s error=%s", item.work_id, exc
@@ -455,9 +461,7 @@ async def download_covers(
         return target
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as client:
-        paths = await asyncio.gather(
-            *(cover(client, index, item) for index, item in enumerate(works))
-        )
+        paths = await asyncio.gather(*(cover(client, item) for item in works))
     return [path for path in paths if path is not None]
 
 

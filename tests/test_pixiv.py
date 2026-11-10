@@ -1168,3 +1168,53 @@ async def test_profile_page_downloads_works_concurrently_in_page_order(
         "https://www.pixiv.net/artworks/2",
         "https://www.pixiv.net/artworks/1",
     ]
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+@pytest.mark.asyncio
+async def test_download_covers_reuses_files_cached_for_a_visited_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Returning to a Profile Page must not ask Pixiv for its covers again."""
+    settings = make_pixiv_settings(tmp_path)
+    directory = tmp_path / "previews"
+    works = [pixiv.PixivWork("7", "one", "artist", 1, "https://i/c7.jpg", False)]
+    requests: list[str] = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            return None
+
+        def get(self, url, **_kwargs):
+            requests.append(url)
+            return _FakeResponse(b"jpg")
+
+    monkeypatch.setattr("services.pixiv.aiohttp.ClientSession", FakeSession)
+
+    first = await pixiv.download_covers(settings, works, directory)
+    second = await pixiv.download_covers(settings, works, directory)
+
+    assert first == second == [directory / "7.jpg"]
+    assert requests == ["https://i/c7.jpg"]

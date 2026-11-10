@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -228,21 +229,34 @@ async def render_page(
     settings = session.settings
     payload = payload_of(stored)
     try:
+        started = time.monotonic()
         start, taken, more = await _load_page(settings, payload, page)
     except pixiv.PixivError as exc:
         await status.fail(text.esc(str(exc)))
         return
+    fetched = time.monotonic()
     work_dir = session.request_store.work_directory(stored.token) / "previews"
+    # Covers are cached on disk per Work, so a page the user returns to costs
+    # no Pixiv round trip; the work directory clears them with the token.
     covers = await pixiv.download_covers(settings, taken, work_dir / str(start))
+    fetched_covers = time.monotonic()
     await _delete_previews(bot, chat_id, payload.preview_ids)
     try:
         message_ids = await _send_cover_album(bot, chat_id, covers)
     except TelegramAPIError as exc:
         logger.warning("Pixiv cover album failed | token=%s error=%s", stored.token, exc)
         message_ids = []
-    finally:
-        for path in covers:
-            path.unlink(missing_ok=True)
+    logger.info(
+        "Pixiv page rendered | token=%s page=%s works=%s covers=%s api=%.2fs"
+        " covers=%.2fs album=%.2fs",
+        stored.token,
+        page,
+        len(taken),
+        len(covers),
+        fetched - started,
+        fetched_covers - fetched,
+        time.monotonic() - fetched_covers,
+    )
     payload.preview_ids = message_ids
     _record_page(payload, page, start, taken, more)
     _persist(session, stored, payload)
