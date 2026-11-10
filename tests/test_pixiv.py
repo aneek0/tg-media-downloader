@@ -31,6 +31,7 @@ def isolated_gallery_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     cache_home = tmp_path / "xdg-cache"
     cache_home.mkdir()
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    pixiv_flow._PREFETCHED.clear()
     return cache_home
 
 
@@ -1218,3 +1219,24 @@ async def test_download_covers_reuses_files_cached_for_a_visited_page(
 
     assert first == second == [directory / "7.jpg"]
     assert requests == ["https://i/c7.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_prefetched_page_is_served_without_another_pixiv_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next arrow must not pay for a page the prefetch already pulled."""
+    settings = make_pixiv_settings(tmp_path)
+    payload = PixivProfilePayload(user_id="456", offsets=[0, 10], more=[True, True])
+    taken = [pixiv.PixivWork("3", "three", "artist", 1, "https://i/c3.jpg", False)]
+    pixiv_flow._PREFETCHED[("456", 10)] = (taken, False)
+
+    async def fail(*_args, **_kwargs):
+        raise AssertionError("prefetched page must not hit the API")
+
+    monkeypatch.setattr("services.pixiv.user_works", fail)
+
+    start, works, more = await pixiv_flow._load_page(settings, payload, 1)
+
+    assert (start, works, more) == (10, taken, False)
+    assert ("456", 10) not in pixiv_flow._PREFETCHED

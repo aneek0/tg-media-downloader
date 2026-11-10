@@ -13,7 +13,9 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
+import aiohttp
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, InputMediaPhoto, Message
@@ -84,6 +86,15 @@ def _record_page(
         payload.more.append(True)
 
 
+# One artist page is a Pixiv API round trip (~2 s behind the proxy) plus its
+# covers (~2 s), so the next page is fetched while the user looks at this one:
+# (user_id, start) -> the page _load_page would otherwise fetch.
+# shortcut: in-memory only and capped; a restart or a third artist drops it.
+_PREFETCHED: dict[tuple[str, int], tuple[list[pixiv.PixivWork], bool]] = {}
+_PREFETCH_PAGES = 16
+_prefetch_tasks: set[asyncio.Task] = set()
+
+
 async def _load_page(
     settings: Settings, payload: PixivProfilePayload, page: int
 ) -> tuple[int, list[pixiv.PixivWork], bool]:
@@ -92,11 +103,57 @@ async def _load_page(
     if page < 0 or page >= len(payload.offsets):
         raise pixiv.PixivError(text.PIXIV_NO_MORE_PAGES)
     start = payload.offsets[page]
+    cached = _PREFETCHED.pop((payload.user_id, start), None)
+    if cached is not None:
+        taken, more = cached
+        return start, taken, more
     works, next_offset = await pixiv.user_works(settings, payload.user_id, start)
     taken = pixiv.page_works(works)
     if not taken:
         raise pixiv.PixivError(text.PIXIV_NO_MORE_PAGES)
     return start, taken, next_offset is not None or len(taken) < len(works)
+
+
+async def _prefetch_next(
+    settings: Settings,
+    payload: PixivProfilePayload,
+    page: int,
+    work_dir: Path,
+) -> None:
+    """Warm the page the next arrow opens: its Works and their covers."""
+    if page + 1 >= len(payload.offsets) or not payload.more[page]:
+        return
+    start = payload.offsets[page + 1]
+    if (payload.user_id, start) in _PREFETCHED:
+        return
+    try:
+        works, next_offset = await pixiv.user_works(settings, payload.user_id, start)
+        taken = pixiv.page_works(works)
+        if not taken:
+            return
+        await pixiv.download_covers(settings, taken, work_dir / str(start))
+    except (pixiv.PixivError, aiohttp.ClientError, OSError) as exc:  # warm-up only
+        logger.info(
+            "Pixiv page prefetch failed | user=%s start=%s error=%s",
+            payload.user_id,
+            start,
+            exc,
+        )
+        return
+    while len(_PREFETCHED) >= _PREFETCH_PAGES:
+        _PREFETCHED.pop(next(iter(_PREFETCHED)))
+    _PREFETCHED[(payload.user_id, start)] = (
+        taken,
+        next_offset is not None or len(taken) < len(works),
+    )
+
+
+def _start_prefetch(
+    settings: Settings, payload: PixivProfilePayload, page: int, work_dir: Path
+) -> None:
+    task = asyncio.create_task(_prefetch_next(settings, payload, page, work_dir))
+    _prefetch_tasks.add(task)
+    task.add_done_callback(_prefetch_tasks.discard)
 
 
 def work_labels(start: int, taken: list[pixiv.PixivWork]) -> list[str]:
@@ -260,6 +317,7 @@ async def render_page(
     payload.preview_ids = message_ids
     _record_page(payload, page, start, taken, more)
     _persist(session, stored, payload)
+    _start_prefetch(settings, payload, page, work_dir)
     # The Work buttons belong under the previews, and an edited message cannot
     # move: drop the previous page message and post the new one after the
     # album. Inline surfaces keep their own message (see _pixiv_inline).
