@@ -309,28 +309,40 @@ async def _app_get(
     return payload
 
 
+# One session per proxy setting for the whole process: a fresh TLS handshake
+# costs 0.3-1.3 s here, and every page would otherwise pay for two of them.
+_shared: dict[str, aiohttp.ClientSession] = {}
+
+
 def _client(settings: Settings) -> aiohttp.ClientSession:
-    timeout = aiohttp.ClientTimeout(total=max(settings.gallery_probe_timeout, 30))
-    return aiohttp.ClientSession(timeout=timeout, connector=_connector(settings))
+    proxy = settings.http_proxy or ""
+    session = _shared.get(proxy)
+    if session is None or getattr(session, "closed", False):
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=settings.process_max_timeout),
+            connector=_connector(settings),
+        )
+        _shared[proxy] = session
+    return session
 
 
 async def user_works(
     settings: Settings, user_id: str, offset: int, limit: int = PIXIV_PAGE_WORKS
 ) -> tuple[list[PixivWork], int | None]:
     """One window of an artist's works, plus the next offset (None at the end)."""
-    async with _client(settings) as client:
-        payload = await _app_get(
-            settings,
-            client,
-            "/v1/user/illusts",
-            {
-                "user_id": user_id,
-                "type": "illust",
-                "offset": offset,
-                "limit": limit,
-                "filter": "for_ios",
-            },
-        )
+    client = _client(settings)
+    payload = await _app_get(
+        settings,
+        client,
+        "/v1/user/illusts",
+        {
+            "user_id": user_id,
+            "type": "illust",
+            "offset": offset,
+            "limit": limit,
+            "filter": "for_ios",
+        },
+    )
     works = [
         work
         for work in (_work_from_json(item) for item in payload.get("illusts") or [])
@@ -349,10 +361,9 @@ async def user_works(
 
 async def work(settings: Settings, identifier: str) -> PixivWork:
     """Metadata for one Work, by id."""
-    async with _client(settings) as client:
-        payload = await _app_get(
-            settings, client, "/v1/illust/detail", {"illust_id": identifier}
-        )
+    payload = await _app_get(
+        settings, _client(settings), "/v1/illust/detail", {"illust_id": identifier}
+    )
     parsed = _work_from_json(payload.get("illust"))
     if parsed is None:
         raise PixivError("Pixiv did not return this work.")
@@ -405,13 +416,9 @@ async def resolve_profile_user_id(url: str, settings: Settings) -> str:
         return known
     if (urlparse(url).hostname or "").lower() != "pixiv.me":
         raise PixivError("This Pixiv link is not a user profile.")
-    timeout = aiohttp.ClientTimeout(total=max(settings.gallery_probe_timeout, 30))
-    async with (
-        aiohttp.ClientSession(
-            timeout=timeout, connector=_connector(settings)
-        ) as client,
-        client.get(url, headers=_image_headers(settings), allow_redirects=True) as response,
-    ):
+    async with _client(settings).get(
+        url, headers=_image_headers(settings), allow_redirects=True
+    ) as response:
         final = str(response.url)
     resolved = profile_user_id(final)
     if not resolved:
@@ -428,9 +435,7 @@ async def download_covers(
     """Fetch Work covers locally: Telegram cannot fetch i.pximg.net itself."""
     directory.mkdir(parents=True, exist_ok=True)
     headers = _image_headers(settings)
-    timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
     limiter = asyncio.Semaphore(PIXIV_COVER_DOWNLOADS)
-    connector = _connector(settings)
 
     async def cover(
         client: aiohttp.ClientSession, item: PixivWork
@@ -460,8 +465,7 @@ async def download_covers(
                 return None
         return target
 
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as client:
-        paths = await asyncio.gather(*(cover(client, item) for item in works))
+    paths = await asyncio.gather(*(cover(_client(settings), item) for item in works))
     return [path for path in paths if path is not None]
 
 

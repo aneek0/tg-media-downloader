@@ -25,13 +25,18 @@ from utils.models import ParsedInput, PixivProfilePayload, RequestType
 
 
 @pytest.fixture(autouse=True)
-def isolated_gallery_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+async def isolated_gallery_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Keep gallery-dl's OAuth cache away from the developer's real one, so a
     locally cached Pixiv token cannot change test outcomes."""
     cache_home = tmp_path / "xdg-cache"
     cache_home.mkdir()
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
     pixiv_flow._PAGES.clear()
+    for session in pixiv._shared.values():
+        close = getattr(session, "close", None)
+        if close is not None and not getattr(session, "closed", True):
+            await close()
+    pixiv._shared.clear()
     return cache_home
 
 
