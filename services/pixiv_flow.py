@@ -307,9 +307,12 @@ async def open_profile(
 ) -> None:
     """Resolve the artist and show its first Profile Page."""
     settings = session.settings
+    awaiting = time.monotonic()
     await status.edit(text.PIXIV_LOADING)
+    edited = time.monotonic()
     try:
         user_id = await pixiv.resolve_profile_user_id(source_url, settings)
+        resolved = time.monotonic()
         works, next_offset = await pixiv.user_works(settings, user_id, 0)
     except Exception as exc:  # noqa: BLE001 - user-facing boundary
         logger.warning(
@@ -338,9 +341,13 @@ async def open_profile(
         ),
     )
     logger.info(
-        "Pixiv profile opened | token=%s user=%s",
+        "Pixiv profile opened | token=%s user=%s loading=%.2fs resolve=%.2fs"
+        " works=%.2fs",
         stored.token,
         user_id,
+        edited - awaiting,
+        resolved - edited,
+        time.monotonic() - resolved,
     )
     await render_page(
         session, bot=bot, stored=stored, page=0, chat_id=message.chat.id, status=status
