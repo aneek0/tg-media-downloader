@@ -42,6 +42,9 @@ _PREFIXES = {
     ".pla": "playlist",
 }
 
+#: Art-source prefixes that override the user's provider for one query.
+ART_PREFIXES = {".pxv": "pixiv", ".paw": "pawchive"}
+
 #: Which ``customSearch`` filter each provider expects per requested kind;
 #: ``None`` is the global (mixed) search all supported extensions understand.
 _FILTERS: dict[str, dict[str | None, str | None]] = {

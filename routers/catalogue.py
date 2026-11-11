@@ -18,6 +18,7 @@ from aiogram.types import (
     InputTextMessageContent,
 )
 
+from services import art_search
 from services.catalogue_flow import (
     CardSurface,
     album_card,
@@ -55,6 +56,16 @@ router = Router(name="catalogue")
 logger = logging.getLogger(__name__)
 _SEARCH_CACHE: dict[int, tuple[float, str, SearchResults]] = {}
 _LAST_SEARCH: dict[int, float] = {}
+_CACHE_CAP = 1000
+
+
+def _capped(store: dict, key: int, value) -> None:
+    """Insert into a per-user cache, dropping the oldest entries at the cap
+    so inline strangers cannot grow it forever."""
+    if len(store) >= _CACHE_CAP and key not in store:
+        for stale in list(store)[: len(store) - _CACHE_CAP + 1]:
+            del store[stale]
+    store[key] = value
 
 
 
@@ -127,13 +138,13 @@ async def _music_query(
                     cache_time=1,
                 )
                 return
-            _LAST_SEARCH[user_id] = now
+            _capped(_LAST_SEARCH, user_id, now)
             found = await session.catalogue_search.search(
                 parsed,
                 per_kind=8 if parsed.kind else 4,
                 provider=preferences.provider,
             )
-            _SEARCH_CACHE[user_id] = (now, cache_key, found)
+            _capped(_SEARCH_CACHE, user_id, (now, cache_key, found))
     except (ValueError, RuntimeError) as exc:
         is_network_error = isinstance(exc, CatalogueNetworkError)
         error_message = (
@@ -532,7 +543,10 @@ async def _show_failure(query_bot, inline_message_id: str | None, stored: Stored
 def _load(
     session: Session, token: str, request_type: RequestType
 ) -> StoredRequest | None:
-    stored = session.request_store.load(token)
+    try:
+        stored = session.request_store.load(token)
+    except ValueError:
+        return None  # forged callback data
     if stored is None or stored.request_type != request_type:
         return None
     return stored

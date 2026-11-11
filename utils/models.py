@@ -8,6 +8,11 @@ from typing import Any, Union
 #: Catalogue providers a Music Request can search. The registry behind them
 #: is the owner's mornye extensions (GLOSSARY: Provider).
 CATALOGUE_PROVIDERS = frozenset({"deezer", "spotify-web", "tidal-web"})
+#: Art sources the text search can use besides the music catalogues. Both
+#: reuse the same inline-search surface; their results are gallery requests.
+ART_PROVIDERS = frozenset({"pixiv", "pawchive"})
+#: Everything a user may pick as their text-search provider.
+SEARCH_PROVIDERS = CATALOGUE_PROVIDERS | ART_PROVIDERS
 
 
 def validate_user_id(user_id: Any) -> int:
@@ -28,6 +33,7 @@ class RequestType(StrEnum):
     INLINE_GALLERY = "inline_gallery"
     CATALOGUE_BROWSE = "catalogue_browse"
     PIXIV_PROFILE = "pixiv_profile"
+    PAWCHIVE_PROFILE = "pawchive_profile"
 
 
 @dataclass(slots=True)
@@ -78,6 +84,35 @@ class PixivProfilePayload:
             "user_name": self.user_name,
             "offsets": self.offsets,
             "more": self.more,
+            "preview_ids": self.preview_ids,
+        }
+
+
+@dataclass(slots=True)
+class PawchiveProfilePayload:
+    """Persisted Pawchive creator profile browsing state: the creator's
+    service/id, the offset each visited page starts at, whether another page
+    follows, the post ids and their thumbnail URLs, and the preview message
+    ids to replace on navigation."""
+
+    service: str = ""
+    user_id: str = ""
+    user_name: str = ""
+    offsets: list[int] = field(default_factory=list)
+    more: list[bool] = field(default_factory=list)
+    post_ids: list[list[str]] = field(default_factory=list)
+    post_thumbs: list[list[str]] = field(default_factory=list)
+    preview_ids: list[int] = field(default_factory=list)
+
+    def to_info(self) -> dict[str, Any]:
+        return {
+            "service": self.service,
+            "user_id": self.user_id,
+            "user_name": self.user_name,
+            "offsets": self.offsets,
+            "more": self.more,
+            "post_ids": self.post_ids,
+            "post_thumbs": self.post_thumbs,
             "preview_ids": self.preview_ids,
         }
 
@@ -160,6 +195,7 @@ RequestPayload = Union[
     GalleryPayload,
     InlineGalleryPayload,
     PixivProfilePayload,
+    PawchiveProfilePayload,
     InlineMediaPayload,
     MusicPayload,
     CataloguePayload,
@@ -219,6 +255,21 @@ def request_payload(request_type: RequestType, info: dict[str, Any]) -> RequestP
             user_name=str(info.get("user_name") or ""),
             offsets=[int(item) for item in info.get("offsets") or []],
             more=[bool(item) for item in info.get("more") or []],
+            preview_ids=[int(item) for item in info.get("preview_ids") or []],
+        )
+    if request_type is RequestType.PAWCHIVE_PROFILE:
+        return PawchiveProfilePayload(
+            service=str(info.get("service") or ""),
+            user_id=str(info.get("user_id") or ""),
+            user_name=str(info.get("user_name") or ""),
+            offsets=[int(item) for item in info.get("offsets") or []],
+            more=[bool(item) for item in info.get("more") or []],
+            post_ids=[
+                [str(item) for item in page] for page in info.get("post_ids") or []
+            ],
+            post_thumbs=[
+                [str(item) for item in page] for page in info.get("post_thumbs") or []
+            ],
             preview_ids=[int(item) for item in info.get("preview_ids") or []],
         )
     return ProbePayload(dict(info))

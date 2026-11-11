@@ -20,6 +20,7 @@ from utils.models import (
     InlineMediaPayload,
     MusicPayload,
     ParsedInput,
+    PawchiveProfilePayload,
     PixivProfilePayload,
     ProbePayload,
     RequestPayload,
@@ -42,6 +43,7 @@ _PAYLOAD_TYPES: dict[RequestType, type] = {
     RequestType.INLINE_GALLERY: InlineGalleryPayload,
     RequestType.CATALOGUE_BROWSE: CataloguePayload,
     RequestType.PIXIV_PROFILE: PixivProfilePayload,
+    RequestType.PAWCHIVE_PROFILE: PawchiveProfilePayload,
 }
 
 

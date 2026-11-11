@@ -52,6 +52,22 @@ async def _fail_gallery_error(
 
 
 router = Router(name="intake")
+def _is_art_profile_url(raw: str) -> bool:
+    """An artist profile URL inserted from our own inline search: those must
+    keep flowing into the DM pipeline instead of being swallowed by the
+    own-inline feedback gate."""
+    if not raw:
+        return False
+    try:
+        parsed = parse_user_input(raw)
+    except ValueError:
+        return False
+    url = parsed.source_url
+    return (
+        pixiv.pixiv_kind(url) == "profile"
+        or _pawchive_user_parts(url) is not None
+        or artist_source(url) is not None
+    )
 
 
 def _search_keyboard(query: str) -> InlineKeyboardMarkup:
@@ -78,9 +94,56 @@ def _search_keyboard(query: str) -> InlineKeyboardMarkup:
                     switch_inline_query_current_chat=query,
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=text.SEARCH_PIXIV,
+                    switch_inline_query_current_chat=f".pxv {query}",
+                ),
+                InlineKeyboardButton(
+                    text=text.SEARCH_PAWCHIVE,
+                    switch_inline_query_current_chat=f".paw {query}",
+                ),
+            ],
         ]
     )
 logger = logging.getLogger(__name__)
+async def _handle_pawchive(
+    session: Session,
+    message: Message,
+    parsed: ParsedInput,
+    status: StatusSurface,
+) -> bool:
+    """True when the message was a Pawchive creator page and this handler
+    owns it. A creator page is browsed post by post, never enumerated."""
+    parts = _pawchive_user_parts(parsed.source_url)
+    if parts is None:
+        return False
+    service, user_id = parts
+    from services.pawchive_flow import open_profile
+
+    await open_profile(
+        session,
+        bot=cast(Bot, message.bot),
+        message=message,
+        service=service,
+        user_id=user_id,
+        status=status,
+    )
+    return True
+
+
+def _pawchive_user_parts(url: str) -> tuple[str, str] | None:
+    """(service, user_id) for a pawchive creator page URL, else None."""
+    host = (urlparse(url).hostname or "").lower()
+    if host != "pawchive.pw" and not host.endswith(".pawchive.pw"):
+        return None
+    parts = [part for part in urlparse(url).path.split("/") if part]
+    if len(parts) < 3 or parts[1] != "user":
+        return None
+    # A post URL (/SERVICE/user/ID/post/...) is a media page, not a profile.
+    if len(parts) > 3:
+        return None
+    return parts[0], parts[2]
 
 async def _answer_artist_card(
     message: Message, session: Session, provider: str, artist_id: str
@@ -150,7 +213,11 @@ async def intake_message(  # noqa: C901, PLR0911
     mornye = session.mornye
     raw_text = message.text or ""
     via_bot = message.via_bot
-    if via_bot and via_bot.id == cast(Bot, message.bot).id:
+    own_inline = via_bot and via_bot.id == cast(Bot, message.bot).id
+    if own_inline and not _is_art_profile_url(raw_text):
+        # Telegram returns the bot's own inline article as a DM from the bot
+        # with via_bot = the bot. Music artist links must not re-trigger, but
+        # a Pixiv/Pawchive profile link is meant to open that profile.
         return
     if not message.from_user:
         return
@@ -174,11 +241,6 @@ async def intake_message(  # noqa: C901, PLR0911
         safe_url_label(parsed.source_url),
     )
 
-    artist = artist_source(parsed.source_url)
-    if artist is not None:
-        await _answer_artist_card(message, session, *artist)
-        return
-
     blocked_seconds = cooldown.check(message.from_user.id, settings.auth_users)
     if blocked_seconds:
         minutes = max(1, round(blocked_seconds / 60))
@@ -188,6 +250,11 @@ async def intake_message(  # noqa: C901, PLR0911
             blocked_seconds,
         )
         await message.answer(text.RATE_LIMIT.format(minutes=minutes))
+        return
+
+    artist = artist_source(parsed.source_url)
+    if artist is not None:
+        await _answer_artist_card(message, session, *artist)
         return
 
     preferences = session.preferences(message.from_user.id)
@@ -251,6 +318,9 @@ async def intake_message(  # noqa: C901, PLR0911
                 await media_cache.record(parsed.source_url, [entry])
             await status.done(download_seconds=0, upload_seconds=1)
             return
+
+    if await _handle_pawchive(session, message, parsed, status):
+        return
 
     if await _handle_pixiv(session, message, parsed, status):
         return

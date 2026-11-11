@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Text search over art sources, mirroring the music catalogue. `.pxv <query>` searches Pixiv (artists
+  through the OAuth App API, works by tag/title) and `.paw <query>` searches Pawchive (creators by name
+  from the cached creator index, posts by title through the public API). Artist hits insert their profile
+  URL, which the DM flow already browses (Pixiv) or downloads (Pawchive); work/post hits are
+  tap-to-download inline articles. Both sources are also selectable in `/settings` as the default
+  provider. `PAWCHIVE_ROOT` overrides the archive host (default `https://pawchive.pw`).
+- Pawchive creator profiles (like Pixiv's) open a paged browser of the artist's posts, one button per
+  post plus a Download page action, instead of enumerating the whole archive. A profile URL inserted via
+  the bot's own inline search now opens that profile rather than being swallowed as a self-message.
 
 - Added `ty` 0.0.99 type checking for production modules in local, CI, and release checks.
 - Pixiv profile browsing reads the artist's works from Pixiv's OAuth App API with offset pagination. The anonymous

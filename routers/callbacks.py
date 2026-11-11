@@ -93,8 +93,14 @@ async def pixiv_callback(
     session: Session,
 ) -> None:
     """Profile Page navigation and page downloads; the token outlives both."""
-    stored = session.request_store.load(callback_data.token)
-    if not stored or stored.request_type is not RequestType.PIXIV_PROFILE:
+    try:
+        stored = session.request_store.load(callback_data.token)
+    except ValueError:
+        stored = None  # forged callback data
+    if not stored or stored.request_type not in {
+        RequestType.PIXIV_PROFILE,
+        RequestType.PAWCHIVE_PROFILE,
+    }:
         await query.answer(text.REQUEST_EXPIRED, show_alert=True)
         return
     # aiogram binds a bot to every dispatched update.
@@ -110,6 +116,10 @@ async def pixiv_callback(
         await query.answer()
         return
     status = chat_status(message)
+    if stored.request_type is RequestType.PAWCHIVE_PROFILE:
+        await _pawchive_nav(bot, session, stored, page, action, work, status, message)
+        await query.answer()
+        return
     if work is not None:
         await pixiv_flow.download_work(
             session,
@@ -141,6 +151,50 @@ async def pixiv_callback(
             status=status,
         )
     await query.answer()
+
+async def _pawchive_nav(
+    bot: Bot,
+    session: Session,
+    stored: StoredRequest,
+    page: int,
+    action: str,
+    work: int | None,
+    status,
+    message,
+) -> None:
+    """Pawchive profile pager: render, download one post, or download the page."""
+    from services import pawchive_flow
+
+    if work is not None:
+        await pawchive_flow.download_post(
+            session,
+            bot=bot,
+            stored=stored,
+            page=page,
+            index=work,
+            status=status,
+            reply=message,
+            chat_id=message.chat.id,
+        )
+    elif action == "dl":
+        await pawchive_flow.download_page(
+            session,
+            bot=bot,
+            stored=stored,
+            page=page,
+            status=status,
+            reply=message,
+            chat_id=message.chat.id,
+        )
+    else:
+        await pawchive_flow.render_page(
+            session,
+            bot=bot,
+            stored=stored,
+            page=page,
+            chat_id=message.chat.id,
+            status=status,
+        )
 
 
 async def _pixiv_inline(

@@ -21,6 +21,8 @@ _PROVIDER_LABELS = {
     "deezer": "Deezer",
     "spotify-web": "Spotify",
     "tidal-web": "Tidal",
+    "pixiv": "Pixiv",
+    "pawchive": "Pawchive",
 }
 
 
@@ -68,6 +70,24 @@ def settings_view(preferences: UserPreferences) -> tuple[str, InlineKeyboardMark
                     text="Tidal ✓" if preferences.provider == "tidal-web" else "Tidal",
                     callback_data=SettingsCallback(
                         action="provider", value="tidal-web"
+                    ).pack(),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Pixiv ✓" if preferences.provider == "pixiv" else "Pixiv",
+                    callback_data=SettingsCallback(
+                        action="provider", value="pixiv"
+                    ).pack(),
+                ),
+                InlineKeyboardButton(
+                    text=(
+                        "Pawchive ✓"
+                        if preferences.provider == "pawchive"
+                        else "Pawchive"
+                    ),
+                    callback_data=SettingsCallback(
+                        action="provider", value="pawchive"
                     ).pack(),
                 ),
             ],

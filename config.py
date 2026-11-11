@@ -79,6 +79,7 @@ class Settings:
     mornye_transcode: str = ""
     spotify_collection_cap: int = 50
     search_provider: str = "deezer"
+    pawchive_root: str = "https://pawchive.pw"
     follow_poll_seconds: int = 6 * 3600
 
     @classmethod
@@ -152,6 +153,10 @@ class Settings:
             ),
             search_provider=(
                 os.environ.get("SEARCH_PROVIDER", "deezer").strip().lower() or "deezer"
+            ),
+            pawchive_root=(
+                os.environ.get("PAWCHIVE_ROOT", "https://pawchive.pw").strip().rstrip("/")
+                or "https://pawchive.pw"
             ),
             follow_poll_seconds=_parse_positive_int(
                 os.environ.get("FOLLOW_POLL_SECONDS"), default=6 * 3600

@@ -751,9 +751,42 @@ async def test_intake_ignores_any_own_inline_service_message(raw_text, tmp_path)
     message.answer.assert_not_awaited()
     message.reply.assert_not_awaited()
 
+
+@pytest.mark.asyncio
+async def test_own_inline_pixiv_profile_link_opens_the_profile(
+    monkeypatch, tmp_path
+):
+    """A Pixiv profile inserted via our own inline search must open the
+    profile, not be swallowed by the own-inline feedback gate."""
+    message = make_message()
+    message.text = "https://www.pixiv.net/users/7918112"
+    message.via_bot = SimpleNamespace(id=123)
+    message.bot = SimpleNamespace(id=123)
+    open_profile = AsyncMock()
+    monkeypatch.setattr("routers.intake.pixiv_flow.open_profile", open_profile)
+
+    await intake_message(message, make_session(make_settings(tmp_path)))
+
+    open_profile.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_pawchive_profile_link_opens_the_profile(monkeypatch, tmp_path):
+    """A pawchive creator page (and its own-inline insert) opens the post
+    browser instead of enumerating the whole archive."""
+    message = make_message()
+    message.text = "https://pawchive.pw/patreon/user/30500811"
+    message.bot = SimpleNamespace()
+    open_profile = AsyncMock()
+    monkeypatch.setattr("services.pawchive_flow.open_profile", open_profile)
+
+    await intake_message(message, make_session(make_settings(tmp_path)))
+
+    open_profile.assert_awaited_once()
+
 @pytest.mark.asyncio
 async def test_text_search_menu_has_two_columns_and_global_search(tmp_path):
-    """The DM search menu keeps Global full-width below its two-column filters."""
+    """The DM search menu keeps Global full-width below its two-column
+    filters, with the art sources on their own row."""
     message = make_message()
     message.text = "Radiohead"
 
@@ -764,6 +797,7 @@ async def test_text_search_menu_has_two_columns_and_global_search(tmp_path):
         [text.SEARCH_TRACKS, text.SEARCH_ALBUMS],
         [text.SEARCH_ARTISTS, text.SEARCH_PLAYLISTS],
         [text.SEARCH_GLOBAL],
+        [text.SEARCH_PIXIV, text.SEARCH_PAWCHIVE],
     ]
     assert [
         [button.switch_inline_query_current_chat for button in row]
@@ -772,6 +806,7 @@ async def test_text_search_menu_has_two_columns_and_global_search(tmp_path):
         [".trk Radiohead", ".a Radiohead"],
         [".art Radiohead", ".pla Radiohead"],
         ["Radiohead"],
+        [".pxv Radiohead", ".paw Radiohead"],
     ]
 
 @pytest.mark.asyncio

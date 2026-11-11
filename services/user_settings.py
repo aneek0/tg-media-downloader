@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from services.json_store import JsonStore
-from utils.models import CATALOGUE_PROVIDERS, validate_user_id
+from utils.models import SEARCH_PROVIDERS, validate_user_id
 
 _VALID_AUDIO_FORMATS = frozenset({"flac", "mp3"})
 _VALID_AUDIO_QUALITIES = frozenset({"lossless", "hires"})
@@ -33,9 +33,9 @@ def _validated_prefs(
 ) -> UserPreferences:
     if not isinstance(text_search, bool):
         raise ValueError(f"text_search must be a bool, got {text_search!r}")
-    if provider not in CATALOGUE_PROVIDERS:
+    if provider not in SEARCH_PROVIDERS:
         raise ValueError(
-            f"unsupported provider {provider!r}; expected one of {sorted(CATALOGUE_PROVIDERS)}"
+            f"unsupported provider {provider!r}; expected one of {sorted(SEARCH_PROVIDERS)}"
         )
     if audio_format not in _VALID_AUDIO_FORMATS:
         raise ValueError(
