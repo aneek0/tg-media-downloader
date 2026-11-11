@@ -8,16 +8,27 @@ from aiogram.types import MessageEntity
 from utils.models import ParsedInput
 
 
+def first_url_in(text: str) -> str | None:
+    """First http(s) URL in the text, so multi-URL messages download one link
+    instead of treating the whole sentence as a URL."""
+    match = re.search(r"https?://\S+", text)
+    return match.group(0).rstrip(".,;:!?)»\"'") if match else None
+
+
+def _is_downloadable_scheme(url: str) -> bool:
+    return urlparse(url).scheme in {"http", "https"}
+
+
 def extract_link_text(text: str, entities: list[MessageEntity] | None) -> str | None:
     if entities:
         for entity in entities:
             if entity.type == "text_link" and entity.url:
                 return entity.url
             if entity.type == "url":
-                return text[entity.offset : entity.offset + entity.length]
-    if "http://" in text or "https://" in text:
-        return text
-    return None
+                # Telegram offsets/lengths are UTF-16 code units; a plain
+                # Python slice mis-cuts when emoji precede the link.
+                return entity.extract_from(text)
+    return first_url_in(text)
 
 
 def _extract_url(text: str, entities: list[MessageEntity] | None) -> str:
@@ -29,6 +40,15 @@ def _extract_url(text: str, entities: list[MessageEntity] | None) -> str:
 
 def parse_user_input(
     text: str, entities: list[MessageEntity] | None = None
+) -> ParsedInput:
+    parsed = _parse_raw_input(text, entities)
+    if not _is_downloadable_scheme(parsed.source_url):
+        raise ValueError("Only http and https links are supported")
+    return parsed
+
+
+def _parse_raw_input(
+    text: str, entities: list[MessageEntity] | None
 ) -> ParsedInput:
     if "|" in text:
         parts = [part.strip() for part in text.split("|")]

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import html
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +13,7 @@ from pathlib import Path
 from typing import cast
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -132,7 +135,7 @@ def _short(value: str, limit: int = 64) -> str:
 def _artist_caption(payload: CataloguePayload) -> str:
     name = text.esc(payload.name)
     if payload.artist_url:
-        name = f'<a href="{text.esc(payload.artist_url)}">{name}</a>'
+        name = f'<a href="{html.escape(payload.artist_url, quote=True)}">{name}</a>'
     fans = "Fans on Deezer" if payload.provider == "deezer" else "Listeners"
     return text.ARTIST_CAPTION.format(
         name=name, listeners=payload.listeners, albums=len(payload.albums), fans=fans
@@ -335,7 +338,7 @@ def render_album_card(stored: StoredRequest) -> CatalogueCard:
     album = SearchItem.from_dict(payload.album)
     artist = text.esc(payload.name or album.artists)
     if payload.artist_url:
-        artist = f'<a href="{text.esc(payload.artist_url)}">{artist}</a>'
+        artist = f'<a href="{html.escape(payload.artist_url, quote=True)}">{artist}</a>'
     caption = text.ALBUM_CAPTION.format(
         album=text.esc(album.title),
         artist=artist,
@@ -440,7 +443,7 @@ async def download_album_zip(
         path=archive,
         file_name=f"{release_name}.zip",
         send_type="document",
-        caption=release_name,
+        caption=text.esc(release_name),
     )
 
 
@@ -475,7 +478,7 @@ async def run_album_zip(
             caption=text.esc(artifact.file_name),
             mention=session.identity.mention,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, TelegramAPIError) as exc:
         await status.fail(text.esc(str(exc)))
     finally:
         session.request_store.delete(stored.token)
@@ -498,7 +501,8 @@ async def run_chat_album_zip(
         await ChatDelivery(bot, source_message).deliver(
             [artifact], status=status, started_at=started_at
         )
-    except RuntimeError as exc:
-        await status.fail(text.esc(str(exc)))
+    except (RuntimeError, TelegramAPIError) as exc:
+        with contextlib.suppress(TelegramAPIError):
+            await status.fail(text.esc(str(exc)))
     finally:
         session.request_store.delete(stored.token)
