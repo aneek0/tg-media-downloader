@@ -16,6 +16,7 @@ import aiohttp
 from config import Settings
 from services.progress import format_download_progress
 from services.status import StatusSurface
+from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import (
     DownloadArtifact,
@@ -89,6 +90,7 @@ def _resolve_target(
     if not ext:
         guessed_ext = mimetypes.guess_extension(content_type.split(";", maxsplit=1)[0].strip())
         ext = guessed_ext.lstrip(".") if guessed_ext else None
+    file_name = Path(file_name).name  # custom names may carry ../ or absolute paths
     file_name = _normalize_file_name(file_name, ext)
     return file_name, work_dir / file_name
 
@@ -559,7 +561,10 @@ async def download_direct_file(
             )
 
     destination, file_name = downloaded
-    caption = parsed_input.custom_file_name or file_name
+    if destination.stat().st_size == 0:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("The server sent an empty file")
+    caption = text.esc(parsed_input.custom_file_name or file_name)
     logger.info(
         "Direct download complete | file=%s bytes=%s destination=%s elapsed=%.1fs",
         file_name,

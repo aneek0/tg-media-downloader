@@ -135,7 +135,7 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
     cache = make_media_cache(tmp_path)
     url = "https://x.com/a/status/1"
     stored = StoredRequest(
-        token="tok-c",
+        token="7f737c1839",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -189,7 +189,7 @@ async def test_run_inline_download_records_cache(monkeypatch, tmp_path):
     assert entries is not None
     assert entries[0].file_id == "BAAC11"
     assert entries[0].send_type == "video"
-    assert store.load("tok-c") is None
+    assert store.load("7f737c1839") is None
 
 
 @pytest.mark.asyncio
@@ -202,7 +202,7 @@ async def test_run_inline_download_too_large_shows_limit_and_deletes_token(
     cache = make_media_cache(tmp_path)
     url = "https://example.com/huge.bin"
     stored = StoredRequest(
-        token="tok-large",
+        token="4cd92ea127",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -231,7 +231,7 @@ async def test_run_inline_download_too_large_shows_limit_and_deletes_token(
     edited_text = bot.edit_message_text.await_args_list[-1].kwargs["text"]
     assert "larger than Telegram allows" in edited_text
     assert humanbytes(settings.max_upload_bytes) in edited_text
-    assert store.load("tok-large") is None
+    assert store.load("4cd92ea127") is None
     bot.edit_message_media.assert_not_awaited()
     assert cache.get(url) is None
 
@@ -246,7 +246,7 @@ async def test_run_inline_download_generic_failure_escapes_error_text(
     cache = make_media_cache(tmp_path)
     url = "https://example.com/boom.mp4"
     stored = StoredRequest(
-        token="tok-fail",
+        token="4cb185ccbd",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -278,7 +278,7 @@ async def test_run_inline_download_generic_failure_escapes_error_text(
     failure_edit = bot.edit_message_text.await_args_list[-1]
     assert "&lt;b&gt;&amp;boom&lt;/b&gt;" in failure_edit.kwargs["text"]
     assert "<b>&boom</b>" not in failure_edit.kwargs["text"]
-    assert store.load("tok-fail") is None
+    assert store.load("4cb185ccbd") is None
     assert cache.get(url) is None
 
 
@@ -292,7 +292,7 @@ async def test_run_inline_download_escapes_url_in_download_start(
     cache = make_media_cache(tmp_path)
     url = 'https://example.com/a?q="x"&amp=1'
     stored = StoredRequest(
-        token="tok-esc",
+        token="3aaa0749e9",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -332,7 +332,7 @@ async def test_run_inline_download_start_edit_failure_falls_into_error_branch(
     cache = make_media_cache(tmp_path)
     url = "https://example.com/file.mp4"
     stored = StoredRequest(
-        token="tok-start",
+        token="383a874b48",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -367,7 +367,7 @@ async def test_run_inline_download_start_edit_failure_falls_into_error_branch(
     bot.edit_message_media.assert_not_awaited()
     failure_edit = bot.edit_message_text.await_args_list[-1]
     assert "could not download that link" in failure_edit.kwargs["text"]
-    assert store.load("tok-start") is None
+    assert store.load("383a874b48") is None
     assert cache.get(url) is None
 
 
@@ -732,7 +732,7 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
     cache = make_media_cache(tmp_path)
     url = "https://x.com/a/status/1"
     stored = StoredRequest(
-        token="tok-name",
+        token="ef74bd6050",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -782,7 +782,7 @@ async def test_run_inline_download_preferred_name_picks_matching_artifact(
     media = bot.edit_message_media.await_args.kwargs["media"]
     assert media.media == "BAAC41"
     assert cache.get(url)[0].file_id == "BAAC41"
-    assert store.load("tok-name") is None
+    assert store.load("ef74bd6050") is None
     assert bot.send_video.await_args_list[0].kwargs["video"].path.name == "999_2.mp4"
 
 
@@ -793,7 +793,7 @@ async def test_gallery_nav_callback_edits_media(tmp_path):
     store = RequestStore(settings.requests_dir, settings.work_dir)
 
     stored = StoredRequest(
-        token="tok-g",
+        token="bf06ecb9cc",
         request_type="inline_gallery",
         parsed_input=ParsedInput(source_url="https://x.com/a/status/1"),
         options=[],
@@ -816,7 +816,7 @@ async def test_gallery_nav_callback_edits_media(tmp_path):
     )
 
     await gallery_nav_callback(
-        query, GalleryNavCallback(token="tok-g", index=1),
+        query, GalleryNavCallback(token="bf06ecb9cc", index=1),
         make_session(settings, store),
     )
 
@@ -830,7 +830,7 @@ async def test_gallery_nav_callback_edits_media(tmp_path):
     assert media.caption == "cap"
     assert media.parse_mode is None
     row = kwargs["reply_markup"].inline_keyboard[0]
-    assert [button.callback_data for button in row] == ["gnav:tok-g:0", "gnav:tok-g:2"]
+    assert [button.callback_data for button in row] == ["gnav:bf06ecb9cc:0", "gnav:bf06ecb9cc:2"]
     query.answer.assert_awaited_once_with()
 
 
@@ -848,7 +848,7 @@ async def test_gallery_nav_callback_expired_token_answers_toast(tmp_path):
     )
 
     await gallery_nav_callback(
-        query, GalleryNavCallback(token="unknown", index=1),
+        query, GalleryNavCallback(token="0123456789", index=1),
         make_session(settings, store),
     )
 
@@ -871,7 +871,7 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     cache = make_media_cache(tmp_path)
     url = "https://vt.tiktok.com/ZSbj8LgVN/"
     stored = StoredRequest(
-        token="tok-tt",
+        token="52d3dc50b5",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -917,7 +917,7 @@ async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     entries = cache.get(url)
     assert entries is not None
     assert entries[0].file_id == "BAAC21"
-    assert store.load("tok-tt") is None
+    assert store.load("52d3dc50b5") is None
 
 
 @pytest.mark.asyncio
@@ -930,7 +930,7 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
     cache = make_media_cache(tmp_path)
     url = "https://example.com/file.bin"
     stored = StoredRequest(
-        token="tok-direct",
+        token="31c9647d45",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -973,7 +973,7 @@ async def test_inline_probe_failure_falls_back_to_direct(monkeypatch, tmp_path):
     media = bot.edit_message_media.await_args.kwargs["media"]
     assert media.media == "BAAC31"
     assert cache.get(url)[0].file_id == "BAAC31"
-    assert store.load("tok-direct") is None
+    assert store.load("31c9647d45") is None
 
 
 @pytest.mark.asyncio
@@ -1074,7 +1074,7 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
     cache = make_media_cache(tmp_path)
     url = "https://pawchive.pw/fanbox/user/1/post/2"
     stored = StoredRequest(
-        token="tok-idx",
+        token="2fbbcc615a",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -1136,7 +1136,7 @@ async def test_run_inline_download_preferred_index_puts_tapped_photo_first(
     assert entries is not None
     assert entries[0].file_id == "PH_B_DM"
     assert [e.file_id for e in entries[1:]] == ["PH_A", "PH_C"]
-    assert store.load("tok-idx") is None
+    assert store.load("2fbbcc615a") is None
 
 @pytest.mark.asyncio
 async def test_run_inline_download_poster_flow_keeps_media_and_uploads_by_file_id(
@@ -1154,7 +1154,7 @@ async def test_run_inline_download_poster_flow_keeps_media_and_uploads_by_file_i
     poster = "https://pbs.twimg.com/ext_tw_video/1/pu/ths/1.jpg"
     video_cdn = "https://video.twimg.com/ext_tw_video/1/vid/720p.mp4"
     stored = StoredRequest(
-        token="tok-poster",
+        token="6c69c93a6c",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url=url),
         options=[],
@@ -1219,7 +1219,7 @@ async def test_run_inline_download_poster_flow_keeps_media_and_uploads_by_file_i
     assert entries is not None
     assert [e.file_id for e in entries] == ["BAAC50", "BAAC51"]
     assert not path.exists()
-    assert store.load("tok-poster") is None
+    assert store.load("6c69c93a6c") is None
 
 
 @pytest.mark.asyncio
@@ -1233,7 +1233,7 @@ async def test_run_inline_download_poster_flow_still_reports_failure(
     store = RequestStore(settings.requests_dir, settings.work_dir)
     cache = make_media_cache(tmp_path)
     stored = StoredRequest(
-        token="tok-poster-fail",
+        token="6556af121c",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url="https://x.com/a/status/2"),
         options=[],
@@ -1281,7 +1281,7 @@ async def test_run_inline_download_poster_flow_still_reports_failure(
     notice = bot.edit_message_text.await_args.kwargs["text"]
     assert text.INLINE_FAILED in notice
     assert "bad webhook response" in notice
-    assert store.load("tok-poster-fail") is None
+    assert store.load("6556af121c") is None
 
 
 def test_inline_dm_blocked_stays_a_runtime_error_for_the_zip_flow():
@@ -1302,7 +1302,7 @@ async def test_inline_spillover_note_names_the_bot(monkeypatch, tmp_path):
     store = RequestStore(settings.requests_dir, settings.work_dir)
     cache = make_media_cache(tmp_path)
     stored = StoredRequest(
-        token="tok-album",
+        token="73f8ad82f4",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url="https://example.com/album.zip"),
         options=[],

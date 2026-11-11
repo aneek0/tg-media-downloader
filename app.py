@@ -22,6 +22,7 @@ from routers.intake import router as intake_router
 from routers.settings import router as settings_router
 from services.follows import FollowPoller
 from services.mornye import MornyeService
+from services.pixiv_flow import cancel_prefetch_tasks
 from services.session import Session, build_session
 from utils.logging_config import setup_logging
 
@@ -57,6 +58,26 @@ def create_dispatcher(session: Session) -> Dispatcher:
     dispatcher.include_router(callbacks_router)
     dispatcher.workflow_data.update(session=session)
     return dispatcher
+
+
+async def _periodic_sweep(session: Session) -> None:
+    """Sweep stale request JSONs hourly.
+
+    The startup sweep alone lets inline tokens accumulate for the process
+    lifetime; a large flat directory also makes token collisions likelier.
+    """
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            removed = await asyncio.to_thread(session.request_store.sweep_stale)
+            if removed:
+                logging.getLogger(__name__).info(
+                    "Hourly request sweep | removed=%s", removed
+                )
+        except Exception as exc:  # noqa: BLE001 - housekeeping must not die
+            logging.getLogger(__name__).warning(
+                "Hourly request sweep failed | error=%s", exc
+            )
 
 
 async def run() -> None:
@@ -124,13 +145,15 @@ async def run() -> None:
         "enabled" if settings.http_proxy else "disabled",
         settings.request_cooldown_seconds,
     )
+    sweep_task = asyncio.create_task(_periodic_sweep(session), name="request-sweep")
     follow_task = asyncio.create_task(FollowPoller(session, bot).run())
     try:
         await dispatcher.start_polling(bot)
     finally:
-        for task in (follow_task, maintenance_task):
+        for task in (follow_task, sweep_task, maintenance_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        await cancel_prefetch_tasks()
         await session.mornye.close()

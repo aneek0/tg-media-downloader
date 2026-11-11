@@ -177,7 +177,7 @@ def _album_caption(target) -> str | None:
     return text.ALBUM_INFO_CAPTION.format(
         name=text.esc(target.name),
         artist=text.esc(getattr(track, "artists", "") or "Unknown Artist"),
-        date=date[:10],
+        date=text.esc(date[:10]),
         count=len(target.tracks),
     )
 

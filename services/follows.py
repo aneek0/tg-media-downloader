@@ -55,23 +55,31 @@ class FollowPoller:
             await asyncio.sleep(self._interval)
 
     async def poll_once(self) -> None:
-        for provider, artist_id in self._session.follows.all_artists():
-            followers = self._session.follows.get(provider, artist_id)
-            try:
-                catalogue = await self._session.catalogue_search.artist(
-                    provider, artist_id
-                )
-            except RuntimeError as exc:
-                logger.info(
-                    "Follow poll failed | provider=%s artist=%s error=%s",
-                    provider,
-                    artist_id,
-                    exc,
-                )
+        artists = list(self._session.follows.all_artists())
+        catalogues = await asyncio.gather(
+            *(self._poll_artist(provider, artist_id) for provider, artist_id in artists)
+        )
+        for (provider, artist_id), catalogue in zip(artists, catalogues, strict=True):
+            if catalogue is None:
                 continue
+            followers = self._session.follows.get(provider, artist_id)
             current_ids = [album.item_id for album in catalogue.albums]
             for follow in followers:
                 await self._notify_follower(follow, catalogue, current_ids)
+
+    async def _poll_artist(self, provider: str, artist_id: str):
+        """One artist's catalogue, or None when the fetch failed."""
+        try:
+            return await self._session.catalogue_search.artist(provider, artist_id)
+        except Exception as exc:  # noqa: BLE001 - one artist must not kill the poller
+            logger.warning(
+                "Follow poll failed | provider=%s artist=%s error=%s (%s)",
+                provider,
+                artist_id,
+                exc,
+                type(exc).__name__,
+            )
+            return None
 
     async def _notify_follower(
         self,

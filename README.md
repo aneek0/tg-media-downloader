@@ -104,6 +104,25 @@ cp .env.example .env
 uv sync --group dev
 ```
 
+`uv` installs only the Python dependencies. The bot shells out to system tools at
+runtime, so a clean server needs them from the system package manager first:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y ffmpeg aria2 nodejs chromium xvfb
+# Arch
+sudo pacman -S --needed ffmpeg aria2 nodejs chromium xorg-server-xvfb
+```
+
+- `ffmpeg` - required for yt-dlp post-processing and the MP3 catalogue downloads
+- `aria2` - optional; yt-dlp uses `aria2c` as the external downloader when present
+- `nodejs` - required only with Mornye (`MORNYE_SERVICES`) for its JavaScript extensions
+- `chromium` + `xvfb` - required only with Mornye for ZARZ Turnstile challenges;
+  set `CHROME_PATH` if the executable is not in a standard location
+
+Everything else (`yt-dlp`, `gallery-dl`) arrives from `uv sync` into `.venv/bin`,
+and the bot finds the venv copies even without an activated virtualenv.
+
 4. Start the bot:
 
 ```bash

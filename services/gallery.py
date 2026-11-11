@@ -239,6 +239,15 @@ def gallery_url_items(
         if not url:
             continue
         ext = (media.get("extension") or "").lower()
+        size = media.get("size")
+        if (
+            ext in VIDEO_EXTENSIONS
+            and isinstance(size, int)
+            and size > 16 * 1024 * 1024
+        ):
+            # Telegram's URL fetcher caps near 20MB; a bigger video would
+            # fail at send time and fall back to a full local download.
+            continue
         if ext == "zip" and pixiv.is_pixiv_url(parsed_input.source_url):
             # A Pixiv ugoira lands as a frames archive; only the local
             # download converts it to MP4, so never send the archive itself.
@@ -431,7 +440,10 @@ async def download_gallery_media(
             await run_command(
                 command, cwd=work_dir, timeout=settings.process_max_timeout
             )
-        files = sorted(path for path in work_dir.iterdir() if path.is_file())
+        files = sorted(
+            (path for path in work_dir.iterdir() if path.is_file()),
+            key=lambda p: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)],
+        )
         if not files:
             raise RuntimeError("gallery-dl downloaded no files")
 

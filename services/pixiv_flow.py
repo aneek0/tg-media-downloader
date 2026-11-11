@@ -9,6 +9,7 @@ artist from the newest Work.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass
@@ -170,6 +171,15 @@ def _start_prefetch(
     task = asyncio.create_task(_prefetch_next(session, payload, page, work_dir))
     _prefetch_tasks.add(task)
     task.add_done_callback(_prefetch_tasks.discard)
+
+
+async def cancel_prefetch_tasks() -> None:
+    """Stop cover prefetches on shutdown; they outlive polling otherwise."""
+    for task in list(_prefetch_tasks):
+        task.cancel()
+    for task in list(_prefetch_tasks):
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 def work_labels(start: int, taken: list[pixiv.PixivWork]) -> list[str]:

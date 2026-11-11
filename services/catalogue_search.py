@@ -140,6 +140,8 @@ def artist_source(url: str) -> tuple[str, str] | None:
     try:
         index = parts.index("artist")
         artist_id = parts[index + 1]
+        if not artist_id.isalnum():
+            return None  # ids are digits/base62: anything else is not one
     except (ValueError, IndexError):
         return None
     host = (parsed.hostname or "").lower()

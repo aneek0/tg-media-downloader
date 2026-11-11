@@ -530,6 +530,8 @@ async def test_artist_deezer_top_programming_error_is_not_hidden(monkeypatch):
         ("https://www.tidal.com/artist/456", ("tidal-web", "456")),
         ("https://www.deezer.com/track/123", None),
         ("https://example.com/artist/123", None),
+        # ids are digits/base62: anything else is rejected outright
+        ("https://www.deezer.com/artist/<script>", None),
     ],
 )
 def test_artist_source_recognizes_only_supported_artist_urls(url, expected):

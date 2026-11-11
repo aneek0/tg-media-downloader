@@ -53,7 +53,9 @@ async def follow_command(message: Message, session: Session) -> None:
         catalogue = await session.catalogue_search.artist(provider, artist_id)
         existing = session.follows.get(provider, artist_id)
         if any(follow.user_id == message.from_user.id for follow in existing):
-            await message.answer(text.FOLLOW_ALREADY.format(name=catalogue.artist.title))
+            await message.answer(
+                text.FOLLOW_ALREADY.format(name=text.esc(catalogue.artist.title))
+            )
             return
         session.follows.toggle(
             message.from_user.id,
@@ -66,7 +68,7 @@ async def follow_command(message: Message, session: Session) -> None:
     except (ValueError, RuntimeError) as exc:
         await message.answer(text.esc(str(exc)))
         return
-    await message.answer(text.FOLLOW_ADDED.format(name=catalogue.artist.title))
+    await message.answer(text.FOLLOW_ADDED.format(name=text.esc(catalogue.artist.title)))
 
 
 @router.message(Command("follows", "unfollow"), F.chat.type == "private")

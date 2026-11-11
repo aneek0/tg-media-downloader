@@ -29,6 +29,7 @@ from config import Settings
 from services import pixiv, pixiv_flow
 from services.delivery import inline_cached_results, rich_post_html
 from services.gallery import (
+    GalleryProbe,
     _gallery_friendly_error,
     plain_caption,
     probe_gallery,
@@ -37,7 +38,8 @@ from services.gallery import (
 )
 from services.inline_flow import InlineTaskRegistry, run_inline_download
 from services.mornye import audio_cache_key
-from services.parsing import is_twitter_status_url, parse_user_input
+from services.netguard import areject_private_target
+from services.parsing import first_url_in, is_twitter_status_url, parse_user_input
 from services.session import Session
 from services.sources import VIDEO_EXTENSIONS, SourceKind, classify
 from services.ytdlp import probe_url
@@ -58,23 +60,6 @@ logger = logging.getLogger(__name__)
 
 _inline_tasks = InlineTaskRegistry()
 
-
-def _first_url_in(raw: str) -> str:
-    """Extract the first http(s) URL from pasted text (URL + caption)."""
-    start = -1
-    for scheme in ("https://", "http://"):
-        idx = raw.find(scheme)
-        if idx != -1 and (start == -1 or idx < start):
-            start = idx
-    if start == -1:
-        return raw
-    rest = raw[start:]
-    end = len(rest)
-    for ch in (" ", "\n", "\t"):
-        idx = rest.find(ch)
-        if idx != -1:
-            end = min(end, idx)
-    return rest[:end].rstrip(".,;:!?)]}\"'>")
 
 
 def _description_for() -> str:
@@ -426,6 +411,74 @@ async def _answer_pixiv(
     await query.answer(results, cache_time=0, is_personal=True)
     return True
 
+
+async def _reject_private(query: InlineQuery, parsed: ParsedInput) -> bool:
+    """SSRF gate: answer with an error article when the target is private.
+    Returns True when the caller must stop (the query is answered)."""
+    try:
+        await areject_private_target(parsed.source_url)
+    except ValueError:
+        await query.answer(
+            [await _error_article("This link points at a private network address.")],
+            cache_time=1,
+        )
+        return True
+    return False
+
+
+async def _answer_twitter_media(
+    query: InlineQuery,
+    parsed: ParsedInput,
+    session: Session,
+    probe: GalleryProbe,
+    photos: list[dict],
+) -> bool:
+    """Twitter status: photos stay instant CDN results (Telegram fetches
+    pbs.twimg.com itself); with >=2 photos the first result is a
+    gallery pager. Videos cannot be CDN results - Telegram's fetcher
+    refuses video.twimg.com - so they become download-on-tap articles."""
+    request_store = session.request_store
+    full_caption = _probe_caption(
+        probe.file_dicts, probe.content, parsed.source_url
+    )
+    caption = full_caption[: text.CAPTION_LIMIT]
+    body = plain_caption(probe.content) or ""
+    results: list = []
+    gallery_photos = [m["_url"] for m in photos if m.get("_url")]
+    results.extend(_rich_results(full_caption, gallery_photos))
+    if len(gallery_photos) >= 2:
+        stored = request_store.open(
+            RequestType.INLINE_GALLERY,
+            parsed,
+            payload=InlineGalleryPayload(
+                photos=gallery_photos,
+                caption=caption,
+                file_dicts=probe.file_dicts,
+            ),
+        )
+        token = stored.token
+        results.append(_gallery_result(token, gallery_photos, caption))
+    results.extend(_inline_photo_results(probe.file_dicts, caption))
+    results.extend(
+        await _inline_video_results(
+            probe.file_dicts,
+            parsed=parsed,
+            session=session,
+            description=body or _description_for(),
+            caption=caption,
+        )
+    )
+    if results:
+        await query.answer(results, cache_time=0, is_personal=True)
+        return True
+    await query.answer(
+        [await _error_article("No media found in this tweet")],
+        cache_time=0,
+        is_personal=True,
+    )
+    return True
+
+
 async def _answer_gallery_media(
     query: InlineQuery,
     parsed: ParsedInput,
@@ -433,6 +486,8 @@ async def _answer_gallery_media(
 ) -> bool:
     """Answer with gallery-dl CDN results. Returns False when the caller
     should fall through to the generic token-article path."""
+    if await _reject_private(query, parsed):
+        return True
     settings = session.settings
     request_store = session.request_store
     probe = await probe_gallery(parsed, settings)
@@ -474,49 +529,7 @@ async def _answer_gallery_media(
         return False
     photos, _ = split_tweet_media(probe.file_dicts)
     if twitter:
-        # Twitter status: photos stay instant CDN results (Telegram fetches
-        # pbs.twimg.com itself); with >=2 photos the first result is a
-        # gallery pager. Videos cannot be CDN results - Telegram's fetcher
-        # refuses video.twimg.com - so they become download-on-tap articles.
-        full_caption = _probe_caption(
-            probe.file_dicts, probe.content, parsed.source_url
-        )
-        caption = full_caption[: text.CAPTION_LIMIT]
-        body = plain_caption(probe.content) or ""
-        results: list = []
-        gallery_photos = [m["_url"] for m in photos if m.get("_url")]
-        results.extend(_rich_results(full_caption, gallery_photos))
-        if len(gallery_photos) >= 2:
-            stored = request_store.open(
-                RequestType.INLINE_GALLERY,
-                parsed,
-                payload=InlineGalleryPayload(
-                    photos=gallery_photos,
-                    caption=caption,
-                    file_dicts=probe.file_dicts,
-                ),
-            )
-            token = stored.token
-            results.append(_gallery_result(token, gallery_photos, caption))
-        results.extend(_inline_photo_results(probe.file_dicts, caption))
-        results.extend(
-            await _inline_video_results(
-                probe.file_dicts,
-                parsed=parsed,
-                session=session,
-                description=body or _description_for(),
-                caption=caption,
-            )
-        )
-        if results:
-            await query.answer(results, cache_time=0, is_personal=True)
-            return True
-        await query.answer(
-            [await _error_article("No media found in this tweet")],
-            cache_time=0,
-            is_personal=True,
-        )
-        return True
+        return await _answer_twitter_media(query, parsed, session, probe, photos)
     preview_urls = [
         (small_thumbnail_url(m["_url"]) or m["_url"])
         for m in photos
@@ -599,11 +612,13 @@ async def inline_query_handler(  # noqa: C901
         return
 
     if "http://" not in raw and "https://" not in raw:
+        # Text queries: a bare return leaves the client spinner running.
+        await query.answer([], cache_time=1)
         return
 
     # Users often paste a whole message (URL + caption text); extract the
     # first URL from it instead of treating everything as one URL.
-    raw = _first_url_in(raw)
+    raw = first_url_in(raw) or raw
     try:
         parsed = parse_user_input(raw)
     except ValueError:
@@ -699,7 +714,7 @@ async def inline_query_handler(  # noqa: C901
             [
                 InlineQueryResultArticle(
                     id=token,
-                    title=text.esc(title),
+                    title=title,
                     description=description,
                     thumbnail_url=target.cover_url or None,
                     input_message_content=InputTextMessageContent(
@@ -768,7 +783,10 @@ async def inline_chosen_handler(
 
     # aiogram binds a bot to every dispatched update.
     bot = cast(Bot, chosen.bot)
-    stored = session.request_store.load(token)
+    try:
+        stored = session.request_store.load(token)
+    except ValueError:
+        stored = None  # forged callback data
     if not stored:
         logger.warning(
             "Expired inline request | user=%s token=%s", chosen.from_user.id, token
@@ -826,7 +844,10 @@ async def gallery_nav_callback(
     session: Session,
 ) -> None:
     request_store = session.request_store
-    stored = request_store.load(callback_data.token)
+    try:
+        stored = request_store.load(callback_data.token)
+    except ValueError:
+        stored = None  # forged callback data
     payload = stored.payload if stored else None
     photos = payload.photos if isinstance(payload, InlineGalleryPayload) else []
     if not query.inline_message_id or not photos:

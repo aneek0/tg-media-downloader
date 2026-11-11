@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -77,8 +78,14 @@ class RequestStore:
         options: Sequence[DownloadOption] = (),
     ) -> StoredRequest:
         """Persist one new Request; the token is the returned handle."""
+        while True:
+            token = self.create_token()
+            # Regenerate on collision: save() overwrites blindly, so a reused
+            # token would deliver one user's media under another user's tap.
+            if not self._request_path(token).exists():
+                break
         stored = StoredRequest(
-            token=self.create_token(),
+            token=token,
             request_type=request_type,
             parsed_input=parsed_input,
             options=list(options),
@@ -110,10 +117,19 @@ class RequestStore:
     def create_token(self) -> str:
         return uuid.uuid4().hex[:10]
 
+    def _valid_token(self, token: str) -> bool:
+        # callback_data is client-controlled: without this guard a forged
+        # "icxl:../../.." token would rmtree outside the work root.
+        return re.fullmatch(r"[0-9a-f]{10}", token or "") is not None
+
     def _request_path(self, token: str) -> Path:
+        if not self._valid_token(token):
+            raise ValueError("malformed request token")
         return self.requests_dir / f"{token}.json"
 
     def work_directory(self, token: str) -> Path:
+        if not self._valid_token(token):
+            raise ValueError("malformed request token")
         path = self.work_root / token
         path.mkdir(parents=True, exist_ok=True)
         return path
@@ -127,9 +143,13 @@ class RequestStore:
         path = self._request_path(token)
         if not path.exists():
             return None
-        return StoredRequest.from_dict(JsonStore(path, strict=False).load())
+        data = JsonStore(path, strict=False).load()
+        # A present-but-corrupt JSON must not KeyError the callback handler.
+        return StoredRequest.from_dict(data) if data else None
 
     def delete(self, token: str) -> None:
+        if not self._valid_token(token):
+            return  # forged callback data: nothing of ours to clean up
         path = self._request_path(token)
         if path.exists():
             path.unlink()

@@ -46,7 +46,12 @@ async def _read_stream(
     if stream is None:
         return
     while True:
-        line = await stream.readline()
+        try:
+            line = await stream.readline()
+        except ValueError:
+            # A single output line over the 64 KiB StreamReader limit is not
+            # fatal: skip it instead of killing the drain task.
+            continue
         if not line:
             return
         sink.append(line)

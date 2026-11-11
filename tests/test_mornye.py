@@ -408,7 +408,7 @@ async def test_execute_request_mornye_dispatch(monkeypatch, tmp_path):
     store = RequestStore(settings.requests_dir, settings.work_dir)
     cache = make_media_cache(tmp_path)
     stored = StoredRequest(
-        token="tok-s",
+        token="5f26e3e1ba",
         request_type="mornye",
         parsed_input=ParsedInput(source_url="https://open.spotify.com/album/x"),
         options=[
@@ -469,7 +469,7 @@ async def test_execute_request_mornye_single_track_cached(tmp_path):
     cache = make_media_cache(tmp_path)
     url = "https://open.spotify.com/track/x"
     stored = StoredRequest(
-        token="tok-s1",
+        token="5a39a9e9f6",
         request_type="mornye",
         parsed_input=ParsedInput(source_url=url),
         options=[
@@ -523,7 +523,7 @@ async def test_execute_request_uses_the_users_hi_res_preference(
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="tok-h",
+        token="547a92b2a8",
         request_type="mornye",
         parsed_input=ParsedInput(source_url="https://open.spotify.com/track/x"),
         options=[
@@ -621,6 +621,7 @@ async def test_cover_fetch_retries_timeout_with_aiohttp(monkeypatch):
     """Regression: mornye's httpx cover timeout must not strip artwork or stall three times."""
     class FakeResponse:
         raise_for_status = Mock()
+        content_length = 12  # below the 10 MiB cap
         read = AsyncMock(return_value=b"cover-bytes")
 
         async def __aenter__(self):

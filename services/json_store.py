@@ -46,7 +46,14 @@ class JsonStore:
     def save(self, payload: Any) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.path.with_name(f"{self.path.name}.tmp")
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-        )
+        with temp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False))
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp_path, self.path)
+        # fsync the directory too, or a power cut can still lose the rename.
+        dir_fd = os.open(self.path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)

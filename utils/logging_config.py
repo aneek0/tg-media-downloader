@@ -15,10 +15,14 @@ def setup_logging() -> None:
 
 def safe_url_label(url: str) -> str:
     parts = urlsplit(url)
+    # Strip credentials: a URL may carry user:pass@ and must never log it.
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
     path = parts.path
     if len(path) > 60:
         path = f"{path[:57]}..."
-    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+    return urlunsplit((parts.scheme, netloc, path, "", ""))
 
 
 def redact_command(command: list[str]) -> list[str]:

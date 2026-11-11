@@ -12,6 +12,13 @@ class CooldownManager:
         if user_id in authorized_users:
             return 0
         now = time.time()
+        if len(self._last_seen) >= 10_000:
+            # One prune per 10k users: entries older than the cooldown are
+            # meaningless, and inline strangers grow this dict forever.
+            cutoff = now - self.timeout_seconds
+            self._last_seen = {
+                uid: seen for uid, seen in self._last_seen.items() if seen > cutoff
+            }
         previous = self._last_seen.get(user_id)
         self._last_seen[user_id] = now
         if previous is None:

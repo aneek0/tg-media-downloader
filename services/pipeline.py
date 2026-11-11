@@ -13,6 +13,7 @@ from services.gallery import (
     gallery_url_items,
     probe_gallery,
 )
+from services.netguard import areject_private_target
 from services.parsing import is_probable_youtube_url
 from services.session import Session
 from services.sources import (
@@ -102,6 +103,9 @@ async def prepare_request(session: Session, parsed: ParsedInput) -> PreparedRequ
 
     Constructs and persists the matching request; raises only when the music
     service cannot resolve a track."""
+    # SSRF gate: one check covers every downstream fetcher this ladder runs
+    # (gallery-dl, yt-dlp, direct HTTP).
+    await areject_private_target(parsed.source_url)
     store = session.request_store
     settings = session.settings
     source = classify(parsed)
@@ -313,6 +317,19 @@ async def download_artifacts(
     surface: DM, inline, catalogue. Each row returns artifacts plus whatever
     delivery still needs, so no caller has to know the order of the rows.
     """
+    # Bot-wide cap for non-gallery downloads (gallery rows keep their own
+    # six-slot limiter): unbounded per-tap concurrency fork-bombs yt-dlp.
+    async with session.download_limiter:
+        return await _dispatch_download(session, stored, choice, status=status)
+
+
+async def _dispatch_download(
+    session: Session,
+    stored: StoredRequest,
+    choice: DownloadChoice,
+    *,
+    status: StatusSurface,
+) -> Downloaded:
     settings = session.settings
     work_dir = session.request_store.work_directory(stored.token)
     request_type = stored.request_type

@@ -18,7 +18,7 @@ from services.gallery import (
 )
 from services.sources import gallery_supports_url
 from services.status import StatusSurface
-from utils.logging_config import redact_command
+from utils.logging_config import redact_command, safe_url_label
 from utils.models import ParsedInput
 
 
@@ -382,6 +382,14 @@ def test_gallery_command_redacted():
     ]
 
 
+def test_safe_url_label_strips_credentials_and_query():
+    """Regression: a URL with user:pass@ must never reach the logs."""
+    assert (
+        safe_url_label("https://user:secret@host.example/path?x=1")
+        == "https://host.example/path"
+    )
+    assert safe_url_label("https://host.example/path") == "https://host.example/path"
+
 
 @pytest.mark.parametrize(
     "url",
@@ -528,6 +536,21 @@ def test_gallery_url_items_caption_and_types():
     assert items[1]["caption"] is None
     assert items[0]["send_type"] == "photo"
     assert items[1]["send_type"] == "video"
+
+
+def test_gallery_url_items_skips_videos_above_telegram_fetch_limit():
+    """Regression: the DM CDN path sent oversized videos by URL, which the
+    Telegram fetcher always rejects (~20MB) before the local fallback."""
+    items = gallery_url_items(
+        [
+            {"_url": "https://c/a.jpg", "extension": "jpg", "filename": "a"},
+            {"_url": "https://c/big.mp4", "extension": "mp4", "filename": "big", "size": 17 * 1024 * 1024},
+            {"_url": "https://c/ok.mp4", "extension": "mp4", "filename": "ok", "size": 1024},
+        ],
+        None,
+        ParsedInput(source_url="https://s/1"),
+    )
+    assert [item["filename"] for item in items] == ["a.jpg", "ok.mp4"]
     assert items[0]["filename"] == "a.jpg"
 
 

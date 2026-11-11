@@ -234,9 +234,9 @@ async def intake_message(  # noqa: C901, PLR0911
             sent = await cast(Bot, message.bot).send_photo(
                 chat_id=message.chat.id,
                 photo=parsed.source_url,
-                caption=(parsed.custom_file_name or file_name)[
-                    : text.CAPTION_LIMIT
-                ],
+                caption=text.esc(
+                    (parsed.custom_file_name or file_name)[: text.CAPTION_LIMIT]
+                ),
             )
         except TelegramAPIError:
             sent = None

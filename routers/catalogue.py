@@ -30,6 +30,7 @@ from services.catalogue_flow import (
     track_request,
 )
 from services.catalogue_search import (
+    ART_PREFIXES,
     CatalogueNetworkError,
     SearchItem,
     SearchQuery,
@@ -80,6 +81,29 @@ async def catalogue_query(query: InlineQuery, session: Session) -> object | None
     preferences = session.preferences(query.from_user.id)
     if not preferences.text_search:
         return UNHANDLED
+    art = _art_route(raw, preferences.provider)
+    if art is not None:
+        word, provider = art
+        if not word:
+            return UNHANDLED
+        return await _art_query(query, session, word, provider)
+    return await _music_query(query, session, raw, preferences)
+
+
+def _art_route(raw: str, provider: str) -> tuple[str, str] | None:
+    """Art-source routing: a ``.pxv``/``.paw`` prefix overrides the user's
+    provider for one query; otherwise art providers route every query."""
+    first = raw.split(maxsplit=1)[0]
+    if first in ART_PREFIXES:
+        return raw.split(maxsplit=1)[1] if " " in raw else "", ART_PREFIXES[first]
+    if provider in ("pixiv", "pawchive"):
+        return raw, provider
+    return None
+
+
+async def _music_query(
+    query: InlineQuery, session: Session, raw: str, preferences
+) -> object | None:
     user_id = query.from_user.id
     cache_key = f"{preferences.provider}:{raw}"
     now = monotonic()
@@ -151,6 +175,79 @@ async def catalogue_query(query: InlineQuery, session: Session) -> object | None
             results.append(_media_result(session, item))
     await query.answer(results, cache_time=30, is_personal=True)
 
+
+async def _art_query(
+    query: InlineQuery, session: Session, raw: str, provider: str
+) -> None:
+    """Art sources answer the same surface: artist hits first (a profile
+    link the DM flow turns into a browse), then work/post download articles."""
+    user_id = query.from_user.id
+    now = monotonic()
+    if now - _LAST_SEARCH.get(user_id, 0) < 0.5:
+        return
+    _capped(_LAST_SEARCH, user_id, now)
+    settings = session.settings
+    word = SearchQuery.parse(raw).text
+    if not word:
+        await query.answer([], cache_time=1, is_personal=True)
+        return
+    try:
+        if provider == "pixiv":
+            artists = await art_search.search_pixiv(settings, word)
+            works = await art_search.search_pixiv_works(settings, word)
+        else:
+            artists = await art_search.search_pawchive(settings, word)
+            works = await art_search.search_pawchive_posts(settings, word)
+    except (RuntimeError, ValueError) as exc:
+        logger.info(
+            "Art search failed | user=%s provider=%s error=%s", user_id, provider, exc
+        )
+        await query.answer(
+            [_search_error_article(str(exc))], cache_time=1, is_personal=True
+        )
+        return
+    results: list[InlineQueryResultUnion] = [_art_artist_result(hit) for hit in artists]
+    results.extend(_art_work_result(session, hit) for hit in works)
+    await query.answer(results, cache_time=30, is_personal=True)
+
+
+def _search_error_article(message: str) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id="art-search-error",
+        title=text.SEARCH_FAILED,
+        input_message_content=InputTextMessageContent(message_text=text.esc(message)),
+    )
+
+
+def _art_artist_result(hit: art_search.ArtHit) -> InlineQueryResultArticle:
+    """An artist hit inserts its profile URL; the DM flow owns what follows."""
+    return InlineQueryResultArticle(
+        id=f"artist-link:{hit.external_url}",
+        title=f"🎨 {hit.title}",
+        description=hit.description,
+        thumbnail_url=hit.thumbnail_url,
+        input_message_content=InputTextMessageContent(
+            message_text=text.esc(hit.external_url)
+        ),
+    )
+
+
+def _art_work_result(
+    session: Session, hit: art_search.ArtHit
+) -> InlineQueryResultArticle:
+    """A work/post hit opens a tap-to-download gallery request."""
+    stored = session.request_store.open(
+        RequestType.INLINE_MEDIA,
+        ParsedInput(source_url=hit.external_url),
+        payload=InlineMediaPayload(plan="gallery"),
+    )
+    return InlineQueryResultArticle(
+        id=stored.token,
+        title=f"🖼 {hit.title}",
+        description=hit.description,
+        input_message_content=InputTextMessageContent(message_text=text.PROCESSING),
+        reply_markup=_cancel_keyboard(stored.token),
+    )
 
 def _artist_link_result(item: SearchItem) -> InlineQueryResultArticle:
     """DM handoff: the inserted artist URL triggers a normal bot response."""

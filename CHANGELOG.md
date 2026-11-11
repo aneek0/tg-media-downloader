@@ -45,6 +45,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The four JSON-backed stores (media cache, user settings, follows, requests) share one atomic `JsonStore`; validation
   helpers and the catalogue provider set moved to `utils/models.py`.
 
+### Security
+
+- Hardening pass over the request and download surfaces: request tokens are validated against
+  `[0-9a-f]{10}` before any filesystem use (a forged callback token can no longer point outside the
+  work root), every user-supplied URL passes an SSRF guard rejecting private/loopback/link-local
+  targets before the bot's own fetchers run, `artist_source()` rejects non-alphanumeric artist ids,
+  and URLs with `user:pass@` userinfo never reach the logs. Cookie files materialized from
+  `TWITTER_COOKIES`/`PIXIV_COOKIES` inline content are written `0600`.
+- Resource-safety pass: `_last_seen`/search caches prune stale entries at a cap, `JsonStore.save`
+  fsyncs its atomic rename, cover prefetch tasks are cancelled on shutdown, cover downloads cap at
+  10 MiB, gallery videos above 16 MiB skip the Telegram URL-fetch path (which always rejects them)
+  in favour of the local download, and a subprocess output line over the 64 KiB reader limit no
+  longer kills the drain task.
+
 ### Fixed
 
 - An image over Telegram's 10 MB photo limit is delivered as a document instead of failing the request with

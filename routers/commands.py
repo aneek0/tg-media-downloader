@@ -10,7 +10,7 @@ router = Router(name="commands")
 
 async def _send_start(target: Message, name: str) -> None:
     await target.answer(
-        text.START_TEXT.format(name=name),
+        text.START_TEXT.format(name=text.esc(name)),
         reply_markup=start_keyboard(),
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
@@ -49,7 +49,7 @@ async def handle_ui_callback(callback: CallbackQuery, action: str) -> None:
     if action == "home":
         name = callback.from_user.first_name if callback.from_user else "there"
         await message.edit_text(
-            text.START_TEXT.format(name=name),
+            text.START_TEXT.format(name=text.esc(name)),
             reply_markup=start_keyboard(),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )

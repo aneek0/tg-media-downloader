@@ -540,22 +540,25 @@ async def _send_group(
 
 def _chunks(artifacts: Sequence[DownloadArtifact]) -> Iterator[list[DownloadArtifact]]:
     """Group consecutive artifacts into albums of at most 10; video notes
-    always travel alone because Telegram media groups reject them."""
+    and documents always travel alone because Telegram media groups reject
+    mixing them with photos/videos. ``send_kind`` records the >10 MB photo
+    downgrade, so a large photo is split out before the album is built."""
     batch: list[DownloadArtifact] = []
+
+    def flush() -> Iterator[list[DownloadArtifact]]:
+        if batch:
+            yield batch[:]
+            batch.clear()
+
     for artifact in artifacts:
-        if artifact.send_type == "video_note":
-            if batch:
-                yield batch
-                batch = []
+        if send_kind(artifact) in {"video_note", "document"}:
+            yield from flush()
             yield [artifact]
             continue
         batch.append(artifact)
         if len(batch) == _ALBUM_CHUNK:
-            yield batch
-            batch = []
-    if batch:
-        yield batch
-
+            yield from flush()
+    yield from flush()
 
 async def _deliver(
     *,

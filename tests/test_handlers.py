@@ -62,7 +62,7 @@ async def test_callbacks_acknowledge_inaccessible_messages():
 
     await request_callback(
         query,
-        RequestCallback(token="token123", action="direct_primary"),
+        RequestCallback(token="8f8f886ec6", action="direct_primary"),
         SimpleNamespace(),
     )
     await handle_ui_callback(query, "help")
@@ -93,7 +93,7 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="token123",
+        token="8f8f886ec6",
         request_type="direct_download",
         parsed_input=ParsedInput(source_url="https://example.com/file.mp4"),
         options=[
@@ -144,7 +144,7 @@ async def test_request_callback_uses_stored_request(monkeypatch, tmp_path):
 
     await request_callback(
         query,
-        RequestCallback(token="token123", action="direct_primary"),
+        RequestCallback(token="8f8f886ec6", action="direct_primary"),
         make_session(settings, store, make_media_cache(tmp_path)),
     )
 
@@ -337,7 +337,7 @@ async def test_execute_request_gallery_media(monkeypatch, tmp_path):
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="tok-g",
+        token="bf06ecb9cc",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://x.com/a/status/1"),
         options=[
@@ -615,7 +615,7 @@ async def test_intake_direct_image_fast_path_falls_back_on_error(monkeypatch, tm
 
     probe_mock.assert_awaited_once()
     direct_mock.assert_awaited_once()
-    assert store.load("tok-direct") is None
+    assert store.load("31c9647d45") is None
 
 
 @pytest.mark.asyncio
@@ -624,7 +624,7 @@ async def test_execute_request_gallery_media_uses_url_media(monkeypatch, tmp_pat
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="tok-url",
+        token="34e00e6cb8",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
         options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo")],
@@ -672,7 +672,7 @@ async def test_execute_request_gallery_media_falls_back_on_telegram_error(monkey
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="tok-fb",
+        token="781b6ba71f",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url="https://pawchive.pw/post/1"),
         options=[DownloadOption(option_id="gallery_all", label="Media", send_type="photo")],

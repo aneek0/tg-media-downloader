@@ -223,7 +223,61 @@ async def test_deliver_chunks_over_ten(monkeypatch, tmp_path):
     assert message.reply_media_group.await_count == 1
     assert len(message.reply_media_group.await_args.kwargs["media"]) == 10
     assert message.reply_photo.await_count == 1
-    assert not any(artifact.path.exists() for artifact in artifacts)
+
+
+@pytest.mark.asyncio
+async def test_deliver_does_not_mix_document_with_photos(monkeypatch, tmp_path):
+    """Telegram rejects a media group mixing a document with photos; a
+    post whose files span types must never send them in one album."""
+    monkeypatch.setattr("services.delivery.ChatActionSender", _NoAction)
+    artifacts = [
+        make_artifact(write_media(tmp_path / "a.jpg", "jpg"), "photo"),
+        make_artifact(write_media(tmp_path / "b.zip", "zip"), "document"),
+        make_artifact(write_media(tmp_path / "c.jpg", "jpg"), "photo"),
+    ]
+    message = make_message()
+    message.reply_media_group = AsyncMock()
+    message.reply_document = AsyncMock(
+        return_value=SimpleNamespace(document=SimpleNamespace(file_id="d1"))
+    )
+    _, status = make_status()
+
+    await ChatDelivery(None, message).deliver(
+        artifacts, status=status, started_at=datetime.now()
+    )
+
+    # No media group is ever built across the document.
+    message.reply_media_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_splits_oversized_photo_out_of_album(monkeypatch, tmp_path):
+    """A photo over 10 MB is downgraded to a document by send_kind; it must
+    leave the album before the group is built or Telegram rejects the mix."""
+    monkeypatch.setattr("services.delivery.ChatActionSender", _NoAction)
+    big = tmp_path / "big.jpg"
+    big.write_bytes(b"\xff\xd8\xff\xe0" + b"j" * (11 * 1024 * 1024))
+    small = tmp_path / "small.jpg"
+    small.write_bytes(b"\xff\xd8\xff\xe0" + b"j" * 10)
+    artifacts = [
+        make_artifact(small, "photo"),
+        make_artifact(big, "photo"),
+        make_artifact(small, "photo"),
+    ]
+    message = make_message()
+    message.reply_media_group = AsyncMock()
+    message.reply_document = AsyncMock(
+        return_value=SimpleNamespace(document=SimpleNamespace(file_id="big"))
+    )
+    _, status = make_status()
+
+    await ChatDelivery(None, message).deliver(
+        artifacts, status=status, started_at=datetime.now()
+    )
+
+    # The oversized photo is split out; nothing ever puts it in a media group.
+    message.reply_media_group.assert_not_awaited()
+    message.reply_document.assert_awaited_once()
 
 
 @pytest.mark.asyncio

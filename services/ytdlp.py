@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -8,10 +9,12 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from config import Settings
+from services.parsing import is_probable_youtube_url
 from services.proc import run_command
 from services.progress import humanbytes
 from services.sources import is_tiktok_url, send_type_for_extension
 from services.status import StatusSurface
+from utils import text
 from utils.logging_config import safe_url_label
 from utils.models import DownloadArtifact, DownloadOption, ParsedInput
 
@@ -26,6 +29,7 @@ def _prepare_cookies_file(settings: Settings) -> Path | None:
         cookies_file = settings.download_location / "twitter-cookies.txt"
         cookies_file.parent.mkdir(parents=True, exist_ok=True)
         cookies_file.write_text(raw, encoding="utf-8")
+        cookies_file.chmod(0o600)  # session cookies: owner-only
         return cookies_file.resolve()
     path = Path(raw)
     if not path.is_file():
@@ -207,8 +211,11 @@ def _caption_from_info(info: dict, fallback: str) -> str:
     title = info.get("title")
     webpage = info.get("webpage_url")
     if title and webpage:
-        return f'<b><a href="{webpage}">{title}</a></b>'
-    return title or fallback
+        return (
+            f'<b><a href="{html.escape(str(webpage), quote=True)}">'
+            f"{text.esc(str(title))}</a></b>"
+        )
+    return text.esc(str(title)) if title else fallback
 
 
 async def download_quick_youtube(
@@ -416,8 +423,14 @@ async def download_selected_format(
         send_type = "audio"
     else:
         format_selector = option.format_id or "best"
-        if "youtube" in parsed_input.source_url or "youtu.be" in parsed_input.source_url:
-            format_selector = f"{format_selector}+bestaudio"
+        if is_probable_youtube_url(parsed_input.source_url):
+            # YouTube splits video/audio: a video-only format plays silent
+            # unless bestaudio is merged in.
+            format_selector = f"{format_selector}+bestaudio/{format_selector}"
+        else:
+            # Progressive formats on other sites refuse merging; try the raw
+            # format first, then a merged fallback.
+            format_selector = f"{format_selector}/{format_selector}+bestaudio/best"
         command.extend(
             [
                 "-f",

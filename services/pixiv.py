@@ -186,6 +186,7 @@ def cookies_file(settings: Settings) -> Path | None:
         path = settings.download_location / "pixiv-cookies.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(raw, encoding="utf-8")
+        path.chmod(0o600)  # session cookies: owner-only
         return path.resolve()
     candidate = Path(raw)
     if candidate.is_file():
@@ -298,7 +299,9 @@ async def _app_get(
         proxy=settings.http_proxy or None,
     ) as response:
         if response.status in {401, 403}:
-            _access.pop(settings.pixiv_refresh_token, None)
+            # Pop under the key _access_token cached with (gallery-dl token
+            # vs env token), or the dead entry survives for an hour.
+            _access.pop(refresh_token(settings), None)
             raise PixivError(
                 "Pixiv rejected the login. Re-run `gallery-dl oauth:pixiv`."
             )
@@ -455,6 +458,8 @@ async def download_covers(
                     proxy=settings.http_proxy or None,
                 ) as response:
                     response.raise_for_status()
+                    if response.content_length and response.content_length > 10 * 2**20:
+                        return None  # covers are thumbnails; 10 MiB is abuse
                     partial = target.with_name(f"{target.name}.part")
                     partial.write_bytes(await response.read())
                     partial.replace(target)

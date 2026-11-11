@@ -42,6 +42,7 @@ class Session:
     user_settings: UserSettingsStore
     follows: FollowStore
     gallery_download_limiter: asyncio.Semaphore
+    download_limiter: asyncio.Semaphore
     identity: BotIdentity = field(default_factory=BotIdentity)
 
     def _preference_defaults(self) -> dict[str, str]:
@@ -82,6 +83,7 @@ def build_session(
         media_cache=MediaCache(settings.media_cache_file),
         mornye=mornye or MornyeService(settings),
         gallery_download_limiter=asyncio.Semaphore(GALLERY_DOWNLOADS_PER_BOT),
+        download_limiter=asyncio.Semaphore(settings.download_threads),
         catalogue_search=CatalogueSearch(provider=settings.search_provider),
         user_settings=UserSettingsStore(settings.user_settings_file),
         follows=FollowStore(settings.follows_file),

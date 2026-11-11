@@ -367,7 +367,7 @@ async def test_expired_navigation_token_is_reported(tmp_path: Path) -> None:
 
     await pixiv_callback(
         query,
-        PixivNavCallback(token="gone", page=0, action="next"),
+        PixivNavCallback(token="a09a0a70c5", page=0, action="next"),
         session,
     )
 
@@ -908,7 +908,7 @@ async def test_zip_only_pixiv_probe_skips_the_url_send_path(
         "_url": "https://i.pximg.net/img-zip-ugoira/1.zip",
     }
     stored = StoredRequest(
-        token="tok-pixiv",
+        token="4f00e9c3bd",
         request_type="gallery_media",
         parsed_input=ParsedInput(source_url=url),
         options=[
@@ -1182,6 +1182,7 @@ async def test_profile_page_downloads_works_concurrently_in_page_order(
 class _FakeResponse:
     def __init__(self, body: bytes) -> None:
         self._body = body
+        self.content_length = len(body)
 
     async def __aenter__(self):
         return self

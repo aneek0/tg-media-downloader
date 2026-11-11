@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from config import Settings
+from utils import text
 from utils.models import DownloadArtifact, ParsedInput
 
 logger = logging.getLogger(__name__)
@@ -566,6 +567,9 @@ class MornyeService:
             filename_format="{title} - {artist}",
             create_playlist_subfolders=False,
             enrich_providers=[],
+            # Without a timeout a hung provider socket blocks the request
+            # forever: the engine only arms wait_for when timeout_s is set.
+            timeout_s=300,
         )
         semaphore = asyncio.Semaphore(2)
 
@@ -732,6 +736,9 @@ class MornyeService:
             # api.zarz.moe /dl/dzr resolver flakes (ConnectError/HTTP 503 on
             # ~1 in 3 calls) — retries absorb it. See ADR 0002.
             track_max_retries=2,
+            # Without a timeout a hung provider socket blocks the request
+            # forever: the engine only arms wait_for when timeout_s is set.
+            timeout_s=300,
             # A Hi-Res request answered with upsampled CD audio is a bigger
             # file with no more music in it; re-fetch it at honest LOSSLESS.
             verify_hires=quality_is_hires,
@@ -761,6 +768,9 @@ async def _fetch_cover_aiohttp(url: str) -> bytes | None:
             try:
                 async with client.get(url) as response:
                     response.raise_for_status()
+                    if response.content_length and response.content_length > 10 * 2**20:
+                        logger.warning("Cover too large | url host rejected")
+                        return None
                     return await response.read()
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                 logger.warning(
@@ -814,7 +824,7 @@ def _artifacts_from_results(
                 path=path,
                 file_name=path.name,
                 send_type="audio",
-                caption=f"{artists} — {track.title}",
+                caption=text.esc(f"{artists} — {track.title}"),
                 duration=duration,
                 audio_title=track.title,
                 audio_performer=artists if artists != "Unknown Artist" else None,

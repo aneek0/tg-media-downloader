@@ -22,7 +22,7 @@ async def test_inline_audio_edits_with_dm_uploaded_file_id(monkeypatch, tmp_path
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="audio-token",
+        token="a0d10a70c5",
         request_type="inline_media",
         parsed_input=ParsedInput(source_url="https://www.deezer.com/track/1"),
     )
@@ -63,7 +63,7 @@ async def test_inline_audio_edits_with_dm_uploaded_file_id(monkeypatch, tmp_path
     assert isinstance(media, InputMediaAudio)
     assert media.media == "AUDIO_DM"
     assert media.title == "Song"
-    assert store.load("audio-token") is None
+    assert store.load("a0d10a70c5") is None
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_inline_cached_audio_skips_download(
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     source_url = "https://www.deezer.com/track/3406923721"
-    token = f"cached-{request_type}-{caption_status}"
+    token = f"ca{int(request_type == 'inline_media')}{int(caption_status)}c1c2c3"
     stored = StoredRequest(
         token=token,
         request_type=request_type,
@@ -125,7 +125,7 @@ async def test_album_get_all_edits_first_track_and_spills_remainder(
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="album-order",
+        token="a0b0a070c5",
         request_type="mornye",
         parsed_input=ParsedInput(source_url="https://www.deezer.com/album/1"),
     )
@@ -206,7 +206,7 @@ async def test_inline_audio_without_bot_chat_falls_back_to_open_bot(
     settings.ensure_directories()
     store = RequestStore(settings.requests_dir, settings.work_dir)
     stored = StoredRequest(
-        token="no-dm",
+        token="a0d0a070c5",
         request_type="mornye",
         parsed_input=ParsedInput(source_url="https://www.deezer.com/album/1"),
     )
@@ -267,7 +267,7 @@ async def test_inline_audio_without_bot_chat_falls_back_to_open_bot(
     assert "open the bot and send the link" in failed
     # The remaining tracks are never claimed as sent.
     assert "more files" not in failed
-    assert store.load("no-dm") is None
+    assert store.load("a0d0a070c5") is None
 
 
 @pytest.mark.asyncio
@@ -279,7 +279,7 @@ async def test_inline_audio_cache_keeps_flac_and_mp3_apart(monkeypatch, tmp_path
     store = RequestStore(settings.requests_dir, settings.work_dir)
     source_url = "https://www.deezer.com/track/3406923721"
     stored = StoredRequest(
-        token="format-token",
+        token="a0f0a070c5",
         request_type="mornye",
         parsed_input=ParsedInput(source_url=source_url),
     )

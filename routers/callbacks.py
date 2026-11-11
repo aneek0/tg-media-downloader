@@ -47,7 +47,10 @@ async def request_callback(
     # aiogram binds a bot to every dispatched update.
     bot = cast(Bot, query.bot)
 
-    stored = session.request_store.load(callback_data.token)
+    try:
+        stored = session.request_store.load(callback_data.token)
+    except ValueError:
+        stored = None  # forged callback data
     if not stored:
         logger.warning(
             "Expired request callback | user=%s token=%s action=%s",

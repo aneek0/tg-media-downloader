@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 from config import Settings
 from services.catalogue_search import CatalogueSearch, SearchItem
@@ -15,6 +18,18 @@ from services.request_store import RequestStore
 from services.session import Session
 from services.user_settings import UserSettingsStore
 from utils.models import CachedMedia
+
+
+@pytest.fixture(autouse=True)
+def _offline_dns(monkeypatch):
+    """No real DNS from tests: netguard resolves every host to one public
+    IP, so pipeline/inline flows run without touching the network."""
+    monkeypatch.setattr(
+        "services.netguard.socket.getaddrinfo",
+        lambda host, port, **kw: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+        ],
+    )
 
 
 def make_artist_search_item() -> SearchItem:
@@ -102,4 +117,5 @@ def make_session(
         user_settings=UserSettingsStore(settings.user_settings_file),
         follows=FollowStore(settings.follows_file),
         gallery_download_limiter=asyncio.Semaphore(6),
+        download_limiter=asyncio.Semaphore(settings.download_threads),
     )

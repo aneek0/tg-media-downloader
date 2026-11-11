@@ -301,9 +301,9 @@ async def _obtain_artifacts(
                 inline_message_id=inline_message_id,
                 media=InputMediaAudio(
                     media=entry.file_id,
-                    caption=text.split_caption(
-                        entry.caption or entry.file_name
-                    )[0],
+                    caption=(
+                        entry.caption or text.esc(entry.file_name)
+                    ),
                 ),
             )
             logger.info("Inline audio cache hit | user=%s token=%s", user_id, token)
@@ -393,7 +393,7 @@ async def _run_inline_download(
 
     rest = artifacts[1:]
     first = artifacts[0]
-    base_caption = (first.caption or first.file_name)[: text.CAPTION_LIMIT]
+    base_caption = (first.caption or text.esc(first.file_name))[: text.CAPTION_LIMIT]
     mention = session.identity.mention
     expected_dm_note = _spillover_note(len(rest), delivered=True, mention=mention)
     caption = base_caption + expected_dm_note
