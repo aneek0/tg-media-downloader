@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-11-12
+
 ### Added
 - Text search over art sources, mirroring the music catalogue. `.pxv <query>` searches Pixiv (artists
   through the OAuth App API, works by tag/title) and `.paw <query>` searches Pawchive (creators by name
