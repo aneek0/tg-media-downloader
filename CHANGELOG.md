@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Every link was rejected with "This link points at a private or local network address"
+  behind a sing-box/mihomo fakeip/TUN VPN: DNS answers there land in the reserved
+  198.18.0.0/15 range, which the bot's own SSRF guard treated as private.
+  `ALLOW_FAKEIP=1` exempts exactly that range (real 10.x/192.168.x/loopback targets
+  stay blocked).
+
 ## [3.4.0] - 2026-11-12
 
 ### Added
