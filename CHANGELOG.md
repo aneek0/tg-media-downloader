@@ -12,6 +12,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   198.18.0.0/15 range, which the bot's own SSRF guard treated as private.
   `ALLOW_FAKEIP=1` exempts exactly that range (real 10.x/192.168.x/loopback targets
   stay blocked).
+- TikTok short links (`vt.tiktok.com`/`vm.tiktok.com`): the gallery probe now runs gallery-dl with
+  `--resolve-json`, so the Queue message a short link yields is followed to the real media entries.
+  Previously the probe came back empty and photo posts fell through to the direct-download path,
+  which rejected the HTML page. Video short links were unaffected (yt-dlp resolves the redirect itself).
+- TikTok captions: the probe reads the post description from the ``desc`` key (TikTok's
+  ``content`` is empty) and treats an empty first entry as unset, so a post caption is the
+  post's own text instead of the CDN filename.
+- TikTok soundtracks are named: the mp3 of a photo post lands as its music title (`music.title`)
+  with the author as performer, in both the URL-send and the local-upload paths, instead of the
+  numeric post id.
+- Inline answers with cached audio no longer crash the query with `AUDIO_TITLE_EMPTY`: the cached
+  audio result and every audio send carries a title (music title, file name, or `Audio N`).
+- Posts without a description (TikTok photo posts) are captioned with the author's display name
+  (`author.nickname`) instead of the CDN file hash, in the DM paths and the inline caption.
+- TikTok photo posts ship their soundtrack: `send_url_media` now sends `audio` items (previously
+  `KeyError: 'audio'`), and audio never joins a photo album — Telegram media groups reject the mix, so
+  the photos keep one album while the audio follows as its own `send_audio` message, in both the
+  URL-send and the local-upload paths.
 
 ## [3.4.0] - 2026-11-12
 

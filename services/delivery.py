@@ -127,11 +127,12 @@ def rich_post_html(photo_urls: Sequence[str], caption: str) -> str:
 
 def _url_media_item(
     item: dict, caption: str | None
-) -> InputMediaPhoto | InputMediaVideo | InputMediaDocument:
+) -> InputMediaPhoto | InputMediaVideo | InputMediaAudio | InputMediaDocument:
     """InputMedia wrapper for a raw URL (Telegram fetches it itself)."""
     media_class = {
         "photo": InputMediaPhoto,
         "video": InputMediaVideo,
+        "audio": InputMediaAudio,
         "document": InputMediaDocument,
     }[item["send_type"]]
     if item["send_type"] == "video":
@@ -169,61 +170,20 @@ async def send_url_media(
     fallback. Returns None when the post went out as a rich message and has
     no file_id to cache."""
     if len(items) == 1:
-        item = items[0]
-        send_type = item["send_type"]
-        caption, overflow = text.split_caption(item.get("caption"))
-        if overflow and send_type == "photo":
-            try:
-                await bot.send_rich_message(
-                    chat_id=chat_id,
-                    rich_message=InputRichMessage(
-                        html=rich_post_html([item["url"]], item["caption"])
-                    ),
-                )
-            except TelegramAPIError:
-                logger.warning(
-                    "Rich message send failed, falling back to caption and "
-                    "follow-up text | chat=%s source=%s",
-                    chat_id,
-                    safe_url_label(item["url"]),
-                )
-            else:
-                logger.info(
-                    "Rich message sent | chat=%s source=%s chars=%s",
-                    chat_id,
-                    safe_url_label(item["url"]),
-                    len(item["caption"]),
-                )
-                return []
-        if send_type == "photo":
-            sent = await bot.send_photo(
-                chat_id=chat_id, photo=item["url"], caption=caption
-            )
-        elif send_type == "video":
-            sent = await bot.send_video(
-                chat_id=chat_id,
-                video=item["url"],
-                caption=caption,
-                supports_streaming=True,
-            )
-        else:
-            sent = await bot.send_document(
-                chat_id=chat_id,
-                document=item["url"],
-                caption=caption,
-            )
-        entry = cached_media_from(
-            sent,
-            send_type=send_type,
-            file_name=item["filename"],
-            caption=item.get("caption"),
-        )
-        await _send_overflow(bot, chat_id, None, overflow)
-        return [entry] if entry is not None else []
+        return await _send_url_single(bot=bot, chat_id=chat_id, item=items[0])
 
     sent_media: list[CachedMedia] = []
-    for start in range(0, len(items), _ALBUM_CHUNK):
-        chunk = items[start : start + _ALBUM_CHUNK]
+    # Telegram media groups reject mixing audio/documents with photos and
+    # videos, so those kinds travel as their own single sends after the
+    # rest keeps its album.
+    album = [
+        item for item in items if item["send_type"] in {"photo", "video"}
+    ]
+    singles = [
+        item for item in items if item["send_type"] not in {"photo", "video"}
+    ]
+    for start in range(0, len(album), _ALBUM_CHUNK):
+        chunk = album[start : start + _ALBUM_CHUNK]
         caption, overflow = text.split_caption(chunk[0].get("caption"))
         sent_group = await _retry_media_group(
             lambda media: bot.send_media_group(chat_id=chat_id, media=media),
@@ -242,7 +202,78 @@ async def send_url_media(
             if entry is not None:
                 sent_media.append(entry)
         await _send_overflow(bot, chat_id, None, overflow)
+    for item in singles:
+        sent_media.extend(
+            await _send_url_single(bot=bot, chat_id=chat_id, item=item)
+        )
     return sent_media
+
+
+async def _send_url_single(
+    *, bot: Bot, chat_id: int, item: dict
+) -> list[CachedMedia]:
+    """Send one raw-URL item and return its cache entries (empty when the
+    post went out as a rich message and has no file_id to cache)."""
+    send_type = item["send_type"]
+    caption, overflow = text.split_caption(item.get("caption"))
+    if overflow and send_type == "photo":
+        try:
+            await bot.send_rich_message(
+                chat_id=chat_id,
+                rich_message=InputRichMessage(
+                    html=rich_post_html([item["url"]], item["caption"])
+                ),
+            )
+        except TelegramAPIError:
+            logger.warning(
+                "Rich message send failed, falling back to caption and "
+                "follow-up text | chat=%s source=%s",
+                chat_id,
+                safe_url_label(item["url"]),
+            )
+        else:
+            logger.info(
+                "Rich message sent | chat=%s source=%s chars=%s",
+                chat_id,
+                safe_url_label(item["url"]),
+                len(item["caption"]),
+            )
+            return []
+    if send_type == "photo":
+        sent = await bot.send_photo(
+            chat_id=chat_id, photo=item["url"], caption=caption
+        )
+    elif send_type == "video":
+        sent = await bot.send_video(
+            chat_id=chat_id,
+            video=item["url"],
+            caption=caption,
+            supports_streaming=True,
+        )
+    elif send_type == "audio":
+        sent = await bot.send_audio(
+            chat_id=chat_id,
+            audio=item["url"],
+            caption=caption,
+            # An explicit empty title is rejected (AUDIO_TITLE_EMPTY).
+            title=item.get("audio_title") or item["filename"],
+            performer=item.get("audio_performer"),
+        )
+    else:
+        sent = await bot.send_document(
+            chat_id=chat_id,
+            document=item["url"],
+            caption=caption,
+        )
+    entry = cached_media_from(
+        sent,
+        send_type=send_type,
+        file_name=item["filename"],
+        caption=item.get("caption"),
+    )
+    await _send_overflow(bot, chat_id, None, overflow)
+    return [entry] if entry is not None else []
+
 
 
 def _extract_cover(path: Path) -> Path | None:
@@ -539,10 +570,10 @@ async def _send_group(
 
 
 def _chunks(artifacts: Sequence[DownloadArtifact]) -> Iterator[list[DownloadArtifact]]:
-    """Group consecutive artifacts into albums of at most 10; video notes
-    and documents always travel alone because Telegram media groups reject
-    mixing them with photos/videos. ``send_kind`` records the >10 MB photo
-    downgrade, so a large photo is split out before the album is built."""
+    """Group consecutive artifacts into albums of at most 10; video notes,
+    documents and audio always travel alone because Telegram media groups
+    reject mixing them with photos/videos. ``send_kind`` records the >10 MB
+    photo downgrade, so a large photo is split out before the album is built."""
     batch: list[DownloadArtifact] = []
 
     def flush() -> Iterator[list[DownloadArtifact]]:
@@ -551,7 +582,7 @@ def _chunks(artifacts: Sequence[DownloadArtifact]) -> Iterator[list[DownloadArti
             batch.clear()
 
     for artifact in artifacts:
-        if send_kind(artifact) in {"video_note", "document"}:
+        if send_kind(artifact) in {"video_note", "document", "audio"}:
             yield from flush()
             yield [artifact]
             continue
@@ -711,7 +742,7 @@ async def send_cached(  # noqa: C901
                 sent_messages.append(await bot.send_message(chat_id, part))
         return sent_messages
 
-    for entry in entries:
+    for index, entry in enumerate(entries):
         caption, overflow = text.split_caption(entry.caption)
         if entry.send_type == "photo":
             sent_messages.append(
@@ -732,7 +763,9 @@ async def send_cached(  # noqa: C901
                     chat_id,
                     audio=entry.file_id,
                     caption=caption,
-                    title=entry.file_name,
+                    # An empty title is rejected (AUDIO_TITLE_EMPTY); the
+                    # cached numeric names predate the music-title fix.
+                    title=entry.file_name or f"Audio {index + 1}",
                 )
             )
         elif entry.send_type == "animation":
@@ -785,6 +818,9 @@ def inline_cached_results(entries: list[CachedMedia]) -> list:
                 InlineQueryResultCachedAudio(
                     id=result_id,
                     audio_file_id=entry.file_id,
+                    # The local Bot API server rejects a title-less audio
+                    # result with AUDIO_TITLE_EMPTY.
+                    title=entry.file_name or f"Audio {index + 1}",
                     caption=caption if index == 0 else None,
                 )
             )

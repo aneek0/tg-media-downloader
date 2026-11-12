@@ -74,6 +74,8 @@ def _gallery_flags(
     return flags
 
 
+# -J (resolve-json): short links (vt.tiktok.com, …) yield a Queue
+# message that only -J follows to the real media entries.
 def _gallery_probe_command(
     parsed_input: ParsedInput,
     settings: Settings,
@@ -82,7 +84,7 @@ def _gallery_probe_command(
     flags = extra_flags or []
     return [
         "gallery-dl",
-        "-j",
+        "-J",
         *_gallery_flags(settings, parsed_input.source_url),
         *flags,
         parsed_input.source_url,
@@ -133,14 +135,13 @@ def _parse_gallery_probe(stdout: str) -> tuple[list[dict], str | None, str | Non
             if len(entry) > 1 and isinstance(entry[1], str):
                 payload["_url"] = entry[1]
             file_dicts.append(payload)
-            if content is None:
-                content = payload.get("content")
+            if not content:
+                content = payload.get("content") or payload.get("desc")
         elif kind == 2:
             payload = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
-            if content is None:
-                content = payload.get("content")
+            if not content:
+                content = payload.get("content") or payload.get("desc")
     return file_dicts, content, error
-
 
 @dataclass(slots=True)
 class GalleryProbe:
@@ -223,6 +224,23 @@ def _gallery_friendly_error(error: str, cookies_configured: bool) -> str:
     return error
 
 
+def _author_nick(file_dicts: list[dict] | None) -> str | None:
+    """Display name of the post author across gallery-dl extractors:
+    TikTok 'author.nickname', Twitter 'author.nick', pawchive 'username'."""
+    for media in file_dicts or []:
+        author = media.get("author") or {}
+        nick = (
+            author.get("nick")
+            or author.get("name")
+            or author.get("nickname")
+            or media.get("username")
+        )
+        nick = str(nick or "").strip()
+        if nick:
+            return nick
+    return None
+
+
 def gallery_url_items(
     file_dicts: list[dict], content: str | None, parsed_input: ParsedInput
 ) -> list[dict]:
@@ -231,7 +249,13 @@ def gallery_url_items(
     fallback_name = next(
         (str(media["filename"]).strip() for media in file_dicts if media.get("filename")), ""
     )
-    body = parsed_input.custom_file_name or plain_caption(content) or fallback_name or parsed_input.source_url
+    body = (
+        parsed_input.custom_file_name
+        or plain_caption(content)
+        or _author_nick(file_dicts)
+        or fallback_name
+        or parsed_input.source_url
+    )
     caption = _linked_caption(body, parsed_input.source_url)
     items: list[dict] = []
     for media in file_dicts:
@@ -252,7 +276,9 @@ def gallery_url_items(
             # A Pixiv ugoira lands as a frames archive; only the local
             # download converts it to MP4, so never send the archive itself.
             continue
-        name = media.get("filename") or "media"
+        name = media.get("filename") or (
+            _music_title(media.get("music")) or "media"
+        )
         if ext and not name.lower().endswith(f".{ext}"):
             name = f"{name}.{ext}"
         items.append(
@@ -261,6 +287,8 @@ def gallery_url_items(
                 "filename": name,
                 "send_type": send_type_for_extension(ext),
                 "caption": caption if not items else None,
+                "audio_title": _music_title(media.get("music")),
+                "audio_performer": _music_performer(media.get("music")),
             }
         )
     return items
@@ -273,7 +301,12 @@ def _gallery_local_name(media: dict, index: int, is_twitter: bool) -> tuple[str,
         number = media.get("num") or index
         name = f"{identifier}_{number}"
     else:
-        name = str(media.get("filename") or media.get("id") or f"media_{index}")
+        name = str(
+            media.get("filename")
+            or _music_title(media.get("music"))
+            or media.get("id")
+            or f"media_{index}"
+        )
     name = Path(name).name
     if name in {"", ".", ".."}:
         name = f"media_{index}"
@@ -381,6 +414,19 @@ async def _download_gallery_album(
         return []
 
 
+def _music_title(music: dict | None) -> str | None:
+    """TikTok soundtrack metadata ('music' key) for the audio send."""
+    if isinstance(music, dict):
+        title = str(music.get("title") or "").strip()
+        return title or None
+    return None
+
+
+def _music_performer(music: dict | None) -> str | None:
+    if isinstance(music, dict):
+        performer = str(music.get("authorName") or "").strip()
+        return performer or None
+
 async def download_gallery_media(
     *,
     parsed_input: ParsedInput,
@@ -447,14 +493,27 @@ async def download_gallery_media(
         if not files:
             raise RuntimeError("gallery-dl downloaded no files")
 
-    body = parsed_input.custom_file_name or plain_caption(content) or files[0].stem
+    body = (
+        parsed_input.custom_file_name
+        or plain_caption(content)
+        or _author_nick(file_dicts)
+        or files[0].stem
+    )
     caption = _linked_caption(body, parsed_input.source_url)
+    # TikTok attaches the post's soundtrack metadata to every item, so one
+    # lookup serves the whole album; only the audio artifact uses it.
+    music = next(
+        (media.get("music") for media in file_dicts or [] if media.get("music")),
+        None,
+    )
     artifacts = [
         DownloadArtifact(
             path=path,
             file_name=path.name,
             send_type=send_type_for_extension(path.suffix.lstrip(".").lower()),
             caption=caption,
+            audio_title=_music_title(music),
+            audio_performer=_music_performer(music),
         )
         for path in files
     ]

@@ -539,6 +539,68 @@ async def test_send_url_media_error_propagates():
             ],
         )
 
+@pytest.mark.asyncio
+async def test_send_url_media_photo_album_plus_audio():
+    """Regression: a TikTok photo post probes as photos + mp3; Telegram media
+    groups reject mixing audio with photos, so the photos keep one album and
+    the audio follows as its own send_audio message instead of raising
+    KeyError on 'audio' or splitting the album into single photos."""
+    bot = SimpleNamespace(
+        send_media_group=AsyncMock(
+            return_value=[
+                SimpleNamespace(photo=[SimpleNamespace(file_id="P1")]),
+                SimpleNamespace(photo=[SimpleNamespace(file_id="P2")]),
+                SimpleNamespace(photo=[SimpleNamespace(file_id="P3")]),
+            ]
+        ),
+        send_photo=AsyncMock(),
+        send_audio=AsyncMock(
+            return_value=SimpleNamespace(audio=SimpleNamespace(file_id="A1"))
+        ),
+    )
+    result = await send_url_media(
+        bot=bot,
+        chat_id=5,
+        items=[
+            {
+                "url": f"https://c/a{i}.jpg",
+                "filename": f"a{i}.jpg",
+                "send_type": "photo",
+                "caption": "cap" if i == 0 else None,
+            }
+            for i in range(3)
+        ]
+        + [
+            {
+                "url": "https://c/b.mp3",
+                "filename": "b.mp3",
+                "send_type": "audio",
+                "caption": None,
+            }
+        ],
+    )
+    assert bot.send_media_group.await_count == 1
+    media = bot.send_media_group.await_args.kwargs["media"]
+    assert len(media) == 3
+    assert all(isinstance(item, InputMediaPhoto) for item in media)
+    bot.send_photo.assert_not_called()
+    assert bot.send_audio.await_args.kwargs["audio"] == "https://c/b.mp3"
+    assert [entry.file_id for entry in result] == ["P1", "P2", "P3", "A1"]
+
+
+def test_chunks_audio_travels_alone(tmp_path):
+    """Regression: audio must never join a photo album (Bot API rejects
+    mixed audio+photo media groups), mirroring documents and video notes."""
+    from services.delivery import _chunks
+
+    artifacts = [
+        make_artifact(write_media(tmp_path / "1.jpg", "jpg"), "photo"),
+        make_artifact(write_media(tmp_path / "2.mp3", "mp3"), "audio"),
+        make_artifact(write_media(tmp_path / "3.jpg", "jpg"), "photo"),
+    ]
+    groups = [sorted(a.path.name for a in chunk) for chunk in _chunks(artifacts)]
+    assert groups == [["1.jpg"], ["2.mp3"], ["3.jpg"]]
+
 
 @pytest.mark.asyncio
 async def test_deliver_retries_lost_media_group(tmp_path):

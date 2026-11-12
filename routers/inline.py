@@ -76,6 +76,7 @@ def _probe_caption(file_dicts: list[dict], content: str | None, source_url: str)
     nick = (
         author.get("nick")
         or author.get("name")
+        or author.get("nickname")
         or (file_dicts[0].get("username") if file_dicts else None)
     )
     nick = (nick or "").strip()

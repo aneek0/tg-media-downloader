@@ -60,7 +60,7 @@ def test_gallery_probe_command_shape(tmp_path):
 
     assert command == [
         "gallery-dl",
-        "-j",
+        "-J",
         "--proxy",
         "http://proxy:1",
         "-C",
@@ -124,6 +124,26 @@ def test_parse_gallery_probe_error_entry():
 
     assert error == "'Unavailable'"
 
+
+def test_parse_gallery_probe_reads_tiktok_desc():
+    """Regression: TikTok items carry the post description under ``desc``
+    (their ``content`` is empty), so captions must fall back to it instead
+    of degrading to the CDN filename."""
+    stdout = json.dumps(
+        [
+            [2, {"desc": ""}],
+            [
+                3,
+                "https://p16.tiktokcdn.com/img",
+                {"desc": "Про выгорание", "extension": "jpeg"},
+            ],
+        ]
+    )
+
+    file_dicts, content, error = _parse_gallery_probe(stdout)
+
+    assert content == "Про выгорание"
+    assert error is None
 
 @pytest.mark.asyncio
 async def test_download_gallery_media_builds_artifacts(monkeypatch, tmp_path):

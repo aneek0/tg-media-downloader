@@ -176,7 +176,7 @@ async def test_probe_passes_the_token_by_file_and_never_by_argv(
     )
 
     command = seen["command"]
-    assert command[:2] == ["gallery-dl", "-j"]
+    assert command[:2] == ["gallery-dl", "-J"]
     assert "--config" in command
     assert "refresh-token-value" not in " ".join(command)
 
