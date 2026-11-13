@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Qobuz links (`open.qobuz.com` / `play.qobuz.com` / `www.qobuz.com`, incl. storefront
+  `us-en` slugs) — tracks, albums, and playlists download in private chat and inline
+  through the mornye `ext:qobuz-web` extension, like Deezer links. Qobuz artist links
+  get an explicit unsupported-link message instead of a KeyError-failed download.
+  Requires mornye 2.x: `MORNYE_REGISTRIES` must now list both `registry-python.json`
+  (ships `utilities.sflx`, the signed-session modules every music extension depends on)
+  and `registry.json` (the music extensions) — `.env.example` has the combined value.
+  Qobuz short ids (7-digit track/playlist links from the web player) resolve through
+  a fork branch until upstream releases mornye 2.0.7 (PR mornyeapp/Mornye-Python#278).
+
 ### Fixed
 - Every link was rejected with "This link points at a private or local network address"
   behind a sing-box/mihomo fakeip/TUN VPN: DNS answers there land in the reserved

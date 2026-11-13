@@ -85,6 +85,12 @@ def _fake_service(**overrides) -> MornyeService:
         ("https://open.spotify.com/album/x?si=share", True),
         ("https://www.deezer.com/ru/album/1102603792", True),
         ("https://www.deezer.com/track/4301324572", True),
+        ("https://open.qobuz.com/album/0060252746837", True),
+        ("https://open.qobuz.com/track/8731021", True),
+        ("https://www.qobuz.com/us-en/album/heaven-nor-hell-volbeat/0060252746837", True),
+        ("https://open.qobuz.com/playlist/1182929", True),
+        ("https://play.qobuz.com/artist/26388", True),
+        ("https://qobuz.com/about", False),
         ("https://deezer.com/about", False),
     ],
 )
@@ -162,6 +168,33 @@ async def test_resolve_deezer_empty_result_raises(monkeypatch):
     service = _fake_service()
     with pytest.raises(RuntimeError, match="MORNYE_TRACK_UNRESOLVED"):
         await service.resolve_url("https://www.deezer.com/album/1")
+
+@pytest.mark.asyncio
+async def test_resolve_qobuz_track_via_catalogue_extension(monkeypatch):
+    """Qobuz links resolve through the catalogue extension like Deezer ones,
+    including the 7-digit track ids the web player shares."""
+    track = _make_track("qobuz:8731021", "Heaven Nor Hell")
+    ext_client = SimpleNamespace(
+        get_url_async=AsyncMock(return_value=("Heaven Nor Hell", [track], "cover"))
+    )
+    monkeypatch.setattr(
+        "mornye.core.extension_metadata.ExtensionMetadataClient",
+        SimpleNamespace(for_url=Mock(return_value=ext_client)),
+    )
+    service = _fake_service()
+    target = await service.resolve_url("https://open.qobuz.com/track/8731021")
+    assert target.kind == "track"
+    assert target.name == "Heaven Nor Hell"
+    assert len(target.tracks) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_qobuz_artist_link_refused():
+    """mornye's catalogue resolver has no artist method; the bot says so
+    instead of surfacing a KeyError as a failed download."""
+    service = _fake_service()
+    with pytest.raises(RuntimeError, match="artist links are not supported"):
+        await service.resolve_url("https://play.qobuz.com/artist/26388")
 
 
 @pytest.mark.asyncio

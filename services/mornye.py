@@ -75,7 +75,10 @@ def _parse_tidal_link(url: str) -> dict[str, str] | None:
 
     mornye raises for non-Tidal input, so the host check comes first."""
     from mornye.core.errors import MornyeError
-    from mornye.core.tidal_metadata import is_tidal_url, parse_tidal_url
+    from mornye.core.tidal_metadata import (  # ty: ignore[import-not-found]  # runtime-only utilities.sflx alias
+        is_tidal_url,
+        parse_tidal_url,
+    )
 
     if not is_tidal_url(url):
         return None
@@ -230,7 +233,9 @@ class MornyeService:
 
     @staticmethod
     async def _maintain_signed_client(extension: str, client, *, log_ready=False) -> None:
-        from mornye.core.signed_session_mobile import auth_backoff_remaining
+        from mornye.core.signed_session_mobile import (  # ty: ignore[import-not-found]  # runtime-only alias
+            auth_backoff_remaining,
+        )
 
         if client.authenticated:
             try:
@@ -307,7 +312,9 @@ class MornyeService:
 
     async def _metadata_client(self):
         if self._metadata is None:
-            from mornye.core.spotify_metadata import SpotifyMetadataClient
+            from mornye.core.spotify_metadata import (  # ty: ignore[import-not-found]  # runtime-only alias
+                SpotifyMetadataClient,
+            )
 
             self._metadata = SpotifyMetadataClient()
         return self._metadata
@@ -422,12 +429,21 @@ class MornyeService:
         # matching installed extension's metadata client.
         catalogue = await asyncio.to_thread(self._catalogue_link, url)
         if catalogue is not None:
+            if catalogue.kind == "artist":
+                # mornye's catalogue resolver has no getArtist, so an artist
+                # link dies on a KeyError instead of a readable error.
+                raise RuntimeError(
+                    "Qobuz artist links are not supported here; "
+                    "send a track, album or playlist link."
+                )
             target = await _resolve_catalogue_url(url)
             if target is None or not target.tracks:
                 raise RuntimeError("MORNYE_TRACK_UNRESOLVED")
             return target
 
-        from mornye.core.spotify_metadata import parse_spotify_url
+        from mornye.core.spotify_metadata import (  # ty: ignore[import-not-found]  # runtime-only alias
+            parse_spotify_url,
+        )
 
         info = await asyncio.to_thread(parse_spotify_url, url)
         kind = info["type"]
@@ -463,7 +479,9 @@ class MornyeService:
                 "send a track, album or playlist link."
             )
         if self._tidal is None:
-            from mornye.core.tidal_metadata import TidalMetadataClient
+            from mornye.core.tidal_metadata import (  # ty: ignore[import-not-found]  # runtime-only alias
+                TidalMetadataClient,
+            )
 
             self._tidal = TidalMetadataClient()
         name, tracks, cover, extra = await self._tidal.get_url(url)

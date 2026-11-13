@@ -44,6 +44,9 @@ job, and sends the result back to Telegram with the correct media type and metad
   selected FLAC/MP3 format through mornye
 - **Tidal links** — `listen.tidal.com`/`tidal.com` tracks, albums, and playlists download in private chat and
   inline through mornye; artist/mix links get an explicit unsupported-link message instead of an HTML-download error
+- **Qobuz links** — `open.qobuz.com`/`play.qobuz.com`/`www.qobuz.com` track, album, and playlist links download in
+  private chat and inline through the mornye `ext:qobuz-web` extension; artist links get an explicit
+  unsupported-link message
 - **SoundCloud links** — short/mobile/canonical URLs resolve through the mornye SoundCloud extension; playable
   native AAC streams use `ext:soundcloud`, while unavailable streams or extension failures retain yt-dlp fallback
 - **Artist Cards** — cover, fan metadata, a separate TOP 30 view, up to 50 albums, per-track downloads,
@@ -155,6 +158,7 @@ uv run python bot.py
 - `PAWCHIVE_ROOT` - optional Pawchive archive host override (default `https://pawchive.pw`; the site migrates domains)
 - `FOLLOW_POLL_SECONDS` - release-check interval in seconds (default `21600`, six hours)
 - `MORNYE_SERVICES` - comma-separated provider extensions in download priority order; required for catalogue audio. With the extensions installed, `ext:tidal-web,ext:qobuz-web,ext:deezer` prefers the currently reliable Tidal path and keeps Deezer as fallback
+- `MORNYE_REGISTRIES` - extension registry JSON URLs, comma-separated. With mornye 2.x keep both: `registry-python.json` ships `utilities.sflx` (the signed-session/solver modules every music extension now depends on) and `registry.json` carries the music extensions themselves; the default `.env.example` value lists both
 - `MORNYE_ENRICH_EXTENSIONS` - set `0` (recommended) to skip optional metadata fan-out to every installed JavaScript extension; built-in Deezer/Apple enrichment remains, and Tidal downloads avoid a separate Qobuz Turnstile challenge. Set `1` only if provider-specific extra tags are worth the extra browser runs
 - `MORNYE_EXT_ALLOW_PRIVATE_NETWORK` - set `1` behind a FakeIP/TUN VPN such as sing-box so catalogue search and downloads can reach provider endpoints; enable only for trusted installed extensions
 - `MORNYE_REGISTRIES` - optional comma-separated mornye extension registry JSON URLs (see `.env.example` for the default registry)

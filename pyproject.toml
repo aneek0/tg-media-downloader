@@ -16,7 +16,7 @@ dependencies = [
     "hachoir>=3.3.0,<4",
     "mutagen>=1.47,<2",
     "python-dotenv>=1.0.1,<2",
-    "mornye>=1,<2",
+    "mornye @ git+https://github.com/aneek0/Mornye-Python.git@fix/qobuz-url-id-lengths",
     "pydoll-python==2.27.0",
     "yt-dlp>=2026.7.4",
 ]
@@ -62,9 +62,9 @@ max-branches = 27
 max-returns = 11
 max-statements = 100
 
-
 [tool.ty.src]
 include = ["app.py", "bot.py", "config.py", "routers", "services", "utils"]
+
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

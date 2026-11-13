@@ -135,12 +135,13 @@ _Avoid_: preview, thumbnails, gallery preview
 The origin of a Source URL: a general site, a tweet post, a Pixiv artist or
 Work, or a music service. The domain determines which pipeline turns a Request
 into an Artifact. Current ones: guess (general), twitter, pixiv, spotify,
-deezer, tidal, soundcloud.
+deezer, tidal, qobuz, soundcloud.
 _Avoid_: platform, link type, provider
 
 **Music Request**:
 A Request for a Source URL with a music Source Domain (spotify, deezer, tidal,
-soundcloud): track, album, or playlist. Metadata is resolved before the
+qobuz, soundcloud): track, album, or playlist. Qobuz artist links are refused
+with an explicit message. Metadata is resolved before the
 keyboard; the download is performed by mornye through Providers. Track
 Collection is truncated to the cap.
 _Avoid_: Spotify Request, music request, mornye request, track
