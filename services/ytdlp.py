@@ -208,7 +208,17 @@ def _pick_downloaded_file(work_dir: Path) -> Path:
 
 
 def _caption_from_info(info: dict, fallback: str) -> str:
+    # Sites truncate `title` (TikTok cuts it at ~80 chars with "..."), so
+    # prefer the full description when they match up to the cut.
     title = info.get("title")
+    description = info.get("description")
+    if (
+        isinstance(description, str)
+        and title
+        and str(title).rstrip("… ").endswith("...")
+        and str(description).startswith(str(title).rstrip(".… "))
+    ):
+        title = description
     webpage = info.get("webpage_url")
     if title and webpage:
         return (

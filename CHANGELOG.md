@@ -30,6 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `KeyError: 'audio'`), and audio never joins a photo album — Telegram media groups reject the mix, so
   the photos keep one album while the audio follows as its own `send_audio` message, in both the
   URL-send and the local-upload paths.
+- yt-dlp captions (TikTok videos, YouTube, etc.): TikTok truncates the post title at
+  ~80 characters with "…", and the caption showed that cut text. When `description`
+  extends the truncated `title`, the caption now carries the full post text.
 
 ## [3.4.0] - 2026-11-12
 

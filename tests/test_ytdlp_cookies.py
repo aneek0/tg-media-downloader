@@ -62,6 +62,29 @@ def make_parsed_input() -> ParsedInput:
     return ParsedInput(source_url="https://x.com/a/status/1")
 
 
+def test_caption_from_info_prefers_full_description():
+    """Regression: TikTok truncates `title` at ~80 chars with '...'; captions
+    showed the cut text instead of the full `description`."""
+    from services.ytdlp import _caption_from_info
+
+    info = {
+        "title": "Холодными мы и так в земле належимся. Не бойтесь тепла и говорите пря...",
+        "description": (
+            "Холодными мы и так в земле належимся. Не бойтесь тепла и "
+            "говорите прямо сейчас. #русскаятоска"
+        ),
+        "webpage_url": "https://www.tiktok.com/@a/video/1",
+    }
+    caption = _caption_from_info(info, "stem")
+    assert "прямо сейчас" in caption
+    assert "пря..." not in caption
+    assert caption.startswith('<b><a href="https://www.tiktok.com/@a/video/1">')
+
+    # A title that is not an ellipsis-truncated prefix keeps the title.
+    plain = {"title": "My Video", "description": "Different text", "webpage_url": "https://e/x"}
+    assert "My Video" in _caption_from_info(plain, "stem")
+
+
 def test_command_base_includes_cookies_file(tmp_path):
     cookies_path = tmp_path / "cookies.txt"
     cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
