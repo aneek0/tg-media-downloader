@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -75,17 +76,42 @@ def _command_base(parsed_input: ParsedInput, settings: Settings) -> list[str]:
         logger.debug("aria2c external downloader enabled | threads=%s", threads)
     return command
 
+#: TikTok's CDN rejects a burst of segment requests with aria2c exit code 22 /
+#: HTTP 403 for a few seconds, then serves the same file again (measured on
+#: prod: every immediate retry succeeded). Nothing else in yt-dlp output
+#: matches these markers.
+_TRANSIENT_ERROR_MARKERS = ("aria2c exited with code 22", "HTTP Error 403:")
+_TRANSIENT_RETRY_DELAY_SECONDS = 3.0
+
+
+def _is_transient_error(error_text: str) -> bool:
+    return any(marker in error_text for marker in _TRANSIENT_ERROR_MARKERS)
+
+
 async def _run_command(
     command: list[str],
     cwd: Path | None = None,
     timeout: float | None = None,
     on_output: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, str]:
-    """Thin wrapper around proc.run_command for yt-dlp invocations."""
+    """Thin wrapper around proc.run_command for yt-dlp invocations.
+
+    One retry for transient CDN rejections, so a TikTok rate-limit window
+    costs three seconds instead of a failed Request.
+    """
     try:
         return await run_command(command, cwd=cwd, timeout=timeout, on_output=on_output)
     except RuntimeError as exc:
-        raise RuntimeError(_friendly_error(str(exc))) from exc
+        if not _is_transient_error(str(exc)):
+            raise RuntimeError(_friendly_error(str(exc))) from exc
+        logger.warning("Transient download error, retrying once | error=%s", exc)
+        await asyncio.sleep(_TRANSIENT_RETRY_DELAY_SECONDS)
+        try:
+            return await run_command(
+                command, cwd=cwd, timeout=timeout, on_output=on_output
+            )
+        except RuntimeError as retry_exc:
+            raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
 
 
 def _is_audio_only(format_note: str | None) -> bool:

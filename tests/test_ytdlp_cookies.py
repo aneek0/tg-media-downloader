@@ -202,6 +202,83 @@ async def test_run_command_rewrites_friendly_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_command_retries_transient_aria2c_403_once(monkeypatch):
+    """Regression: TikTok's CDN rejects a burst with aria2c exit 22 / HTTP 403
+    for a few seconds, then serves the file (measured on prod). One delayed
+    retry instead of a failed Request."""
+    proc_run = AsyncMock(
+        side_effect=[
+            RuntimeError("ERROR: aria2c exited with code 22"),
+            ("ok", ""),
+        ]
+    )
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("services.ytdlp.run_command", proc_run)
+    monkeypatch.setattr("services.ytdlp.asyncio.sleep", fake_sleep)
+
+    stdout, stderr = await _run_command(["yt-dlp", "-x"])
+
+    assert (stdout, stderr) == ("ok", "")
+    assert proc_run.await_count == 2
+    assert sleeps == [3.0]
+
+
+@pytest.mark.asyncio
+async def test_run_command_retries_transient_http_403_once(monkeypatch):
+    proc_run = AsyncMock(
+        side_effect=[
+            RuntimeError("ERROR: unable to download video data: HTTP Error 403: Forbidden"),
+            ("ok", ""),
+        ]
+    )
+    monkeypatch.setattr("services.ytdlp.run_command", proc_run)
+    monkeypatch.setattr(
+        "services.ytdlp.asyncio.sleep", AsyncMock(return_value=None)
+    )
+
+    stdout, _ = await _run_command(["yt-dlp", "-x"])
+
+    assert stdout == "ok"
+    assert proc_run.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_command_does_not_retry_permanent_errors(monkeypatch):
+    proc_run = AsyncMock(
+        side_effect=RuntimeError("ERROR: Video unavailable")
+    )
+    monkeypatch.setattr("services.ytdlp.run_command", proc_run)
+
+    with pytest.raises(RuntimeError, match="Video unavailable"):
+        await _run_command(["yt-dlp", "-x"])
+
+    assert proc_run.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_command_transient_retry_failure_reraises_friendly(monkeypatch):
+    proc_run = AsyncMock(
+        side_effect=[
+            RuntimeError("ERROR: aria2c exited with code 22"),
+            RuntimeError("ERROR: aria2c exited with code 22"),
+        ]
+    )
+    monkeypatch.setattr("services.ytdlp.run_command", proc_run)
+    monkeypatch.setattr(
+        "services.ytdlp.asyncio.sleep", AsyncMock(return_value=None)
+    )
+
+    with pytest.raises(RuntimeError, match="aria2c exited with code 22"):
+        await _run_command(["yt-dlp", "-x"])
+
+    assert proc_run.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_probe_url_passes_no_playlist_and_timeout(monkeypatch, tmp_path):
     settings = make_cookie_settings(tmp_path, "")
     payload = {"title": "T", "id": "1", "duration": 61, "width": 1280, "height": 720}

@@ -858,6 +858,142 @@ async def test_gallery_nav_callback_expired_token_answers_toast(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_gallery_nav_callback_url_failure_uploads_and_edits_by_file_id(
+    monkeypatch, tmp_path
+):
+    """Regression: a local Bot API server that cannot download CDN URLs
+    (editMessageMedia by URL fails with 'failed to get HTTP URL content')
+    must not silently eat the pager tap. The bot downloads the page itself,
+    uploads it, and edits the inline message by file_id."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+
+    stored = StoredRequest(
+        token="bf06ecb9cc",
+        request_type="inline_gallery",
+        parsed_input=ParsedInput(source_url="https://x.com/a/status/1"),
+        options=[],
+        info={
+            "photos": [
+                "https://video.example/1.jpg",
+                "https://video.example/2.jpg",
+            ],
+            "caption": "cap",
+        },
+    )
+    store.save(stored)
+
+    sent_photo = SimpleNamespace(
+        message_id=77,
+        photo=[SimpleNamespace(file_id="AGAC1")],
+    )
+    bot = SimpleNamespace(
+        edit_message_media=AsyncMock(
+            side_effect=[
+                TelegramBadRequest(
+                    method="editMessageMedia",
+                    message="Bad Request: failed to get HTTP URL content",
+                ),
+                None,
+            ]
+        ),
+        send_photo=AsyncMock(return_value=sent_photo),
+        delete_message=AsyncMock(),
+    )
+    query = SimpleNamespace(
+        inline_message_id="im1",
+        from_user=SimpleNamespace(id=99),
+        bot=bot,
+        answer=AsyncMock(),
+    )
+
+    downloaded = tmp_path / "page.jpg"
+    downloaded.write_bytes(b"jpeg")
+
+    async def fake_download(**_kwargs):
+        return downloaded
+
+    monkeypatch.setattr("routers.inline.download_http_file", fake_download)
+
+    await gallery_nav_callback(
+        query, GalleryNavCallback(token="bf06ecb9cc", index=1),
+        make_session(settings, store),
+    )
+
+    # second edit (the fallback) used the uploaded file_id
+    fallback_edit = bot.edit_message_media.await_args_list[1]
+    assert fallback_edit.kwargs["media"].media == "AGAC1"
+    assert fallback_edit.kwargs["media"].caption == "cap"
+    assert bot.delete_message.await_args.kwargs["message_id"] == 77
+    # the payload now caches the file_id, so page 1 never re-downloads
+    assert store.load("bf06ecb9cc").info["photos"] == [
+        "https://video.example/1.jpg",
+        "file_id:AGAC1",
+    ]
+    query.answer.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_gallery_nav_callback_url_failure_without_dm_answers_toast(
+    monkeypatch, tmp_path
+):
+    """When the fallback upload is refused too (no DM with the bot), the
+    tapper gets a toast instead of a silent no-op."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+
+    stored = StoredRequest(
+        token="bf06ecb9cc",
+        request_type="inline_gallery",
+        parsed_input=ParsedInput(source_url="https://x.com/a/status/1"),
+        options=[],
+        info={
+            "photos": ["https://video.example/1.jpg", "https://video.example/2.jpg"],
+            "caption": "cap",
+        },
+    )
+    store.save(stored)
+
+    bot = SimpleNamespace(
+        edit_message_media=AsyncMock(
+            side_effect=TelegramBadRequest(
+                method="editMessageMedia",
+                message="Bad Request: failed to get HTTP URL content",
+            )
+        ),
+        send_photo=AsyncMock(
+            side_effect=TelegramBadRequest(method="sendPhoto", message="bot blocked")
+        ),
+        delete_message=AsyncMock(),
+    )
+    query = SimpleNamespace(
+        inline_message_id="im1",
+        from_user=SimpleNamespace(id=99),
+        bot=bot,
+        answer=AsyncMock(),
+    )
+
+    downloaded = tmp_path / "page.jpg"
+    downloaded.write_bytes(b"jpeg")
+
+    async def fake_download(**_kwargs):
+        return downloaded
+
+    monkeypatch.setattr("routers.inline.download_http_file", fake_download)
+
+    await gallery_nav_callback(
+        query, GalleryNavCallback(token="bf06ecb9cc", index=1),
+        make_session(settings, store),
+    )
+
+    assert bot.edit_message_media.await_count == 1  # only the failed URL edit
+    query.answer.assert_awaited_once()
+    assert query.answer.await_args.args[0] == "Failed to update the gallery."
+
+
+@pytest.mark.asyncio
 async def test_inline_page_url_downloads_via_ytdlp_not_direct(
     monkeypatch, tmp_path
 ):

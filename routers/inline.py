@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 from typing import cast
 
 import aiohttp
@@ -11,6 +12,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
     CallbackQuery,
     ChosenInlineResult,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
@@ -28,6 +30,7 @@ from aiogram.types import (
 from config import Settings
 from services import pixiv, pixiv_flow
 from services.delivery import inline_cached_results, rich_post_html
+from services.direct_downloads import download_http_file
 from services.gallery import (
     GalleryProbe,
     _gallery_friendly_error,
@@ -42,6 +45,7 @@ from services.netguard import areject_private_target
 from services.parsing import first_url_in, is_twitter_status_url, parse_user_input
 from services.session import Session
 from services.sources import VIDEO_EXTENSIONS, SourceKind, classify
+from services.status import StatusSurface
 from services.ytdlp import probe_url
 from utils import text
 from utils.callbacks import GalleryNavCallback, InlineCancelCallback
@@ -53,6 +57,7 @@ from utils.models import (
     ParsedInput,
     PixivProfilePayload,
     RequestType,
+    StoredRequest,
 )
 
 router = Router(name="inline")
@@ -881,6 +886,76 @@ async def inline_cancel_callback(
     await query.answer()
 
 
+async def _upload_gallery_page(
+    session: Session,
+    bot: Bot,
+    user_id: int,
+    stored: StoredRequest,
+    index: int,
+) -> str | None:
+    """Telegram file_id for one gallery page, uploading it when needed.
+
+    The URL edit failed, so the file must come from the bot itself: download
+    it through the bot's proxy, upload it into the tapper's DM, delete the
+    copy, and cache the returned file_id in the payload (an inline edit
+    cannot upload, and every later page must not re-download).
+    """
+    payload = stored.payload
+    if not isinstance(payload, InlineGalleryPayload):
+        return None
+    if index >= len(payload.photos):
+        return None
+    url = payload.photos[index]
+    if url.startswith("file_id:"):
+        return url.removeprefix("file_id:")
+    if not url.startswith("http"):
+        return url  # already a Telegram file_id from the cached path
+    settings = session.settings
+    work_dir = session.request_store.work_directory(stored.token)
+    status = StatusSurface(lambda message: _async_none(), name="")
+    try:
+        timeout = aiohttp.ClientTimeout(total=settings.process_max_timeout)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            path = await download_http_file(
+                session=client,
+                url=url,
+                headers=None,
+                proxy=settings.http_proxy or None,
+                work_dir=work_dir,
+                file_name=f"page-{index}",
+                file_ext=None,
+                send_type="photo",
+                status=status,
+                settings=settings,
+            )
+        sent = await bot.send_photo(
+            chat_id=user_id,
+            photo=FSInputFile(path),
+        )
+    except (TelegramAPIError, aiohttp.ClientError, OSError, RuntimeError) as exc:
+        logger.warning(
+            "Gallery page upload failed | user=%s token=%s error=%s",
+            user_id,
+            stored.token,
+            exc,
+        )
+        return None
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    file_id = sent.photo[-1].file_id if sent.photo else None
+    if not file_id:
+        return None
+    with contextlib.suppress(TelegramAPIError):
+        await bot.delete_message(chat_id=user_id, message_id=sent.message_id)
+    payload.photos[index] = f"file_id:{file_id}"
+    session.request_store.update_payload(stored, payload)
+    return file_id
+
+
+async def _async_none() -> None:
+    return None
+
+
 @router.callback_query(GalleryNavCallback.filter())
 async def gallery_nav_callback(
     query: CallbackQuery,
@@ -893,18 +968,22 @@ async def gallery_nav_callback(
     except ValueError:
         stored = None  # forged callback data
     payload = stored.payload if stored else None
-    photos = payload.photos if isinstance(payload, InlineGalleryPayload) else []
-    if not query.inline_message_id or not photos:
+    if not isinstance(payload, InlineGalleryPayload):
+        photos: list[str] = []
+    else:
+        photos = payload.photos
+    if stored is None or not query.inline_message_id or not photos:
         await query.answer("This gallery is expired. Send the link again.")
         return
     index = callback_data.index % len(photos)
     # aiogram binds a bot to every dispatched update.
     bot = cast(Bot, query.bot)
+    media = photos[index]
     try:
         await bot.edit_message_media(
             inline_message_id=query.inline_message_id,
             media=InputMediaPhoto(
-                media=photos[index],
+                media=media,
                 caption=(
                     payload.caption
                     if isinstance(payload, InlineGalleryPayload)
@@ -916,7 +995,37 @@ async def gallery_nav_callback(
                 token=callback_data.token, count=len(photos), index=index
             ),
         )
-    except TelegramAPIError:
-        await query.answer("Failed to update the gallery.")
-        return
+    except TelegramAPIError as exc:
+        # The URL edit needs the Bot API server itself to download the CDN
+        # file; a local Bot API server behind a restricted network cannot.
+        # Fallback: the bot downloads the photo itself (its proxy works),
+        # uploads it, and every later page edit reuses the Telegram file_id.
+        logger.warning(
+            "Gallery page URL edit failed | user=%s token=%s error=%s",
+            query.from_user.id,
+            callback_data.token,
+            exc,
+        )
+        file_id = await _upload_gallery_page(
+            session, bot, query.from_user.id, stored, index
+        )
+        if file_id is None:
+            await query.answer("Failed to update the gallery.")
+            return
+        with contextlib.suppress(TelegramAPIError):
+            await bot.edit_message_media(
+                inline_message_id=query.inline_message_id,
+                media=InputMediaPhoto(
+                    media=file_id,
+                    caption=(
+                        payload.caption
+                        if isinstance(payload, InlineGalleryPayload)
+                        else None
+                    ),
+                    parse_mode=None,
+                ),
+                reply_markup=gallery_keyboard(
+                    token=callback_data.token, count=len(photos), index=index
+                ),
+            )
     await query.answer()

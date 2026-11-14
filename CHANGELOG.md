@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Inline gallery pager (◀ ▶) silently did nothing behind a local Bot API server
+  that cannot download CDN URLs itself: `editMessageMedia` by URL failed with
+  "failed to get HTTP URL content" and the error was swallowed without a log.
+  The pager now falls back to downloading the page through the bot's own proxy,
+  uploading it, and editing the inline message by `file_id` (cached in the
+  request payload, so each page uploads at most once). A failed fallback shows
+  a toast and logs a warning instead of a silent no-op.
+- TikTok videos intermittently failed with `aria2c exited with code 22` /
+  `HTTP Error 403` — TikTok's CDN rejects a burst of requests for a few
+  seconds, then serves the same file (measured on prod: 9 failures in 7 days,
+  every immediate retry succeeded). yt-dlp invocations now retry transient
+  CDN rejections once after 3 s instead of failing the Request.
+
 ## [3.5.2] - 2026-11-14
 
 ### Fixed
