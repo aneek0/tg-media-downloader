@@ -112,11 +112,13 @@ runtime, so a clean server needs them from the system package manager first:
 
 ```bash
 # Debian/Ubuntu
-sudo apt-get install -y ffmpeg aria2 nodejs chromium xvfb
+sudo apt-get install -y git ffmpeg aria2 nodejs chromium xvfb
 # Arch
-sudo pacman -S --needed ffmpeg aria2 nodejs chromium xorg-server-xvfb
+sudo pacman -S --needed git ffmpeg aria2 nodejs chromium xorg-server-xvfb
 ```
 
+- `git` - required by `uv sync` itself: mornye installs from a git fork until
+  its Qobuz fix reaches an upstream release
 - `ffmpeg` - required for yt-dlp post-processing and the MP3 catalogue downloads
 - `aria2` - optional; yt-dlp uses `aria2c` as the external downloader when present
 - `nodejs` - required only with Mornye (`MORNYE_SERVICES`) for its JavaScript extensions

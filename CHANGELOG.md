@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and any new deployment whose `~/.mornye` was not yet populated). Tidal and
   Spotify links now parse locally; mornye's parser remains the fallback for what
   needs the network (Spotify short links).
+- The Docker image build failed with "Git executable not found": mornye became
+  a git dependency (the Qobuz fork branch), and `uv sync` inside the image had
+  no git to clone it. The builder stage installs git now; the README Quick Start
+  lists it for bare metal too.
 
 ## [3.5.0] - 2026-11-14
 
