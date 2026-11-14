@@ -18,6 +18,7 @@ from services.direct_downloads import download_http_file
 from services.parsing import is_twitter_status_url
 from services.proc import run_command
 from services.sources import (
+    AUDIO_EXTENSIONS,
     VIDEO_EXTENSIONS,
     gallery_supports_url,
     is_tiktok_url,
@@ -40,12 +41,23 @@ GALLERY_DOWNLOADS_PER_REQUEST = 3
 GALLERY_DOWNLOADS_PER_BOT = 6
 
 
+#: Extensions that can never become an inline photo result or pager page.
+_NON_PHOTO_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+
+
 def split_tweet_media(file_dicts: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Split probe file_dicts into (photos, videos) by VIDEO_EXTENSIONS -
-    the same rule _inline_media_results uses."""
-    photos = [m for m in file_dicts if (m.get("extension") or "").lower() not in VIDEO_EXTENSIONS]
-    videos = [m for m in file_dicts if (m.get("extension") or "").lower() in VIDEO_EXTENSIONS]
-    return photos[:MAX_GALLERY_PHOTOS], videos
+    """Split probe file_dicts into (photos, other media). Only images may
+    become inline photo results or pager pages: Telegram fetches every URL
+    result at answer time and rejects the whole answer - or the later tap -
+    when the media is not an image (a TikTok photo post probes as image +
+    soundtrack mp3)."""
+    photos = [
+        m for m in file_dicts if (m.get("extension") or "").lower() not in _NON_PHOTO_EXTENSIONS
+    ]
+    rest = [
+        m for m in file_dicts if (m.get("extension") or "").lower() in _NON_PHOTO_EXTENSIONS
+    ]
+    return photos[:MAX_GALLERY_PHOTOS], rest
 
 
 def _gallery_flags(

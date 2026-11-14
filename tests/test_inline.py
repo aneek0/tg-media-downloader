@@ -1360,3 +1360,107 @@ def test_inline_dm_blocked_names_the_bot():
     exc = InlineDmBlocked("@my_media_bot")
 
     assert "@my_media_bot" in str(exc)
+
+@pytest.mark.asyncio
+async def test_inline_tiktok_photo_post_mp3_not_a_photo_result(monkeypatch, tmp_path):
+    """Regression: a TikTok photo post probes as image + soundtrack mp3; the
+    mp3 must not become an inline photo result or pager page. Telegram
+    fetches every URL result at answer time and rejected the whole answer
+    with EXTERNAL_MEDIA_NOT_SUPPORTED (client spun forever), and the pager's
+    second page failed edit_message_media on the mp3."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {
+            "_url": "https://p16-va.tiktokcdn.com/img.jpeg",
+            "extension": "jpeg",
+            "filename": "717484b7e8ea",
+        },
+        {
+            "_url": "https://v16-webapp.tiktok.com/sound.mp3",
+            "extension": "mp3",
+            "filename": "оригинальный звук",
+        },
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content=None, error=None)),
+    )
+
+    query = SimpleNamespace(
+        query="https://vt.tiktok.com/ZSpCSjrDA/",
+        from_user=SimpleNamespace(id=99),
+        answer=AsyncMock(),
+    )
+
+    await inline_query_handler(query, make_session(settings, store, cache))
+
+    results = query.answer.await_args.args[0]
+    # One photo only: the mp3 never becomes a photo result nor a pager page.
+    assert all(
+        getattr(result, "photo_url", None) != "https://v16-webapp.tiktok.com/sound.mp3"
+        for result in results
+    )
+    photo_results = [
+        result
+        for result in results
+        if isinstance(result, InlineQueryResultPhoto)
+    ]
+    assert len(photo_results) == 1
+    assert photo_results[0].photo_url == "https://p16-va.tiktokcdn.com/img.jpeg"
+    # A single photo means no pager at all.
+    assert not any(result.id.startswith("gallery:") for result in results)
+    # The download-on-tap token still carries the whole post (photo + mp3).
+    stored = store.load(photo_results[0].id)
+    assert stored.request_type == "inline_media"
+    assert stored.info["plan"] == "gallery"
+    assert len(stored.info["file_dicts"]) == 2
+    assert stored.info["preferred_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_inline_answer_falls_back_when_telegram_rejects(monkeypatch, tmp_path):
+    """Regression: EXTERNAL_MEDIA_NOT_SUPPORTED on answerInlineQuery killed
+    the handler, so the client spun forever. A tap-to-download article must
+    answer the query instead."""
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    store = RequestStore(settings.requests_dir, settings.work_dir)
+    cache = make_media_cache(tmp_path)
+
+    file_dicts = [
+        {"_url": "https://cdn.example/1.jpeg", "extension": "jpeg", "filename": "1"},
+        {"_url": "https://cdn.example/2.jpeg", "extension": "jpeg", "filename": "2"},
+    ]
+    monkeypatch.setattr(
+        "routers.inline.probe_gallery",
+        AsyncMock(return_value=GalleryProbe(file_dicts=file_dicts, content="cap", error=None)),
+    )
+
+    answer_mock = AsyncMock(
+        side_effect=[
+            TelegramBadRequest(
+                method="answerInlineQuery",
+                message="Bad Request: EXTERNAL_MEDIA_NOT_SUPPORTED",
+            ),
+            None,
+        ]
+    )
+    query = SimpleNamespace(
+        query="https://pawchive.pw/fanbox/user/1/post/2",
+        from_user=SimpleNamespace(id=99),
+        answer=answer_mock,
+    )
+
+    await inline_query_handler(query, make_session(settings, store, cache))
+
+    assert answer_mock.await_count == 2
+    fallback = answer_mock.await_args_list[1].args[0][0]
+    assert isinstance(fallback, InlineQueryResultArticle)
+    stored = store.load(fallback.id)
+    assert stored is not None
+    assert stored.request_type == "inline_media"
+    assert stored.info["plan"] == "url"

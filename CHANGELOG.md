@@ -30,6 +30,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - TikTok captions: the probe reads the post description from the ``desc`` key (TikTok's
   ``content`` is empty) and treats an empty first entry as unset, so a post caption is the
   post's own text instead of the CDN filename.
+- TikTok photo posts inline: the post's soundtrack mp3 counted as a "photo" in the
+  media split, so it became an `InlineQueryResultPhoto` and a gallery-pager page.
+  Telegram fetches every URL result when the query is answered and rejected the
+  whole answer with `EXTERNAL_MEDIA_NOT_SUPPORTED` — the client spun forever with
+  nothing to tap — and the pager's phantom second page (the mp3) failed with
+  "Failed to update the gallery". Only images may become photo results or pager
+  pages now; audio and video files stay download-on-tap, delivered into the
+  message and the DM spillover like in private chat.
+- Inline answers rejected by Telegram (`EXTERNAL_MEDIA_NOT_SUPPORTED` on
+  `answerInlineQuery`) no longer crash the handler: the query is re-answered with
+  a single tap-to-download article instead of leaving the client spinning.
 - TikTok soundtracks are named: the mp3 of a photo post lands as its music title (`music.title`)
   with the author as performer, in both the URL-send and the local-upload paths, instead of the
   numeric post id.

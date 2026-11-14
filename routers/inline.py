@@ -66,6 +66,49 @@ def _description_for() -> str:
     return "Download this link and send the media here."
 
 
+#: Rejections that kill the whole answer because one result carries a URL
+#: Telegram cannot fetch or render as that result type (e.g. an mp3 in a
+#: photo result). Retrying the same list is hopeless; fall back to a
+#: tappable article instead of leaving the client spinning.
+_FALLBACK_ANSWER_ERRORS = ("EXTERNAL_MEDIA_NOT_SUPPORTED",)
+
+
+async def _answer_results(
+    query: InlineQuery, results: list, session: Session, parsed: ParsedInput
+) -> None:
+    """Answer with results, falling back to a single download article when
+    Telegram rejects the whole list with an unsupported-external-media
+    error; the article re-runs the probe ladder at tap time."""
+    try:
+        await query.answer(results, cache_time=0, is_personal=True)
+    except TelegramAPIError as exc:
+        if not any(marker in str(exc) for marker in _FALLBACK_ANSWER_ERRORS):
+            raise
+        logger.warning(
+            "Inline results rejected by Telegram | user=%s error=%s",
+            query.from_user.id,
+            exc,
+        )
+        stored = session.request_store.open(
+            RequestType.INLINE_MEDIA, parsed, payload=InlineMediaPayload(plan="url")
+        )
+        await query.answer(
+            [
+                InlineQueryResultArticle(
+                    id=stored.token,
+                    title=text.INLINE_TITLE,
+                    description=_description_for(),
+                    input_message_content=InputTextMessageContent(
+                        message_text=text.PROCESSING
+                    ),
+                    reply_markup=_cancel_keyboard(stored.token),
+                )
+            ],
+            cache_time=0,
+            is_personal=True,
+        )
+
+
 def _probe_caption(file_dicts: list[dict], content: str | None, source_url: str) -> str:
     """Caption in the classic inline-bot format: source URL, then
     'author_nick : post content'. Uses plain_caption() so HTML-tagged
@@ -470,7 +513,7 @@ async def _answer_twitter_media(
         )
     )
     if results:
-        await query.answer(results, cache_time=0, is_personal=True)
+        await _answer_results(query, results, session, parsed)
         return True
     await query.answer(
         [await _error_article("No media found in this tweet")],
@@ -578,7 +621,7 @@ async def _answer_gallery_media(
                 reply_markup=_cancel_keyboard(token),
             )
         )
-    await query.answer(results, cache_time=0, is_personal=True)
+    await _answer_results(query, results, session, parsed)
     return True
 
 
