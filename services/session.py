@@ -80,7 +80,7 @@ def build_session(
             timeout_seconds=settings.request_cooldown_seconds
         ),
         request_store=RequestStore(settings.requests_dir, settings.work_dir),
-        media_cache=MediaCache(settings.media_cache_file),
+        media_cache=MediaCache(settings.media_cache_file, settings.media_cache_max_entries),
         mornye=mornye or MornyeService(settings),
         gallery_download_limiter=asyncio.Semaphore(GALLERY_DOWNLOADS_PER_BOT),
         download_limiter=asyncio.Semaphore(settings.download_threads),

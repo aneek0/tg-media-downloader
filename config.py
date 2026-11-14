@@ -81,6 +81,7 @@ class Settings:
     search_provider: str = "deezer"
     pawchive_root: str = "https://pawchive.pw"
     follow_poll_seconds: int = 6 * 3600
+    media_cache_max_entries: int = 5000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -160,6 +161,9 @@ class Settings:
             ),
             follow_poll_seconds=_parse_positive_int(
                 os.environ.get("FOLLOW_POLL_SECONDS"), default=6 * 3600
+            ),
+            media_cache_max_entries=_parse_positive_int(
+                os.environ.get("MEDIA_CACHE_MAX_ENTRIES"), default=5000
             ),
         )
 

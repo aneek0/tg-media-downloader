@@ -14,6 +14,15 @@ def _isolate_env(monkeypatch, tmp_path):
     # loading entirely makes the isolation hermetic.
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
 
+
+def test_settings_media_cache_max_entries_defaults_5000(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "token")
+    monkeypatch.setenv("OWNER_ID", "42")
+    monkeypatch.delenv("MEDIA_CACHE_MAX_ENTRIES", raising=False)
+
+    assert Settings.from_env().media_cache_max_entries == 5000
+
+
 def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", "token")
     monkeypatch.setenv("OWNER_ID", "42")
