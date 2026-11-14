@@ -98,6 +98,34 @@ def test_is_mornye_url(url: str, expected: bool):
     assert is_mornye_url(url) is expected
 
 
+
+
+def test_url_classification_needs_no_utilities_extension(monkeypatch):
+    """mornye 2.x lazy-proxies tidal/spotify metadata modules to the optional
+    utilities.sflx extension; on a fresh install (CI, new deployment) that
+    proxy raises. URL classification must stay local: it runs for every link."""
+    from services import mornye as mornye_module
+
+    def _refuse(_url):
+        raise RuntimeError(
+            "The optional utilities extension is not installed; "
+            "'mornye.core.tidal_metadata' requires 'utilities.sflx'."
+        )
+
+    import mornye.core.spotify_metadata as spotify_proxy
+    import mornye.core.tidal_metadata as tidal_proxy
+
+    monkeypatch.setattr(tidal_proxy, "is_tidal_url", _refuse, raising=False)
+    monkeypatch.setattr(tidal_proxy, "parse_tidal_url", _refuse, raising=False)
+    monkeypatch.setattr(spotify_proxy, "parse_spotify_url", _refuse, raising=False)
+
+    assert mornye_module.is_mornye_url("https://example.com/x") is False
+    assert mornye_module.is_mornye_url("https://listen.tidal.com/track/123") is True
+    assert (
+        mornye_module.audio_cache_key("https://example.com/clip.mp4", "hires", "flac")
+        == "https://example.com/clip.mp4"
+    )
+
 # --- Resolve ------------------------------------------------------------
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,10 @@ _QUALITY_BY_PREFERENCE = {"lossless": "LOSSLESS", "hires": "HI_RES_LOSSLESS"}
 _HIRES_CACHE_SUFFIX = "#hires"
 _MP3_CACHE_SUFFIX = "#mp3"
 
+_DISCOGRAPHY_GROUPS = frozenset(
+    {"all", "album", "single", "compilation", "appears_on"}
+)
+
 # TrackMetadata needs no import at runtime for typing in artifacts, but the
 # worker and metadata client are imported lazily so a missing/older mornye
 # install degrades to "feature disabled" instead of crashing the whole bot.
@@ -73,19 +78,52 @@ class SpotifyTarget:
 def _parse_tidal_link(url: str) -> dict[str, str] | None:
     """A Tidal link's ``{"type", "id"}``, or None when this is not one.
 
-    mornye raises for non-Tidal input, so the host check comes first."""
-    from mornye.core.errors import MornyeError
-    from mornye.core.tidal_metadata import (  # ty: ignore[import-not-found]  # runtime-only utilities.sflx alias
-        is_tidal_url,
-        parse_tidal_url,
+    Local host/path parsing: mornye 2.x's tidal_metadata is a lazy proxy
+    that needs the optional utilities.sflx extension, and is_mornye_url()
+    runs for every classified URL — it must work on a fresh install."""
+    hostname = (urlparse(url).hostname or "").lower()
+    if hostname not in {"tidal.com", "www.tidal.com", "listen.tidal.com"}:
+        return None
+    parts = [p for p in urlparse(url).path.split("/") if p]
+    if parts and parts[0] == "browse":
+        parts = parts[1:]
+    if len(parts) >= 2 and parts[0] in {"track", "album", "playlist", "artist"}:
+        if parts[0] == "artist" and len(parts) >= 4 and parts[2] == "discography":
+            return {"type": "artist_discography", "id": parts[1], "group": parts[3]}
+        return {"type": parts[0], "id": parts[1].split("?")[0]}
+    return None
+
+def _parse_spotify_link(url: str) -> dict[str, str]:
+    """A Spotify link's ``{"type", "id"}`` for resolve_url().
+
+    Local parsing: mornye 2.x's spotify_metadata is a lazy proxy needing
+    the optional utilities.sflx extension. Short links (spotify.link /
+    spoti.fi) still go through mornye's parser, which follows the redirect."""
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+    if parts and parts[0] == "embed":
+        parts = parts[1:]
+    if parts and re.fullmatch(r"intl-[a-z-]+", parts[0]):
+        parts = parts[1:]
+    if len(parts) == 2 and parts[0] in {"track", "album", "playlist", "artist"}:
+        return {"type": parts[0], "id": parts[1]}
+    if len(parts) == 4 and parts[2] == "playlist":
+        return {"type": "playlist", "id": parts[3]}
+    if len(parts) >= 3 and parts[0] == "artist":
+        if parts[2] == "discography":
+            group = parts[3] if len(parts) >= 4 else "all"
+            return {
+                "type": "artist_discography",
+                "id": parts[1],
+                "group": group if group in _DISCOGRAPHY_GROUPS else "all",
+            }
+        return {"type": "artist", "id": parts[1]}
+    from mornye.core.spotify_metadata import (  # ty: ignore[import-not-found]  # runtime-only utilities.sflx alias
+        parse_spotify_url,
     )
 
-    if not is_tidal_url(url):
-        return None
-    try:
-        return parse_tidal_url(url)
-    except MornyeError:
-        return None
+    return parse_spotify_url(url)
+
 
 def is_mornye_url(url: str) -> bool:
     """Any URL mornye can resolve to audio: spotify.com, every registered
@@ -441,11 +479,7 @@ class MornyeService:
                 raise RuntimeError("MORNYE_TRACK_UNRESOLVED")
             return target
 
-        from mornye.core.spotify_metadata import (  # ty: ignore[import-not-found]  # runtime-only alias
-            parse_spotify_url,
-        )
-
-        info = await asyncio.to_thread(parse_spotify_url, url)
+        info = await asyncio.to_thread(_parse_spotify_link, url)
         kind = info["type"]
         if kind == "track":
             client = await self._metadata_client()

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- URL classification no longer dies on a fresh install without mornye's optional
+  `utilities.sflx` extension: mornye 2.x lazy-proxies `tidal_metadata` and
+  `spotify_metadata` to it, and the proxy's RuntimeError escaped through
+  `is_mornye_url()` — which runs for every classified URL, so every link failed
+  with "The optional utilities extension is not installed" (the v3.5.0 release CI,
+  and any new deployment whose `~/.mornye` was not yet populated). Tidal and
+  Spotify links now parse locally; mornye's parser remains the fallback for what
+  needs the network (Spotify short links).
+
 ## [3.5.0] - 2026-11-14
 
 ### Added
