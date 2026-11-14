@@ -161,7 +161,8 @@ uv run python bot.py
 - `MORNYE_REGISTRIES` - extension registry JSON URLs, comma-separated. With mornye 2.x keep both: `registry-python.json` ships `utilities.sflx` (the signed-session/solver modules every music extension now depends on) and `registry.json` carries the music extensions themselves; the default `.env.example` value lists both
 - `MORNYE_ENRICH_EXTENSIONS` - set `0` (recommended) to skip optional metadata fan-out to every installed JavaScript extension; built-in Deezer/Apple enrichment remains, and Tidal downloads avoid a separate Qobuz Turnstile challenge. Set `1` only if provider-specific extra tags are worth the extra browser runs
 - `MORNYE_EXT_ALLOW_PRIVATE_NETWORK` - set `1` behind a FakeIP/TUN VPN such as sing-box so catalogue search and downloads can reach provider endpoints; enable only for trusted installed extensions
-- `CHROME_PATH` - optional Chromium executable for ZARZ Turnstile authentication. Docker sets `/usr/bin/chromium`; on bare metal, install `chromium` and `xvfb` (Mornye starts the virtual display on demand) or point this at another Chromium-based browser such as Helium
+- `ALLOW_FAKEIP` - set `1` behind a sing-box/mihomo FakeIP/TUN VPN: DNS answers there land in the reserved `198.18.0.0/15` range, which the SSRF guard otherwise rejects as private. Real private/loopback targets stay blocked
+- `MEDIA_CACHE_MAX_ENTRIES` - optional cap on cached `file_id` mappings (default 5000); the oldest entries are evicted when the cap is exceeded
 - `MORNYE_QUALITY` - optional default audio tier: `LOSSLESS` (CD, default) or `HI_RES_LOSSLESS` (Hi-Res, with per-track fallback); users can override it in `/settings`
 - `MORNYE_TRANSCODE` - optional; empty keeps the original FLAC, `mp3` transcodes to MP3 320k through ffmpeg
 - `SPOTIFY_COLLECTION_CAP` - optional maximum tracks downloaded per Spotify album/playlist/artist collection (default 50)

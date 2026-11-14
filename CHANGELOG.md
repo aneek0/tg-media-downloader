@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-11-14
+
 ### Added
 - Qobuz links (`open.qobuz.com` / `play.qobuz.com` / `www.qobuz.com`, incl. storefront
   `us-en` slugs) — tracks, albums, and playlists download in private chat and inline
@@ -16,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `registry.json` (the music extensions) — `.env.example` has the combined value.
   Qobuz short ids (7-digit track/playlist links from the web player) resolve through
   a fork branch until upstream releases mornye 2.0.7 (PR mornyeapp/Mornye-Python#278).
+- `MEDIA_CACHE_MAX_ENTRIES` caps the cached `file_id` mappings (default 5000); the
+  oldest entries are evicted when the cap is exceeded, bounding `media_cache.json` growth.
 
 ### Fixed
 - Every link was rejected with "This link points at a private or local network address"
