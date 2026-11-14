@@ -101,7 +101,7 @@ wheels = [
 
 [[package]]
 name = "all-url-uploader"
-version = "3.5.1"
+version = "3.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "aiogram" },
