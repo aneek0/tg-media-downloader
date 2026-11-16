@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- Music requests could report "Download failed" after the audio was already
+  delivered: `delivery._deliver` closes the status message, and the music
+  finisher in `executor` edited the identical "done" text a second time,
+  which Telegram rejects ("message is not modified") — the raised error then
+  hit the request's error boundary. Status edits are now idempotent: a text
+  already on screen is skipped.
 - Inline gallery pager (◀ ▶) silently did nothing behind a local Bot API server
   that cannot download CDN URLs itself: `editMessageMedia` by URL failed with
   "failed to get HTTP URL content" and the error was swallowed without a log.

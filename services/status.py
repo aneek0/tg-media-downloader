@@ -76,9 +76,14 @@ class StatusSurface:
     async def edit(self, message: str, **kwargs: Any) -> None:
         """Replace the status text; Telegram errors propagate. A muted
         surface (its message already holds media) drops the edit: the media
-        stays on screen. :meth:`fail` is never muted - an error must show."""
+        stays on screen. :meth:`fail` is never muted - an error must show.
+        An edit with the text already on screen is skipped: Telegram rejects
+        identical content, so terminal edits must be idempotent."""
         if self._muted:
             return
+        if message == self._last_text:
+            return
+        self._last_text = message
         await self._edit(message, **kwargs)
 
     async def start_download(self, name: str) -> None:

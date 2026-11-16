@@ -89,3 +89,16 @@ async def test_feed_line_parses_aria2c_lines():
     assert "Speed: 9.5MiB/s" in calls[0]
     assert "ETA: 16s" in calls[0]
     assert "50% of 200.0MiB" in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_done_twice_edits_once():
+    """Regression: delivery._deliver already closes the status; executor's
+    _finish_music used to edit the same text again and Telegram rejected
+    the identical edit, failing the request after files were sent."""
+    calls: list[str] = []
+    surface = make_surface(calls)
+    await surface.done(download_seconds=5, upload_seconds=1)
+    await surface.done(download_seconds=5, upload_seconds=1)
+
+    assert len(calls) == 1
